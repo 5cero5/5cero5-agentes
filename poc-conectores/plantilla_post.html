@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Plantilla post 4:5 · 5cero5 · prueba</title>
+<style>
+  /* Fuentes de la marca, descargadas junto a este archivo en ./fonts (licencia SIL OFL). */
+  @font-face { font-family: 'Anton'; font-weight: 400; src: url('fonts/Anton-Regular.ttf') format('truetype'); }
+  @font-face { font-family: 'IBM Plex Sans'; font-weight: 400; src: url('fonts/IBMPlexSans-Regular.ttf') format('truetype'); }
+  @font-face { font-family: 'IBM Plex Sans'; font-weight: 700; src: url('fonts/IBMPlexSans-Bold.ttf') format('truetype'); }
+  :root {
+    --rosa: #FF2E88; --negro: #0E0E0E; --blanco: #FFFFFF; --papel: #F4F3F0;
+    --azul: #1F2BFF; --amarillo: #FFE500;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1080px; height: 1350px; background: var(--papel); }
+  .post { position: relative; width: 1080px; height: 1350px; background: var(--papel); overflow: hidden; }
+  .barra { position: absolute; left: 0; top: 0; width: 28px; height: 1220px; background: var(--rosa); }
+  .tag { position: absolute; left: 88px; top: 64px; font: 700 24px/1 'IBM Plex Sans', sans-serif;
+         letter-spacing: .08em; text-transform: uppercase; color: var(--negro); }
+  h1 { position: absolute; left: 88px; top: 150px; width: 920px;
+       font: 400 172px/0.93 'Anton', sans-serif; text-transform: uppercase; color: var(--negro); }
+  h1 .marca { display: inline-block; background: var(--amarillo); padding: 14px 22px 0; margin: 10px 0 0 -22px; line-height: 0.93; }
+  .sub { position: absolute; left: 88px; top: 720px; width: 780px;
+         font: 400 44px/1.28 'IBM Plex Sans', sans-serif; color: var(--negro); }
+  .sub b { font-weight: 700; }
+  .flecha { position: absolute; left: 640px; top: 830px; width: 360px; height: 300px; }
+  .logo { position: absolute; left: 88px; top: 39px; width: 400px; height: 52px; border: 3px dashed var(--blanco);
+          color: var(--blanco); font: 700 20px/46px 'IBM Plex Sans', sans-serif; text-align: center; letter-spacing: .06em; }
+  .pie { position: absolute; left: 0; top: 1220px; width: 1080px; height: 130px; background: var(--negro); }
+  .pie .nota { position: absolute; right: 60px; top: 46px; width: 440px; color: var(--blanco);
+               font: 400 20px/1.2 'IBM Plex Sans', sans-serif; text-align: right; opacity: .85; }
+</style>
+</head>
+<body>
+<div class="post" id="post">
+  <div class="barra"></div>
+  <div class="tag">Prueba de render · no publicar</div>
+  <h1>Ocho<br>proveedores,<br><span class="marca">no.</span></h1>
+  <p class="sub">Un solo equipo arma tus citas, pedidos y visitas.</p>
+  <svg class="flecha" viewBox="0 0 360 300" fill="none" stroke="#1F2BFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M330 280 C 300 150, 200 90, 40 60"/>
+    <path d="M40 60 L 110 20"/>
+    <path d="M40 60 L 118 110"/>
+  </svg>
+  <div class="pie">
+    <div class="logo">[ LOGO APROBADO · PENDIENTE ]</div>
+    <div class="nota">Texto de la guía de marca, usado solo para probar el render.</div>
+  </div>
+</div>
+<script>
+  // Deja en el propio DOM qué fuentes cargaron de verdad (sirve con Chromium por línea de comandos y con Playwright).
+  Promise.all([
+    document.fonts.load("172px Anton"),
+    document.fonts.load("400 44px 'IBM Plex Sans'"),
+    document.fonts.load("700 24px 'IBM Plex Sans'")
+  ]).then(() => document.fonts.ready).then(() => {
+    const ok = [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family.replace(/['"]/g,'') + ' ' + f.weight);
+    document.body.setAttribute('data-fuentes', JSON.stringify(ok));
+    document.body.setAttribute('data-listo', '1');
+  }).catch(e => { document.body.setAttribute('data-fuentes', 'error: ' + e); document.body.setAttribute('data-listo', '1'); });
+</script>
+</body>
+</html>
