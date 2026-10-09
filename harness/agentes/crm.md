@@ -5,7 +5,13 @@ Tu entorno:
 - Herramientas en /workspace/agentes/poc-conectores. Usas solo correo.py.
 - Antes de cualquier comando: export MARCA_REPO=/workspace/marca HL_LOCATION_ID=__HL_LOCATION_ID__
 - HL_TOKEN ya está en el entorno. Nunca lo imprimas, lo copies a un archivo ni lo mandes a otro sitio.
-- Trabaja en una carpeta temporal (por ejemplo /tmp/trabajo): copia ahí el JSON de copia que indique el brief y no modifiques los repos.
+- Trabaja en una carpeta temporal (por ejemplo /tmp/trabajo) y no modifiques los repos.
+
+El JSON de copia:
+- Si el brief indica un archivo de copia del repo (por ejemplo /workspace/marca/correos/w1-entrevista.json), cópialo a /tmp/trabajo.
+- Si el brief trae el texto del correo (como los que escribe el agente CMO), arma tú el JSON en /tmp/trabajo/<nombre-corto>.json con exactamente estas claves, usando /workspace/marca/correos/w1-entrevista.json como modelo de forma:
+  asunto, preheader, kicker, titular, titular_marca (la última palabra o frase del titular, la que va en color de marca; quítala de titular), cuerpo (lista de párrafos), cta_texto, cta_url, nota (lista de líneas) y assets (copia el valor de w1-entrevista.json; no lo inventes).
+- Copia el texto del brief tal cual. No agregues frases, cifras ni promesas que el brief no trae. Si al brief le falta una clave obligatoria, terminas y lo explicas en "motivo".
 
 Cómo trabajas una plantilla:
 1. python3 correo.py armar --copia /tmp/trabajo/<archivo>.json

@@ -1,7 +1,8 @@
 // Qué hace el harness cuando una sesión termina. Un solo camino para webhook y barrido.
 import { P, leePagina } from './notion.mjs';
 import { ultimoMensajeAgente } from './sessions.mjs';
-import { agenteDe, revisaRespuesta } from './agentes.mjs';
+import { agenteDe, revisaRespuesta, ultimoJson } from './agentes.mjs';
+import { compruebaFilasCMO } from './campanas.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -42,7 +43,16 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo }) {
   };
   // El formato de la respuesta se revisa aquí; si el trabajo está bien lo decide el Verificador o una persona.
   const formato = revisaRespuesta(agenteDe(fila.agente), resultado);
-  if (!c.verificadorActivo) props['Informe del Verificador'] = P.texto(`Verificador no activo: revisar a mano contra reglas.md. Formato de la respuesta: ${formato ?? 'OK'}.`);
+  if (fila.agente === 'CMO') {
+    // El trabajo del CMO son filas en Notion: el harness mismo las comprueba (regla 8).
+    const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
+      : await compruebaFilasCMO(notion, fila, ultimoJson(resultado));
+    props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
+    props.Estado = P.estado('Para revisar');
+    props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
+  } else if (!c.verificadorActivo) {
+    props['Informe del Verificador'] = P.texto(`Verificador no activo: revisar a mano contra reglas.md. Formato de la respuesta: ${formato ?? 'OK'}.`);
+  }
   await notion.update(fila.id, props);
-  return c.verificadorActivo ? 'verificando' : 'para_revisar';
+  return fila.agente !== 'CMO' && c.verificadorActivo ? 'verificando' : 'para_revisar';
 }
