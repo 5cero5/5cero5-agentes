@@ -1,6 +1,7 @@
 // Qué hace el harness cuando una sesión termina. Un solo camino para webhook y barrido.
 import { P, leePagina } from './notion.mjs';
 import { ultimoMensajeAgente } from './sessions.mjs';
+import { agenteDe, revisaRespuesta } from './agentes.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -39,7 +40,9 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo }) {
     Verificador: P.verificador('Pendiente'),
     Estado: P.estado(c.verificadorActivo ? 'Verificando' : 'Para revisar'),
   };
-  if (!c.verificadorActivo) props['Informe del Verificador'] = P.texto('Verificador no activo: revisar a mano contra reglas.md.');
+  // El formato de la respuesta se revisa aquí; si el trabajo está bien lo decide el Verificador o una persona.
+  const formato = revisaRespuesta(agenteDe(fila.agente), resultado);
+  if (!c.verificadorActivo) props['Informe del Verificador'] = P.texto(`Verificador no activo: revisar a mano contra reglas.md. Formato de la respuesta: ${formato ?? 'OK'}.`);
   await notion.update(fila.id, props);
   return c.verificadorActivo ? 'verificando' : 'para_revisar';
 }

@@ -5,6 +5,7 @@ import { esDespachable, despacha } from '../lib/despacho.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
 import { barre } from '../lib/barrido.mjs';
+import { AGENTES, revisaRespuesta } from '../lib/agentes.mjs';
 
 const AL = 'user-al', BONZO = 'user-bonzo', INTRUSO = 'user-x';
 const c = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_c', MA_VAULT_IDS: 'v1', GH_REPO_URL: 'https://github.com/o/r' });
@@ -110,4 +111,67 @@ test('barrido: timeout interrumpe y marca Error', async () => {
 test('barrido: reclamada sin sesión → Error', async () => {
   const f = [fila({ estado: 'En curso', inicio: new Date(Date.now() - 900000).toISOString() })];
   await barre({ client: mockClient(), notion: mockNotion(f), c }); assert.equal(f[0].estado, 'Error');
+});
+
+// ---- Hito 1: router por agente, tope en centavos, formato de respuesta ----
+const cCRM = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_crm',
+  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok' });
+const filaCRM = (o = {}) => fila({ agente: 'CRM', trabajo: 'Plantilla W1', brief: 'arma W1', ...o });
+
+test('router: CRM usa su agente, monta marca y agentes, y lleva sus reglas', () => {
+  const p = parametrosSesion(filaCRM(), cCRM);
+  assert.equal(p.agent, 'agent_crm');
+  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/marca', '/workspace/agentes']);
+  assert.ok(p.resources.every(r => r.authorization_token === 'tok'));
+  const m = p.initial_events[0].content[0].text;
+  assert.match(m, /correo\.py/); assert.match(m, /\[agente\] /); assert.match(m, /No envías correos/); assert.match(m, /plantilla_id/);
+  assert.doesNotMatch(m, /deploy_id/);
+});
+test('vault: cada agente usa el suyo; sin vault propio, el común', () => {
+  const cv = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_c', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_comun', MA_VAULT_CRM: 'v_hl',
+    GH_REPO_URL: 'https://github.com/o/m', GH_AGENTES_URL: 'https://github.com/o/a' });
+  assert.deepEqual(parametrosSesion(filaCRM(), cv).vault_ids, ['v_hl']);
+  assert.deepEqual(parametrosSesion(fila(), cv).vault_ids, ['v_comun']);
+});
+test('router: Creativo no recibe las reglas de CRM', () => {
+  const m = parametrosSesion(fila(), c).initial_events[0].content[0].text;
+  assert.match(m, /deploy_id/); assert.doesNotMatch(m, /correo\.py/); assert.match(m, /C30/);
+});
+test('router: agente fuera del catálogo o sin id no se despacha', () => {
+  assert.throws(() => parametrosSesion(fila({ agente: 'Pauta' }), c), /Agente sin configurar: Pauta/);
+  assert.throws(() => parametrosSesion(filaCRM(), c), /Agente sin configurar: CRM/);
+  assert.throws(() => parametrosSesion(fila({ agente: 'constructor' }), c), /Agente sin configurar: constructor/);
+});
+test('router: falta un repo que el agente declara → no hay sesión', () => {
+  const sinAgentes = cfg({ ...{ NOTION_APROBADORES: AL, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', GH_REPO_URL: 'https://github.com/o/m' } });
+  assert.throws(() => parametrosSesion(filaCRM(), sinAgentes), /Falta GH_AGENTES_URL/);
+});
+test('despacha: agente sin configurar pasa a Error y no crea sesión', async () => {
+  const f = [fila({ agente: 'Pauta' })]; const cl = mockClient();
+  await despacha({ client: cl, notion: mockNotion(f), c }); assert.equal(f[0].estado, 'Error'); assert.equal(cl.calls.create.length, 0);
+});
+test('tope en centavos como cadena; menos de un centavo se rechaza', () => {
+  const a = parametrosSesion(fila({ tope: 1.5 }), c).budget.max_list_cost.amount;
+  assert.equal(a, '150'); assert.equal(typeof a, 'string');
+  assert.equal(parametrosSesion(fila({ tope: 0.999 }), c).budget.max_list_cost.amount, '100');
+  assert.throws(() => parametrosSesion(fila({ tope: 0.004 }), c), /Tope inválido/);
+  assert.throws(() => parametrosSesion(fila({ tope: 0 }), c), /Tope inválido/);
+});
+test('última edición: vale de Bonzo aunque aprobó Al; no de alguien más', () => {
+  assert.equal(esDespachable(fila({ editadoPor: { id: BONZO } }), c), null);
+  assert.equal(esDespachable(fila({ editadoPor: { id: INTRUSO }, aprobo: [AL, BONZO] }), c), 'ultima_edicion_no_es_de_un_aprobador');
+});
+test('formato: CRM válido, en bloque ```json, sin prefijo, sin claves y sin JSON', () => {
+  const d = AGENTES.CRM;
+  assert.equal(revisaRespuesta(d, 'Listo.\n```json\n{"plantilla_id":"t1","nombre":"[agente] W1","html_sha1":"ab"}\n```'), null);
+  assert.equal(revisaRespuesta(d, '{"plantilla_id":"t1","nombre":"W1","html_sha1":"ab"}'), 'nombre_sin_prefijo_agente');
+  assert.equal(revisaRespuesta(d, '{"plantilla_id":"t1","nombre":"[agente] W1"}'), 'faltan_claves:html_sha1');
+  assert.equal(revisaRespuesta(d, 'Ya quedó la plantilla.'), 'sin_json');
+  assert.equal(revisaRespuesta(AGENTES.Creativo, '{"deploy_id":"d1","archivos":["a"],"sha1":{"a":"x"}}'), null);
+});
+test('cierre: anota el formato de la respuesta en el informe', async () => {
+  const f = [filaCRM({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
+  await cierraSesion({ client: mockClient({ msg: '{"plantilla_id":"t1","nombre":"W1","html_sha1":"ab"}' }), notion: n, c: cCRM, sessionId: 'sesn_1' });
+  assert.equal(f[0].estado, 'Para revisar');
+  assert.match(n.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /nombre_sin_prefijo_agente/);
 });

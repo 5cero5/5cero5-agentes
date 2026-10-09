@@ -1,4 +1,6 @@
 // Configuración y guardrails. Todo sale de variables de entorno de Netlify.
+import { AGENTES } from './agentes.mjs';
+
 export const BETA = 'managed-agents-2026-04-01';
 
 export function cfg(env = process.env) {
@@ -10,13 +12,16 @@ export function cfg(env = process.env) {
     aprobadores: (env.NOTION_APROBADORES || '').split(',').map(s => s.trim()).filter(Boolean),
     environmentId: env.MA_ENVIRONMENT_ID,
     vaultIds: (env.MA_VAULT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
-    agentes: {
-      Creativo: env.MA_AGENT_CREATIVO,
-      Landing: env.MA_AGENT_LANDING,
+    // Vault propio por agente (ids separados por coma). Si no hay, se usa MA_VAULT_IDS.
+    vaultsPorAgente: Object.fromEntries(Object.entries(AGENTES).map(([nombre, d]) =>
+      [nombre, (env[d.vaultEnv] || '').split(',').map(s => s.trim()).filter(Boolean)])),
+    // id de Managed Agents por agente del catálogo (lib/agentes.mjs)
+    agentes: Object.fromEntries(Object.entries(AGENTES).map(([nombre, d]) => [nombre, env[d.env]])),
+    // Repos que se montan en la sesión, solo lectura. Cada agente declara cuáles necesita.
+    repos: {
+      marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL' },
+      agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL' },
     },
-    repoUrl: env.GH_REPO_URL,
-    repoToken: env.GH_REPO_READ_TOKEN, // solo lectura, del repo de marca
-    repoMount: '/workspace/marca',
     topeDefaultUsd: num('TOPE_DEFAULT_USD', 2),
     topeMaxUsd: num('TOPE_MAX_USD', 5),        // ningún Notion puede subir el tope más allá de esto
     maxSesionesPorDia: num('MAX_SESIONES_DIA', 6),
