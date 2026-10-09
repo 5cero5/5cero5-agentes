@@ -15,3 +15,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Estado local de los scripts de alta (ids de la cuenta)
+harness/infra/estado-*.json
