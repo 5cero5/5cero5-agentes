@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cfg } from '../lib/config.mjs';
+import { cfg, eventoDeCierre } from '../lib/config.mjs';
 import { esDespachable, despacha } from '../lib/despacho.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
@@ -174,4 +174,11 @@ test('cierre: anota el formato de la respuesta en el informe', async () => {
   await cierraSesion({ client: mockClient({ msg: '{"plantilla_id":"t1","nombre":"W1","html_sha1":"ab"}' }), notion: n, c: cCRM, sessionId: 'sesn_1' });
   assert.equal(f[0].estado, 'Para revisar');
   assert.match(n.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /nombre_sin_prefijo_agente/);
+});
+
+test('webhook: solo los eventos confirmados en la consola cierran la fila', () => {
+  assert.deepEqual(eventoDeCierre('session.status_idled'), { motivo: undefined });
+  assert.deepEqual(eventoDeCierre('session.status_terminated'), { motivo: undefined });
+  assert.deepEqual(eventoDeCierre('session.budget_reached'), { motivo: 'budget' });
+  for (const t of ['session.thread_idled', 'session.thread_terminated', 'session.idled', 'constructor', '', undefined]) assert.equal(eventoDeCierre(t), null);
 });

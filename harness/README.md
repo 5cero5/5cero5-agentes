@@ -31,14 +31,15 @@ Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo ano
    ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Opcionales: TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion: compartir la base Aprobaciones con la integración "5cero5 agentes" (Connections).
 4. Deploy a producción (las funciones programadas solo corren en deploys publicados).
-5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion`, eventos de sesión (idled, budget_reached, terminated); copiar la signing key a la variable. La URL debe ser pública: no pongas contraseña a este proyecto.
+5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion` con los eventos `session.status_idled`, `session.status_terminated` y `session.budget_reached` (los `session.thread_*` no hacen falta: se ignoran). Copiar la signing key a ANTHROPIC_WEBHOOK_SIGNING_KEY y volver a hacer deploy.
+   La URL debe ser pública: en Project configuration > General > Visitor access, sin protección. Ojo: el equipo de Netlify puede traer protección por defecto para proyectos nuevos; con ella el webhook recibe la página de login en vez del aviso. Prueba: `curl -s -X POST https://<sitio-harness>.netlify.app/api/webhook-sesion -d '{}'` debe responder `firma inválida`.
 6. Probar: fila de prueba con brief corto, Aprobó=tú, Estado=Aprobado; en Netlify > Functions > disparador > Run now.
 
 ## Pruebas
-`npm ci && npm test` (29 casos con mocks de Notion y de Anthropic).
+`npm ci && npm test` (30 casos con mocks de Notion y de Anthropic).
 
 ## Qué NO está probado
-Nada se ha corrido contra Notion, Anthropic ni Netlify reales. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo), que `last_edited_by` refleje a quien cambió el Estado, y los nombres de eventos registrados en la consola.
+Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.
 
 ## Pendiente de diseño
 Verificador: hoy `VERIFICADOR_ACTIVO` solo cambia el estado a "Verificando"; no hay código que lo ejecute. Sin él, todo pasa a "Para revisar" con Verificador=Pendiente y revisión humana. Decisión abierta: portar el Verificador a JS (con las 24 pruebas de paridad) o correrlo fuera de Netlify.

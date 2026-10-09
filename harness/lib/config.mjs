@@ -3,6 +3,18 @@ import { AGENTES } from './agentes.mjs';
 
 export const BETA = 'managed-agents-2026-04-01';
 
+// Eventos del webhook que cierran una fila. Nombres confirmados en la consola de Claude el 8 oct de 2026.
+// Los de hilos (session.thread_*) y cualquier otro se reconocen con 200 y se ignoran: el estado de la
+// sesión completa es el que cuenta.
+export const EVENTOS_CIERRE = {
+  'session.status_idled': null,
+  'session.status_terminated': null,
+  'session.budget_reached': 'budget',
+};
+export function eventoDeCierre(tipo) {
+  return Object.hasOwn(EVENTOS_CIERRE, tipo || '') ? { motivo: EVENTOS_CIERRE[tipo] ?? undefined } : null;
+}
+
 export function cfg(env = process.env) {
   const num = (k, d) => (env[k] !== undefined && env[k] !== '' ? Number(env[k]) : d);
   return {
