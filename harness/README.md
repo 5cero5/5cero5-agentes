@@ -15,7 +15,7 @@ Lo que hace: lee la base Aprobaciones de Notion, y cuando Al o Bonzo aprueban un
 - Pasar de MAX_MINUTOS_SESION: se interrumpe y queda en Error.
 
 ## Instalación (Netlify)
-1. Proyecto nuevo y separado de mkt.5cero5.com, ligado a un repo `5cero5-harness` (privado). Sube esta carpeta.
+1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
    ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, GH_REPO_URL, GH_REPO_READ_TOKEN (solo lectura, solo repo de marca). Opcionales: TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion: compartir la base Aprobaciones con la integración "5cero5 agentes" (Connections).
