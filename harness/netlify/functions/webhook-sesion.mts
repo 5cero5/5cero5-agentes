@@ -1,5 +1,5 @@
 import type { Config } from '@netlify/functions';
-import { cfg } from '../../lib/config.mjs';
+import { cfg, eventoDeCierre } from '../../lib/config.mjs';
 import { notionClient } from '../../lib/notion.mjs';
 import { anthropic } from '../../lib/sessions.mjs';
 import { cierraSesion } from '../../lib/cierre.mjs';
@@ -14,12 +14,13 @@ export default async (req: Request) => {
   } catch { return new Response('firma inválida', { status: 400 }); }
   const t = ev?.data?.type;
   const sessionId = ev?.data?.id;
-  if (!sessionId || !['session.status_idled', 'session.idled', 'session.budget_reached', 'session.status_terminated'].includes(t)) {
-    return new Response('ok', { status: 200 }); // otros eventos: se reconocen y se ignoran
+  const cierre = eventoDeCierre(t);
+  if (!sessionId || !cierre) {
+    return new Response('ok', { status: 200 }); // otros eventos (incluidos los de hilos): se reconocen y se ignoran
   }
   const c = cfg();
   try {
-    const r = await cierraSesion({ client, notion: notionClient(c.notionToken), c, sessionId, motivo: t === 'session.budget_reached' ? 'budget' : undefined });
+    const r = await cierraSesion({ client, notion: notionClient(c.notionToken), c, sessionId, motivo: cierre.motivo });
     console.log(t, sessionId, r);
   } catch (e) {
     console.error('cierre falló', sessionId, (e as Error).message);
