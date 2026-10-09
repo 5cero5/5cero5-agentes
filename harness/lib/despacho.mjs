@@ -1,5 +1,6 @@
 import { P, leePagina } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
+import { despachaCampanas } from './campanas.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -47,5 +48,7 @@ export async function despacha({ client, notion, c }) {
       out.omitidas.push([fila.id, 'create_fallo']);
     }
   }
+  // Después de las filas, las campañas aprobadas (comparten el cupo del día).
+  out.campanas = await despachaCampanas({ client, notion, c, cupo });
   return out;
 }

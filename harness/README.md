@@ -22,21 +22,33 @@ El harness solo despacha agentes que están en el catálogo y tienen su id en un
 | Creativo | MA_AGENT_CREATIVO | marca | `deploy_id`, `archivos`, `sha1` |
 | Landing | MA_AGENT_LANDING | marca y agentes | `deploy_id`, `archivos`, `sha1` |
 | CRM | MA_AGENT_CRM | marca y agentes | `plantilla_id`, `nombre` (con prefijo `[agente] `), `html_sha1` |
+| CMO | MA_AGENT_CMO | marca | `campana_id`, `filas` (al menos una), `sin_agente` |
+
+### Campañas → CMO (`lib/campanas.mjs`)
+Cuando Al o Bonzo pasan una campaña de la base Campañas a **Aprobada** (con Aprobó y la última edición suyos, Ruta y Piezas llenas), el disparador:
+1. la pasa a **En producción** antes de crear nada, para no despacharla dos veces;
+2. crea en Aprobaciones la fila "Desglose · <campaña>" con Agente = CMO, ya **En curso** y ligada a la campaña;
+3. abre la sesión del CMO con los datos de la campaña y la lista de agentes con id configurado.
+
+El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe con la integración de Notion de los agentes (un bot), así que el harness no despacha ninguna de esas filas hasta que Al o Bonzo las aprueben. Las campañas comparten el cupo diario con las filas.
 
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
-   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Opcionales: TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
+   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion: compartir la base Aprobaciones con la integración "5cero5 agentes" (Connections).
 4. Deploy a producción (las funciones programadas solo corren en deploys publicados).
 5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion` con los eventos `session.status_idled`, `session.status_terminated` y `session.budget_reached` (los `session.thread_*` no hacen falta: se ignoran). Copiar la signing key a ANTHROPIC_WEBHOOK_SIGNING_KEY y volver a hacer deploy.
    La URL debe ser pública: en Project configuration > General > Visitor access, sin protección. Ojo: el equipo de Netlify puede traer protección por defecto para proyectos nuevos; con ella el webhook recibe la página de login en vez del aviso. Prueba: `curl -s -X POST https://<sitio-harness>.netlify.app/api/webhook-sesion -d '{}'` debe responder `firma inválida`.
 6. Probar: fila de prueba con brief corto, Aprobó=tú, Estado=Aprobado; en Netlify > Functions > disparador > Run now.
 
+## Alta de agentes (`infra/`)
+`crear_agente_crm.py` y `crear_agente_cmo.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`.
+
 ## Pruebas
-`npm ci && npm test` (30 casos con mocks de Notion y de Anthropic).
+`npm ci && npm test` (37 casos con mocks de Notion y de Anthropic).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

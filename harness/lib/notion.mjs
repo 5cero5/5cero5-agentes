@@ -16,6 +16,7 @@ export function notionClient(token, fetchImpl = fetch) {
     query: (ds, filter, page_size = 50) => call('POST', `/data_sources/${ds}/query`, { filter, page_size }),
     update: (pageId, properties) => call('PATCH', `/pages/${pageId}`, { properties }),
     get: pageId => call('GET', `/pages/${pageId}`),
+    create: (ds, properties) => call('POST', '/pages', { parent: { type: 'data_source_id', data_source_id: ds }, properties }),
   };
 }
 
@@ -26,6 +27,10 @@ export const P = {
   numero: n => ({ number: n }),
   fecha: iso => ({ date: { start: iso } }),
   verificador: v => ({ select: { name: v } }),
+  select: v => ({ select: { name: v } }),
+  titulo: s => ({ title: [{ type: 'text', text: { content: String(s).slice(0, 200) } }] }),
+  relacion: ids => ({ relation: ids.map(id => ({ id })) }),
+  personas: ids => ({ people: ids.map(id => ({ id })) }),
 };
 
 export function leePagina(page) {
