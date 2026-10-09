@@ -136,14 +136,19 @@ def cmd_subir(a) -> None:
 
 
 def comprueba(nombre: str, html: str, intentos=5, pausa=4) -> None:
+    motivo = "HighLevel no regresó la plantilla al buscarla por nombre"
     for _ in range(intentos):
         t = busca(nombre)
         url = t and (t.get("previewUrl") or t.get("preview_url"))
+        if t and not url:
+            motivo = "la plantilla existe pero HighLevel no regresó su previewUrl"
         if url:
             try:
                 guardado = htmlmod.unescape(httpx.get(url, timeout=30).text)
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                # En Managed Agents suele ser la red del entorno: el host del previewUrl debe estar permitido.
                 guardado = ""
+                motivo = f"no pude descargar el previewUrl ({httpx.URL(url).host}): {type(e).__name__}"
             faltan = [h for h in huellas(html) if h not in guardado]
             if guardado and not faltan:
                 print(f"✓ HighLevel tiene la plantilla «{nombre}» con el botón y todas las frases aprobadas.")
@@ -151,7 +156,7 @@ def comprueba(nombre: str, html: str, intentos=5, pausa=4) -> None:
             if guardado:
                 die(f"La plantilla en HighLevel no trae: {faltan[:4]}")
         time.sleep(pausa)
-    die("No pude leer la plantilla guardada en HighLevel (sin previewUrl). Revísala a mano en Marketing > Emails > Templates.")
+    die(f"No pude leer la plantilla guardada en HighLevel: {motivo}. Revísala a mano en Marketing > Emails > Templates.")
 
 
 def cmd_comprobar(a) -> None:

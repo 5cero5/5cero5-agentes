@@ -3,7 +3,8 @@
 
   1. Vault "5cero5 · CRM" con la credencial HL_TOKEN, que solo se sustituye en encabezados
      hacia services.leadconnectorhq.com.
-  2. Entorno "5cero5-harness": red limitada a HighLevel, con pip para instalar httpx.
+  2. Entorno "5cero5-harness": red limitada a HighLevel y a sus archivos (Firebase Storage), con pip
+     para instalar httpx. Si el entorno ya existe, se le reaplica esta red.
   3. Agente "5cero5 · CRM" con el prompt de harness/agentes/crm.md.
 
 Al final imprime las variables que van en el proyecto de Netlify del harness:
@@ -33,6 +34,9 @@ AQUI = Path(__file__).resolve().parent
 ESTADO = AQUI / "estado-crm.json"
 PROMPT = AQUI.parent / "agentes" / "crm.md"
 HL_HOST = "services.leadconnectorhq.com"
+# HighLevel guarda el HTML de cada plantilla en Firebase Storage (previewUrl); correo.py comprobar lo descarga de ahí.
+HL_ARCHIVOS = "firebasestorage.googleapis.com"
+RED = {"type": "limited", "allowed_hosts": [HL_HOST, HL_ARCHIVOS], "allow_mcp_servers": False, "allow_package_managers": True}
 MODELO = os.environ.get("MODELO_CRM", "claude-sonnet-5-5")
 
 
@@ -98,14 +102,16 @@ def main() -> None:
             metadata={"cliente": "5cero5", "origen": meta["origen"]},
             config={
                 "type": "cloud",
-                "networking": {"type": "limited", "allowed_hosts": [HL_HOST],
-                               "allow_mcp_servers": False, "allow_package_managers": True},
+                "networking": RED,
                 "packages": {"pip": ["httpx"]},
             },
         )
         estado["environment_id"] = env.id
         guarda(estado)
         print(f"▸ Entorno creado: {env.id}")
+    else:
+        b.environments.update(estado["environment_id"], config={"type": "cloud", "networking": RED})
+        print(f"▸ Entorno {estado['environment_id']}: red actualizada a {', '.join(RED['allowed_hosts'])}")
 
     # 3. Agente
     herramientas = [{
