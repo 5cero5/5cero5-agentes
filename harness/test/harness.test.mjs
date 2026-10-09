@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cfg, eventoDeCierre } from '../lib/config.mjs';
+import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas } from '../lib/campanas.mjs';
 import { esDespachable, despacha } from '../lib/despacho.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
@@ -181,4 +182,79 @@ test('webhook: solo los eventos confirmados en la consola cierran la fila', () =
   assert.deepEqual(eventoDeCierre('session.status_terminated'), { motivo: undefined });
   assert.deepEqual(eventoDeCierre('session.budget_reached'), { motivo: 'budget' });
   for (const t of ['session.thread_idled', 'session.thread_terminated', 'session.idled', 'constructor', '', undefined]) assert.equal(eventoDeCierre(t), null);
+});
+
+// ---- Campañas → agente CMO ----
+const cK = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CMO: 'agent_cmo', MA_AGENT_CRM: 'agent_crm',
+  MA_VAULT_CMO: 'v_notion', GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes' });
+const campana = (o = {}) => ({ id: 'k1', editadoPor: { id: AL }, nombre: 'Promo', estado: 'Aprobada', ruta: 'Cita', piezas: 3, aprobo: [AL],
+  formatos: ['Correo', 'Post 4:5'], canales: ['Correo'], landing: true, objetivo: 'Llamadas', kpi: 'Llamadas agendadas', meta: 35, costoMax: 1400,
+  presupuesto: 50000, vigencia: { start: '2026-10-19', end: '2026-11-18' }, brief: 'agencia vs 5cero5', cliente: '5cero5', ...o });
+function pageCampana(k) {
+  return { id: k.id, last_edited_by: k.editadoPor, properties: {
+    Campaña: { title: [{ plain_text: k.nombre }] }, Estado: { select: k.estado ? { name: k.estado } : null }, Ruta: { select: k.ruta ? { name: k.ruta } : null },
+    Cliente: { select: { name: k.cliente } }, Objetivo: { rich_text: [{ plain_text: k.objetivo }] }, KPI: { select: { name: k.kpi } }, Meta: { number: k.meta },
+    'Costo máximo por resultado (MXN)': { number: k.costoMax }, Canales: { multi_select: k.canales.map(name => ({ name })) },
+    Formatos: { multi_select: k.formatos.map(name => ({ name })) }, Piezas: { number: k.piezas }, 'Lleva landing': { checkbox: k.landing },
+    'Presupuesto de pauta (MXN)': { number: k.presupuesto }, Vigencia: { date: k.vigencia }, Brief: { rich_text: [{ plain_text: k.brief }] },
+    Aprobó: { people: k.aprobo.map(id => ({ id })) } } };
+}
+function mockNotionK(campanas) {
+  const log = [], creadas = [];
+  return { log, creadas,
+    query: async (ds, filter) => ds === cK.notionCampanas
+      ? { results: campanas.filter(k => k.estado === filter.select.equals).map(pageCampana) }
+      : { results: [] },
+    create: async (ds, props) => { const id = `fila${creadas.length + 1}`; creadas.push({ ds, id, props }); return { id }; },
+    update: async (id, props) => { log.push([id, props]); const k = campanas.find(x => x.id === id); if (k && props.Estado) k.estado = props.Estado.select.name; } };
+}
+
+test('campaña: leeCampana lee lo que el CMO necesita', () => {
+  const k = leeCampana(pageCampana(campana()));
+  assert.equal(k.ruta, 'Cita'); assert.equal(k.piezas, 3); assert.equal(k.landing, true); assert.deepEqual(k.formatos, ['Correo', 'Post 4:5']);
+  assert.equal(k.costoMax, 1400); assert.equal(k.vigencia.end, '2026-11-18');
+});
+test('campaña: solo se despacha aprobada por Al o Bonzo, con su última edición, ruta y piezas', () => {
+  assert.equal(esCampanaDespachable(campana(), cK), null);
+  assert.equal(esCampanaDespachable(campana({ estado: 'Borrador' }), cK), 'estado');
+  assert.equal(esCampanaDespachable(campana({ aprobo: [INTRUSO] }), cK), 'aprobo_no_autorizado');
+  assert.equal(esCampanaDespachable(campana({ editadoPor: { id: 'bot' } }), cK), 'ultima_edicion_no_es_de_un_aprobador');
+  assert.equal(esCampanaDespachable(campana({ ruta: null }), cK), 'sin_ruta');
+  assert.equal(esCampanaDespachable(campana({ piezas: 0 }), cK), 'sin_piezas');
+  assert.equal(esCampanaDespachable(campana(), cfg({ NOTION_APROBADORES: AL })), 'cmo_sin_configurar');
+});
+test('campaña: el brief del CMO lleva los datos y solo los agentes con id', () => {
+  const b = briefDeCampana(campana(), cK);
+  assert.match(b, /Ruta: Cita/); assert.match(b, /Piezas: 3/); assert.match(b, /Lleva landing: sí/); assert.match(b, /1400 MXN/);
+  assert.match(b, /Agentes disponibles hoy: CRM\./); assert.match(b, /Campaña ligada = k1/);
+});
+test('campaña: se reclama, se crea la fila del CMO En curso y se abre su sesión', async () => {
+  const ks = [campana()]; const n = mockNotionK(ks); const cl = mockClient();
+  const r = await despachaCampanas({ client: cl, notion: n, c: cK, cupo: 6 });
+  assert.equal(r.creadas.length, 1); assert.equal(ks[0].estado, 'En producción');
+  const f = n.creadas[0];
+  assert.equal(f.ds, cK.notionDataSource); assert.equal(f.props.Agente.select.name, 'CMO'); assert.equal(f.props.Estado.select.name, 'En curso');
+  assert.deepEqual(f.props['Campaña ligada'].relation, [{ id: 'k1' }]); assert.deepEqual(f.props.Aprobó.people, [{ id: AL }]);
+  const p = cl.calls.create[0];
+  assert.equal(p.agent, 'agent_cmo'); assert.deepEqual(p.vault_ids, ['v_notion']); assert.equal(p.metadata.notion_page_id, 'fila1');
+  assert.deepEqual(p.resources.map(x => x.mount_path), ['/workspace/marca']);
+  assert.match(p.initial_events[0].content[0].text, /Estado "Propuesta"/);
+  assert.deepEqual(n.log.at(-1), ['fila1', { Sesión: { rich_text: [{ type: 'text', text: { content: 'sesn_1' } }] } }]);
+});
+test('campaña: no se despacha dos veces ni pasa del cupo', async () => {
+  const ks = [campana(), campana({ id: 'k2' })]; const n = mockNotionK(ks); const cl = mockClient();
+  await despachaCampanas({ client: cl, notion: n, c: cK, cupo: 1 });
+  await despachaCampanas({ client: cl, notion: n, c: cK, cupo: 1 });
+  assert.equal(cl.calls.create.length, 2); // k1 en la primera, k2 en la segunda; ninguna repetida
+  assert.deepEqual(ks.map(k => k.estado), ['En producción', 'En producción']);
+});
+test('campaña: si falla crear la sesión, la fila del CMO queda en Error', async () => {
+  const ks = [campana()]; const n = mockNotionK(ks);
+  const r = await despachaCampanas({ client: mockClient({ createFails: true }), notion: n, c: cK, cupo: 6 });
+  assert.deepEqual(r.omitidas, [['k1', 'create_fallo']]);
+  assert.equal(n.log.at(-1)[1].Estado.select.name, 'Error');
+});
+test('formato: CMO necesita al menos una fila', () => {
+  assert.equal(revisaRespuesta(AGENTES.CMO, '{"campana_id":"k1","filas":[{"id":"f","agente":"CRM","trabajo":"W1"}],"sin_agente":0}'), null);
+  assert.equal(revisaRespuesta(AGENTES.CMO, '{"campana_id":"k1","filas":[]}'), 'sin_filas');
 });

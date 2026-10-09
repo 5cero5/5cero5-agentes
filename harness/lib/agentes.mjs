@@ -52,6 +52,24 @@ export const AGENTES = {
       revisa: r => (String(r.nombre).startsWith('[agente] ') ? null : 'nombre_sin_prefijo_agente'),
     },
   },
+  // No lo despacha una fila aprobada a mano: el harness lo abre cuando una campaña pasa a Aprobada
+  // (lib/campanas.mjs). Escribe en Notion con la integración de agentes, así que no puede aprobar nada.
+  CMO: {
+    env: 'MA_AGENT_CMO',
+    vaultEnv: 'MA_VAULT_CMO',
+    repos: ['marca'],
+    reglas: [
+      'Solo propones: cada fila que escribes en Aprobaciones va en Estado "Propuesta". Nunca llenas Aprobó ni Aprobado el, no editas la campaña y no tocas otras filas.',
+      'Una fila por pieza, exactamente las Piezas de la campaña. Si lleva landing, la landing cuenta como una pieza.',
+      'Agente por formato: Correo → CRM; Landing → Landing; Post 4:5, Post 1:1 e Historia 9:16 → Creativo. Si ese agente no está en la lista de disponibles, propón la fila igual y empieza su Brief con "SIN AGENTE TODAVÍA:".',
+      'Cada Brief debe bastar para que el agente de esa pieza la haga sin preguntar: objetivo de la pieza, mensaje principal, texto base, CTA y destino, y lo que no se puede decir. Respeta /workspace/marca/reglas.md.',
+    ],
+    respuesta: {
+      ejemplo: '{"campana_id":"...","filas":[{"id":"...","agente":"CRM","trabajo":"..."}],"sin_agente":0}',
+      claves: ['campana_id', 'filas'],
+      revisa: r => (Array.isArray(r.filas) && r.filas.length > 0 ? null : 'sin_filas'),
+    },
+  },
 };
 
 // Solo entradas propias del catálogo (evita que "constructor" u otra propiedad heredada pase como agente).

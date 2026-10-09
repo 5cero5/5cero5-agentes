@@ -20,6 +20,7 @@ export function cfg(env = process.env) {
   return {
     notionToken: env.NOTION_TOKEN,
     notionDataSource: env.NOTION_DATA_SOURCE_ID || '67d74148-a4a3-407a-80b5-596630168d4c',
+    notionCampanas: env.NOTION_CAMPANAS_ID || '3a8ee225-0743-449d-8ff8-a5f01d0bb0be',
     // IDs de Notion de quienes pueden aprobar (Al y Bonzo). Sin esto, el disparador no hace nada.
     aprobadores: (env.NOTION_APROBADORES || '').split(',').map(s => s.trim()).filter(Boolean),
     environmentId: env.MA_ENVIRONMENT_ID,
