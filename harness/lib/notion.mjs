@@ -50,5 +50,6 @@ export function leePagina(page) {
     aprobo: (p['Aprobó']?.people || []).map(x => x.id),
     aprobadoEl: p['Aprobado el']?.date?.start || null,
     inicio: p['Inició']?.date?.start || null,
+    campanaLigada: (p['Campaña ligada']?.relation || []).map(r => r.id),
   };
 }

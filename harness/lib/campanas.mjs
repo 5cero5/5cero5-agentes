@@ -96,3 +96,35 @@ export async function despachaCampanas({ client, notion, c, cupo }) {
   }
   return out;
 }
+
+// Regla 8: lo que el CMO dice que escribió se comprueba en Notion, fila por fila.
+// Devuelve { ok, informe }. No cambia ninguna fila; solo lee.
+const sinGuiones = id => String(id || '').replace(/-/g, '').toLowerCase();
+const AGENTES_DE_PIEZA = ['CRM', 'Landing', 'Creativo'];
+
+export async function compruebaFilasCMO(notion, filaCMO, respuesta) {
+  const campana = filaCMO.campanaLigada?.[0];
+  const problemas = [];
+  if (!campana) problemas.push('la fila del CMO no está ligada a una campaña');
+  if (respuesta?.campana_id && campana && sinGuiones(respuesta.campana_id) !== sinGuiones(campana)) {
+    problemas.push(`campana_id ${respuesta.campana_id} no es la campaña de la fila`);
+  }
+  const filas = Array.isArray(respuesta?.filas) ? respuesta.filas : [];
+  let buenas = 0;
+  for (const f of filas) {
+    let page;
+    try { page = await notion.get(f.id); } catch { problemas.push(`${f.id}: no existe o no se puede leer`); continue; }
+    const p = page.properties || {};
+    const mal = [];
+    if (page.archived || page.in_trash) mal.push('está en la papelera');
+    if (p['Estado']?.select?.name !== 'Propuesta') mal.push(`Estado = ${p['Estado']?.select?.name || 'vacío'}`);
+    if ((p['Aprobó']?.people || []).length) mal.push('tiene Aprobó');
+    if (!AGENTES_DE_PIEZA.includes(p['Agente']?.select?.name)) mal.push(`Agente = ${p['Agente']?.select?.name || 'vacío'}`);
+    const ligadas = (p['Campaña ligada']?.relation || []).map(r => sinGuiones(r.id));
+    if (!campana || !ligadas.includes(sinGuiones(campana))) mal.push('no está ligada a la campaña');
+    if (mal.length) problemas.push(`${f.id}: ${mal.join(', ')}`); else buenas++;
+  }
+  const informe = `Comprobación en Notion: ${buenas}/${filas.length} filas en Propuesta, ligadas y sin aprobar.` +
+    (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : '');
+  return { ok: filas.length > 0 && problemas.length === 0, informe };
+}

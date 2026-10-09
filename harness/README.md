@@ -32,6 +32,8 @@ Cuando Al o Bonzo pasan una campaña de la base Campañas a **Aprobada** (con Ap
 
 El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe con la integración de Notion de los agentes (un bot), así que el harness no despacha ninguna de esas filas hasta que Al o Bonzo las aprueben. Las campañas comparten el cupo diario con las filas.
 
+Al cerrar la sesión del CMO, el harness comprueba en Notion cada fila que el CMO dice que escribió (regla 8): que exista, esté en Propuesta, sin Aprobó, con un agente de pieza y ligada a la campaña. Si todo cuadra, Verificador = Aprobada; si no, Rechazada con el detalle en el informe. La fila del CMO siempre queda en Para revisar.
+
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
 ## Instalación (Netlify)
@@ -48,7 +50,7 @@ Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo ano
 `crear_agente_crm.py` y `crear_agente_cmo.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`.
 
 ## Pruebas
-`npm ci && npm test` (37 casos con mocks de Notion y de Anthropic).
+`npm ci && npm test` (42 casos con mocks de Notion y de Anthropic).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cfg, eventoDeCierre } from '../lib/config.mjs';
-import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas } from '../lib/campanas.mjs';
+import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas, compruebaFilasCMO } from '../lib/campanas.mjs';
 import { esDespachable, despacha } from '../lib/despacho.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
@@ -257,4 +257,54 @@ test('campaña: si falla crear la sesión, la fila del CMO queda en Error', asyn
 test('formato: CMO necesita al menos una fila', () => {
   assert.equal(revisaRespuesta(AGENTES.CMO, '{"campana_id":"k1","filas":[{"id":"f","agente":"CRM","trabajo":"W1"}],"sin_agente":0}'), null);
   assert.equal(revisaRespuesta(AGENTES.CMO, '{"campana_id":"k1","filas":[]}'), 'sin_filas');
+});
+
+// ---- Regla 8 para el CMO: el cierre comprueba en Notion las filas que reporta ----
+const filaPieza = (id, o = {}) => ({ id, properties: {
+  Estado: { select: { name: o.estado ?? 'Propuesta' } }, Agente: { select: { name: o.agente ?? 'CRM' } },
+  Aprobó: { people: (o.aprobo ?? []).map(id => ({ id })) },
+  'Campaña ligada': { relation: (o.campanas ?? ['k1-uuid']).map(id => ({ id })) } } });
+function notionPiezas(paginas) {
+  const log = [];
+  return { log, get: async id => { if (!paginas[id]) throw new Error('404'); return paginas[id]; },
+    update: async (id, props) => { log.push([id, props]); if (paginas[id] && props.Estado) paginas[id].properties.Estado = { select: { name: props.Estado.select.name } }; } };
+}
+const filaCMO = { id: 'cmo1', campanaLigada: ['k1uuid'] };
+
+test('CMO: comprobación pasa si cada fila existe, está en Propuesta, sin Aprobó y ligada', async () => {
+  const n = notionPiezas({ a: filaPieza('a'), b: filaPieza('b') });
+  const r = await compruebaFilasCMO(n, { ...filaCMO, campanaLigada: ['k1-uuid'] }, { campana_id: 'k1uuid', filas: [{ id: 'a' }, { id: 'b' }] });
+  assert.equal(r.ok, true); assert.match(r.informe, /2\/2 filas/);
+});
+test('CMO: comprobación falla con fila aprobada, inexistente, sin ligar o de otra campaña', async () => {
+  const n = notionPiezas({ a: filaPieza('a', { estado: 'Aprobado', aprobo: [AL] }), c: filaPieza('c', { campanas: ['otra'] }), d: filaPieza('d', { agente: 'CMO' }) });
+  const r = await compruebaFilasCMO(n, { ...filaCMO, campanaLigada: ['k1-uuid'] }, { campana_id: 'k2', filas: [{ id: 'a' }, { id: 'x' }, { id: 'c' }, { id: 'd' }] });
+  assert.equal(r.ok, false);
+  for (const t of [/no es la campaña/, /Estado = Aprobado/, /tiene Aprobó/, /x: no existe/, /c: no está ligada/, /Agente = CMO/, /0\/4 filas/]) assert.match(r.informe, t);
+});
+test('CMO: sin filas reportadas no pasa', async () => {
+  assert.equal((await compruebaFilasCMO(notionPiezas({}), filaCMO, { campana_id: 'k1uuid', filas: [] })).ok, false);
+});
+function paginaCMO() {
+  return { id: 'cmo1', last_edited_by: { id: 'bot' }, properties: {
+    Trabajo: { title: [{ plain_text: 'Desglose · Promo' }] }, Agente: { select: { name: 'CMO' } }, Estado: { select: { name: 'En curso' } },
+    Brief: { rich_text: [{ plain_text: 'b' }] }, Sesión: { rich_text: [{ plain_text: 'sesn_1' }] }, Intentos: { number: 1 },
+    Aprobó: { people: [{ id: AL }] }, 'Campaña ligada': { relation: [{ id: 'k1-uuid' }] } } };
+}
+test('cierre del CMO: comprueba las filas y marca el Verificador Aprobada', async () => {
+  const n = notionPiezas({ cmo1: paginaCMO(), a: filaPieza('a'), b: filaPieza('b') });
+  const cl = mockClient({ msg: '{"campana_id":"k1-uuid","filas":[{"id":"a","agente":"CRM","trabajo":"W"},{"id":"b","agente":"CRM","trabajo":"X"}],"sin_agente":0}' });
+  cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'cmo1' } });
+  assert.equal(await cierraSesion({ client: cl, notion: n, c: { ...cK, verificadorActivo: true }, sessionId: 'sesn_1' }), 'para_revisar');
+  const props = n.log.at(-1)[1];
+  assert.equal(props.Estado.select.name, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
+  assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Formato de la respuesta: OK\. Comprobación en Notion: 2\/2/);
+});
+test('cierre del CMO: si una fila reportada no existe, Verificador Rechazada', async () => {
+  const n = notionPiezas({ cmo1: paginaCMO(), a: filaPieza('a') });
+  const cl = mockClient({ msg: '{"campana_id":"k1-uuid","filas":[{"id":"a"},{"id":"fantasma"}]}' });
+  cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'cmo1' } });
+  await cierraSesion({ client: cl, notion: n, c: cK, sessionId: 'sesn_1' });
+  const props = n.log.at(-1)[1];
+  assert.equal(props.Verificador.select.name, 'Rechazada'); assert.match(props['Informe del Verificador'].rich_text[0].text.content, /fantasma: no existe/);
 });

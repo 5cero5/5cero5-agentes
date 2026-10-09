@@ -91,7 +91,7 @@ export function mensajeInicial(fila, def) {
 }
 
 // Saca el último objeto JSON del texto (acepta ```json ... ```).
-function ultimoJson(texto) {
+export function ultimoJson(texto) {
   const t = String(texto || '');
   for (let fin = t.lastIndexOf('}'); fin >= 0; fin = t.lastIndexOf('}', fin - 1)) {
     for (let ini = t.lastIndexOf('{', fin); ini >= 0; ini = t.lastIndexOf('{', ini - 1)) {
