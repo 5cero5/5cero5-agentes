@@ -1,6 +1,6 @@
 import { P, leePagina } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
-import { despachaCampanas } from './campanas.mjs';
+import { despachaCampanas, piezasPendientes } from './campanas.mjs';
 import { agenteDe } from './agentes.mjs';
 import { preparaGithub } from './github.mjs';
 
@@ -43,6 +43,11 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     const fila = leePagina(page);
     const motivo = esDespachable(fila, c);
     if (motivo) { out.omitidas.push([fila.id, motivo]); continue; }
+    if (agenteDe(fila.agente)?.meta) {
+      // Pauta espera a que las piezas de su campaña estén en Listo (fusionadas y revisadas).
+      const espera = await piezasPendientes(notion, c, fila);
+      if (espera) { out.omitidas.push([fila.id, espera]); continue; }
+    }
     if (cupo <= 0) { out.omitidas.push([fila.id, 'tope_diario']); continue; }
     let params;
     try { params = parametrosSesion(fila, c); }

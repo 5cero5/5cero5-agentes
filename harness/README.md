@@ -57,6 +57,7 @@ Una sesión arma una campaña de Meta con un conjunto y un anuncio por pieza ya 
 - **Piezas:** el repo `5cero5-piezas` se monta en `/workspace/piezas` con un token de **lectura** de la GitHub App; Pauta no recibe token de escritura de GitHub.
 - **Tope:** META_TOPE_DIARIO_MXN (1,500 por omisión) por campaña, en la herramienta y en la comprobación. El freno de fondo es el límite de gasto de la cuenta: sin él, la comprobación avisa.
 - **Al cerrar (regla 8, `lib/meta.mjs`):** lee la campaña en Meta: cuenta y página correctas, creada en esta sesión, un conjunto con presupuesto diario dentro del tope, los anuncios que reportó el agente y nada más, destino en META_DOMINIOS y todo en pausa. **Lo que no esté en pausa, el harness lo pausa en ese momento** y la fila sale Rechazada.
+- **Fila de Pauta:** la propone el CMO junto con las piezas (una por campaña, si va a Meta, trae Pauta en MXN y el agente está disponible), con presupuesto diario = Pauta ÷ días de vigencia, sin pasar el tope, y "Piezas: todas las de la carpeta". El harness no la despacha mientras alguna fila del Creativo de la misma campaña no esté en Listo (`piezas_pendientes`).
 - **Riesgo que queda:** el agente tiene bash y el token sustituido en encabezados hacia graph.facebook.com; si ignorara su prompt podría activar algo durante la sesión. Lo acotan el límite de gasto de la cuenta, el inicio futuro del conjunto que pide el brief, la sesión de 30 minutos como máximo y el freno al cerrar.
 
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
@@ -75,7 +76,7 @@ Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo ano
 `crear_agente_crm.py`, `crear_agente_cmo.py`, `crear_agente_landing.py`, `crear_agente_creativo.py` y `crear_agente_pauta.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`. El entorno común lleva `httpx` y `playwright` (pip); el Chromium del Verificador de landing lo baja cada sesión del agente Landing desde los hosts de Playwright que están en HOSTS.
 
 ## Pruebas
-`npm ci && npm test` (73 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
+`npm ci && npm test` (77 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

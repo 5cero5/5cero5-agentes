@@ -14,7 +14,7 @@ Qué necesitas del brief (si falta algo de esto, terminas sin crear nada y dices
 - Público: nombre zona_publico (por ejemplo mty_duenos-pyme), ubicación y edades.
 - Destino: la URL de la landing, sin parámetros.
 - Texto principal, título y, si lo hay, descripción y botón.
-- Piezas: cuáles van como anuncio.
+- Piezas: cuáles van como anuncio. Si dice "todas las de la carpeta", son todas las subcarpetas de /workspace/piezas/piezas/<carpeta>/ que tienen pieza.png, en orden alfabético.
 
 Pasos:
 1. pm cuenta
@@ -27,7 +27,7 @@ Pasos:
     "destino":"https://marketing.5cero5.com/<landing>/","texto":"...","titulo":"...","descripcion":"","boton":"LEARN_MORE",
     "anuncios":[{"nombre":"a01_post4x5_gancho","pieza":"<pieza>"}]}
    - ubicacion: {"tipo":"pais","pais":"MX"} para todo México, o radio en km alrededor de un punto. Monterrey es lat 25.6866, lng -100.3161.
-   - anuncios: uno por pieza, nombre a##_formato_gancho (a01, a02...; formato sin guiones: post4x5, post1x1, historia). Es también utm_content.
+   - anuncios: uno por pieza, nombre a##_formato_gancho (a01, a02...). Formato según pieza.json: post-4x5 → post4x5, post-1x1 → post1x1, historia-9x16 → historia. Gancho: el nombre de la pieza sin "post-" ni "historia-" al inicio (post-agencia → agencia). Es también utm_content.
    - boton: LEARN_MORE (Más información) salvo que el brief pida SIGN_UP, CONTACT_US, GET_QUOTE o BOOK_NOW.
    - Los textos salen del brief. Tuteas, sin signos de exclamación, sin cifras, casos, testimonios ni garantías (C30).
 4. pm plan --archivo /tmp/pauta/entrada.json

@@ -670,10 +670,41 @@ test('cierre de Pauta: comprueba en Meta y deja la fila Para revisar; nunca List
   await cierraSesion({ client: mockClient({ msg: 'no pude' }), notion: n2, c: cP, sessionId: 'sesn_1', fetchImpl: metaFalsa().fetch });
   assert.equal(n2.log.at(-1)[1].Verificador.select.name, 'Rechazada'); assert.match(n2.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /Revisar a mano/);
 });
-test('CMO: Pauta no aparece entre los agentes de pieza disponibles', () => {
-  const cc = cfg({ ...{}, MA_AGENT_CMO: 'a', MA_AGENT_PAUTA: 'p', MA_AGENT_CREATIVO: 'cr' });
+test('CMO: Pauta va en su propia línea, con tope, destinos y objetivo; no entre los agentes de pieza', () => {
+  const cc = cfg({ MA_AGENT_CMO: 'a', MA_AGENT_PAUTA: 'p', MA_AGENT_CREATIVO: 'cr', META_AD_ACCOUNT_ID: '1', META_TOPE_DIARIO_MXN: '500' });
   const b = briefDeCampana({ nombre: 'K', id: 'k1', ruta: 'Cita', canales: [], formatos: [], piezas: 1 }, cc);
   assert.match(b, /Agentes disponibles hoy: Creativo\./);
+  assert.match(b, /Agente de Pauta \(Meta\): disponible\. Tope diario por campaña: 500 MXN\. Destinos permitidos: marketing\.5cero5\.com\. Objetivo: solo Tráfico/);
+  assert.match(briefDeCampana({ nombre: 'K', id: 'k1', ruta: 'Cita', canales: [], formatos: [], piezas: 1 }, cfg({ MA_AGENT_CMO: 'a' })), /Pauta \(Meta\): no disponible/);
+});
+test('CMO: acepta una fila de Pauta por campaña, no dos', async () => {
+  const n = notionPiezas({ a: filaPieza('a', { agente: 'Creativo' }), p: filaPieza('p', { agente: 'Pauta' }), q: filaPieza('q', { agente: 'Pauta' }) });
+  const ok = await compruebaFilasCMO(n, { ...filaCMO, campanaLigada: ['k1-uuid'] }, { campana_id: 'k1uuid', filas: [{ id: 'a' }, { id: 'p' }] });
+  assert.equal(ok.ok, true, ok.informe); assert.match(ok.informe, /una de Pauta/);
+  const dos = await compruebaFilasCMO(n, { ...filaCMO, campanaLigada: ['k1-uuid'] }, { campana_id: 'k1uuid', filas: [{ id: 'a' }, { id: 'p' }, { id: 'q' }] });
+  assert.equal(dos.ok, false); assert.match(dos.informe, /2 filas de Pauta/);
+});
+test('despacha Pauta: espera a que las piezas del Creativo de su campaña estén en Listo', async () => {
+  const filaPC = filaP({ id: 'pp' });
+  const pagina = { ...pageDe(filaPC) }; pagina.properties['Campaña ligada'] = { relation: [{ id: 'k1' }] };
+  const correr = async estadosCreativo => {
+    const cl = mockClient(); const consultas = [];
+    const notion = { log: [],
+      query: async (_ds, filter) => {
+        if (filter.property === 'Inició') return { results: [] };
+        if (filter.property === 'Estado') return { results: [pagina] };
+        consultas.push(filter);
+        return { results: estadosCreativo.map(e => ({ properties: { Estado: { select: { name: e } } } })) };
+      },
+      update: async () => {} };
+    const r = await despacha({ client: cl, notion, c: cP, fetchImpl: ghPiezas().fetch });
+    return { r, cl, consultas };
+  };
+  let x = await correr(['Listo', 'Para revisar']);
+  assert.deepEqual(x.r.omitidas, [['pp', 'piezas_pendientes']]); assert.equal(x.cl.calls.create.length, 0);
+  assert.deepEqual(x.consultas[0].and.map(f => f.property), ['Campaña ligada', 'Agente']);
+  x = await correr([]); assert.deepEqual(x.r.omitidas, [['pp', 'sin_piezas_del_creativo']]);
+  x = await correr(['Listo', 'Rechazado', 'Listo']); assert.equal(x.cl.calls.create.length, 1);
 });
 
 test('cierre de Pauta a medias: con el id de la campaña igual la lee en Meta y frena; sin id, revisión a mano', async () => {
