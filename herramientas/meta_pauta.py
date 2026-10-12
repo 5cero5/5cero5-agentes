@@ -306,19 +306,25 @@ def cmd_crear(a) -> None:
     objective, goal = OBJETIVOS[plan["objetivo"]]
     ya = meta_get(f"/{cta}/campaigns", {"fields": "id,name,status,objective",
                                          "filtering": [{"field": "name", "operator": "EQUAL", "value": plan["nombre"]}], "limit": 5}).get("data", [])
+    conjunto_previo = None
     if ya:
-        # Se retoma solo una campaña vacía que quedó de un intento a medias: mismo nombre, en pausa, mismo objetivo y sin
-        # conjuntos ni anuncios. Nada se edita: solo se le agregan el conjunto y los anuncios. Cualquier otra cosa, se para.
+        # Se retoma solo lo que dejó un intento a medias: una campaña con el nombre, en pausa, mismo objetivo, SIN anuncios
+        # y, como mucho, un conjunto en pausa con el nombre y el presupuesto del plan. Nada se edita: solo se agrega lo que
+        # falta. Cualquier otra cosa, se para.
         e = ya[0]
-        vacia = (len(ya) == 1 and e.get("status") == "PAUSED" and e.get("objective") == objective
-                 and not meta_get(f"/{e['id']}/adsets", {"fields": "id", "limit": 1}).get("data")
-                 and not meta_get(f"/{e['id']}/ads", {"fields": "id", "limit": 1}).get("data"))
-        if not vacia:
-            die(f"Ya existe una campaña llamada {plan['nombre']} en la cuenta ({e.get('id')}) y no está vacía y en pausa. No se duplica.")
+        candidata = len(ya) == 1 and e.get("status") == "PAUSED" and e.get("objective") == objective
+        conjs = meta_get(f"/{e['id']}/adsets", {"fields": "id,name,status,daily_budget,lifetime_budget", "limit": 5}).get("data", []) if candidata else []
+        anuncios_previos = meta_get(f"/{e['id']}/ads", {"fields": "id", "limit": 1}).get("data", []) if candidata else [1]
+        conj_ok = (not conjs) or (len(conjs) == 1 and conjs[0].get("status") == "PAUSED" and conjs[0].get("name") == plan["publico"]["nombre"]
+                                  and int(conjs[0].get("daily_budget") or 0) == int(round(plan["presupuesto_diario_mxn"] * 100))
+                                  and not int(conjs[0].get("lifetime_budget") or 0))
+        if not (candidata and not anuncios_previos and conj_ok):
+            die(f"Ya existe una campaña llamada {plan['nombre']} en la cuenta ({e.get('id')}) y no es un intento a medias que se pueda retomar. No se duplica.")
         res["campana_meta_id"] = e["id"]
         res["retomada"] = True
+        conjunto_previo = conjs[0]["id"] if conjs else None
         guarda()
-        print(f"✓ campaña {e['id']} retomada: ya existía vacía y en pausa (intento anterior a medias)")
+        print(f"✓ campaña {e['id']} retomada: ya existía en pausa y sin anuncios (intento anterior a medias)")
     else:
         c = meta_post(cta, f"/{cta}/campaigns", {
             "name": plan["nombre"], "objective": objective, "status": "PAUSED", "special_ad_categories": [],
@@ -341,10 +347,16 @@ def cmd_crear(a) -> None:
         conj["start_time"] = cuando(plan["inicio"])
     if plan.get("fin"):
         conj["end_time"] = cuando(plan["fin"], fin=True)
-    s = meta_post(cta, f"/{cta}/adsets", conj)
-    res["conjunto_id"] = s["id"]
-    guarda()
-    print(f"✓ conjunto {s['id']} en pausa, {plan['presupuesto_diario_mxn']:g} MXN al día")
+    if conjunto_previo:
+        s = {"id": conjunto_previo}
+        res["conjunto_id"] = s["id"]
+        guarda()
+        print(f"✓ conjunto {s['id']} retomado: ya existía en pausa con el público y el presupuesto del plan")
+    else:
+        s = meta_post(cta, f"/{cta}/adsets", conj)
+        res["conjunto_id"] = s["id"]
+        guarda()
+        print(f"✓ conjunto {s['id']} en pausa, {plan['presupuesto_diario_mxn']:g} MXN al día")
 
     for x in plan["anuncios"]:
         b = Path(x["png"]).read_bytes()
