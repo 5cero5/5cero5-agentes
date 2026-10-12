@@ -46,7 +46,7 @@ export function esCampanaDespachable(k, c) {
 }
 
 export function briefDeCampana(k, c) {
-  const disponibles = Object.entries(c.agentes).filter(([n, id]) => id && n !== 'CMO').map(([n]) => n);
+  const disponibles = Object.entries(c.agentes).filter(([n, id]) => id && AGENTES_DE_PIEZA.includes(n)).map(([n]) => n);
   const vig = k.vigencia ? `${k.vigencia.start}${k.vigencia.end ? ` a ${k.vigencia.end}` : ''}` : 'sin fecha';
   return [
     `Desglosa la campaña "${k.nombre}" (página de Notion ${k.id}). Lee también el cuerpo de la página.`,

@@ -551,3 +551,126 @@ test('cierre de Creativo: comprueba PR y pieza y deja la fila Para revisar; nunc
   assert.equal(f[0].estado, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
   assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Pieza post-4x5/);
 });
+
+// ---- Agente Pauta (campaña en Meta, siempre en pausa; piezas de 5cero5-piezas montadas solo lectura) ----
+import { compruebaCampana } from '../lib/meta.mjs';
+const cP = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_PAUTA: 'agent_pauta', MA_VAULT_PAUTA: 'v_pauta',
+  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
+  GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM,
+  META_AD_ACCOUNT_ID: '1234567', META_PAGE_ID: '1127307763190247', META_TOKEN: 'EAAh', META_TOPE_DIARIO_MXN: '1500' });
+const filaP = (o = {}) => fila({ agente: 'Pauta', trabajo: 'Pauta · agencia vs 5cero5', inicio: '2026-10-14T16:00:00.000Z',
+  brief: 'Nombre en Meta: 2026-10_mty_agencia-vs-505. Presupuesto diario: 500 MXN.', ...o });
+const respP = { campana_meta_id: '900', nombre: '2026-10_mty_agencia-vs-505', cuenta: 'act_1234567', conjunto_id: '901',
+  anuncios: [{ id: '902', nombre: 'a01_post4x5_agencia', pieza: 'post-a' }, { id: '903', nombre: 'a02_historia_agencia', pieza: 'historia-a' }],
+  presupuesto_diario_mxn: 500, objetivo: 'trafico' };
+// Graph API falsa: campaña 900, conjunto 901, anuncios 902 y 903. Registra los POST (el freno).
+function metaFalsa(o = {}) {
+  const ad = (id, x = {}) => ({ id, name: `a-${id}`, status: 'PAUSED', creative: { id: `c${id}`, url_tags: 'utm_source=meta&utm_medium=paid_social',
+    object_story_spec: { page_id: '1127307763190247', link_data: { link: 'https://marketing.5cero5.com/diagnostico/' } } }, ...x });
+  const st = { posts: [], auth: new Set(),
+    camp: { id: '900', name: respP.nombre, status: 'PAUSED', objective: 'OUTCOME_TRAFFIC', account_id: '1234567', created_time: '2026-10-14T16:05:00+0000' },
+    conjuntos: [{ id: '901', name: 'mty_duenos-pyme', status: 'PAUSED', daily_budget: '50000', lifetime_budget: '0' }],
+    ads: [ad('902'), ad('903')], cuenta: { spend_cap: '4500000', amount_spent: '0' }, ...o };
+  st.ad = ad;
+  st.fetch = async (url, init = {}) => {
+    const u = new URL(url); st.auth.add(init.headers?.Authorization);
+    const ok = x => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+    if (init.method === 'POST') { st.posts.push([u.pathname, String(init.body)]); return ok({ success: true }); }
+    const p = u.pathname.replace('/v25.0', '');
+    if (p === '/900') return ok(st.camp);
+    if (p === '/900/adsets') return ok({ data: st.conjuntos });
+    if (p === '/900/ads') return ok({ data: st.ads });
+    if (p === '/act_1234567') return ok(st.cuenta);
+    return { ok: false, status: 400, text: async () => '{"error":{"message":"Unsupported get request"}}' };
+  };
+  return st;
+}
+
+test('router: Pauta monta agentes y piezas, usa su vault y recibe cuenta, página, tope y el comando', () => {
+  const p = parametrosSesion(filaP(), cP);
+  assert.equal(p.agent, 'agent_pauta'); assert.deepEqual(p.vault_ids, ['v_pauta']);
+  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/agentes', '/workspace/piezas']);
+  assert.ok(!p.resources[1].authorization_token, 'el token de lectura de piezas lo pone preparaGithub');
+  const m = p.initial_events[0].content[0].text;
+  assert.match(m, /cuenta act_1234567, página 1127307763190247, sin Instagram, sin Pixel/);
+  assert.match(m, /--tope-mxn 1500 --dominios marketing\.5cero5\.com/); assert.match(m, /nunca activas/);
+  assert.doesNotMatch(m, /EAAh/, 'el token nunca va en el mensaje');
+});
+test('router: Pauta sin cuenta o página de Meta no abre sesión', () => {
+  assert.throws(() => parametrosSesion(filaP(), cfg({ ...cP, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_PAUTA: 'a', GH_AGENTES_URL: 'https://github.com/o/a' })),
+    /Falta configuración de Meta para Pauta: META_AD_ACCOUNT_ID, META_PAGE_ID/);
+});
+test('github: Pauta solo recibe token de LECTURA de piezas y no toca ningún vault', async () => {
+  const g = ghPiezas(); const upd = [];
+  const client = { beta: { vaults: { credentials: { update: async (id, prm) => upd.push([id, prm]) } } } };
+  await preparaGithub({ client, c: cP, agente: 'Pauta', fetchImpl: g.fetch });
+  assert.deepEqual(g.tokens.map(t => t.body), [{ repositories: ['5cero5-piezas'], permissions: { contents: 'read' } }]);
+  assert.deepEqual(upd, []);
+});
+test('despacha Pauta: monta piezas con el token de lectura', async () => {
+  const g = ghPiezas(); const f = [filaP()]; const cl = mockClient();
+  cl.beta.vaults = { credentials: { update: async () => { throw new Error('no debe tocar vaults'); } } };
+  await despacha({ client: cl, notion: mockNotion(f), c: cP, fetchImpl: g.fetch });
+  const p = cl.calls.create[0];
+  assert.equal(p.resources.find(r => r.mount_path === '/workspace/piezas').authorization_token, 'ghs_1');
+});
+test('formato: Pauta exige nombre de la convención, ids numéricos y anuncios', () => {
+  const d = AGENTES.Pauta;
+  assert.equal(revisaRespuesta(d, JSON.stringify(respP)), null);
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respP, nombre: 'Campaña octubre' })), 'nombre_fuera_de_convencion');
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respP, campana_meta_id: 'act_1' })), 'ids_invalidos');
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respP, anuncios: [] })), 'anuncios_invalidos');
+});
+test('meta: pasa con todo en pausa, en la cuenta y página, dentro del tope; el token va en el encabezado', async () => {
+  const m = metaFalsa();
+  const r = await compruebaCampana({ c: cP, respuesta: respP, inicio: '2026-10-14T16:00:00.000Z', fetchImpl: m.fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /2 anuncio\(s\), 500 MXN al día/); assert.match(r.informe, /encenderla \(Al o Bonzo\)/);
+  assert.deepEqual(m.posts, []); assert.deepEqual([...m.auth], ['Bearer EAAh']);
+});
+test('meta: lo que no esté en pausa lo pausa el harness y la fila sale Rechazada', async () => {
+  const m = metaFalsa(); m.ads[1] = m.ad('903', { status: 'ACTIVE' }); m.camp.status = 'ACTIVE';
+  const r = await compruebaCampana({ c: cP, respuesta: respP, inicio: '2026-10-14T16:00:00.000Z', fetchImpl: m.fetch });
+  assert.equal(r.ok, false); assert.deepEqual(m.posts.map(p => p[0]).sort(), ['/v25.0/900', '/v25.0/903']);
+  assert.ok(m.posts.every(p => p[1] === 'status=PAUSED')); assert.match(r.informe, /el harness la pausó/);
+});
+test('meta: falla por cuenta, página, destino, tope, presupuesto total, anuncios de más o campaña vieja', async () => {
+  const casos = [
+    [m => { m.camp.account_id = '999'; }, /act_999, no de act_1234567/],
+    [m => { m.ads[0].creative.object_story_spec.page_id = '555'; }, /no usa la página/],
+    [m => { m.ads[0].creative.object_story_spec.link_data.link = 'https://otro.com/'; }, /fuera de marketing\.5cero5\.com/],
+    [m => { m.conjuntos[0].daily_budget = '200000'; }, /2000 MXN al día, arriba del tope de 1500/],
+    [m => { m.conjuntos[0].lifetime_budget = '900000'; }, /presupuesto total/],
+    [m => { m.ads.push(m.ad('904')); }, /Meta tiene 3/],
+    [m => { m.conjuntos.push({ ...m.conjuntos[0], id: '905' }); }, /2 conjuntos/],
+    [m => { m.camp.created_time = '2026-10-01T00:00:00+0000'; }, /anterior a esta sesión/],
+    [m => { m.camp.name = 'otra'; }, /se llama otra/],
+  ];
+  for (const [cambia, re] of casos) {
+    const m = metaFalsa(); cambia(m);
+    const r = await compruebaCampana({ c: cP, respuesta: respP, inicio: '2026-10-14T16:00:00.000Z', fetchImpl: m.fetch });
+    assert.equal(r.ok, false, `${re}`); assert.match(r.informe, re);
+  }
+});
+test('meta: sin límite de gasto en la cuenta pasa con aviso; sin token no se da por buena', async () => {
+  const m = metaFalsa({ cuenta: { spend_cap: '0' } });
+  const r = await compruebaCampana({ c: cP, respuesta: respP, inicio: null, fetchImpl: m.fetch });
+  assert.equal(r.ok, true); assert.match(r.informe, /no tiene límite de gasto/);
+  const sin = await compruebaCampana({ c: cfg({ META_AD_ACCOUNT_ID: '1', META_PAGE_ID: '2' }), respuesta: respP, fetchImpl: m.fetch });
+  assert.equal(sin.ok, false); assert.match(sin.informe, /falta META_TOKEN/);
+});
+test('cierre de Pauta: comprueba en Meta y deja la fila Para revisar; nunca Listo', async () => {
+  const f = [filaP({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
+  const cl = mockClient({ msg: 'Creada en pausa.\n' + JSON.stringify(respP) });
+  await cierraSesion({ client: cl, notion: n, c: cP, sessionId: 'sesn_1', fetchImpl: metaFalsa().fetch });
+  const props = n.log.at(-1)[1];
+  assert.equal(f[0].estado, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
+  assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Comprobación en Meta: campaña 900/);
+  const f2 = [filaP({ estado: 'En curso', sesion: 'sesn_1' })]; const n2 = mockNotion(f2);
+  await cierraSesion({ client: mockClient({ msg: 'no pude' }), notion: n2, c: cP, sessionId: 'sesn_1', fetchImpl: metaFalsa().fetch });
+  assert.equal(n2.log.at(-1)[1].Verificador.select.name, 'Rechazada'); assert.match(n2.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /Revisar a mano/);
+});
+test('CMO: Pauta no aparece entre los agentes de pieza disponibles', () => {
+  const cc = cfg({ ...{}, MA_AGENT_CMO: 'a', MA_AGENT_PAUTA: 'p', MA_AGENT_CREATIVO: 'cr' });
+  const b = briefDeCampana({ nombre: 'K', id: 'k1', ruta: 'Cita', canales: [], formatos: [], piezas: 1 }, cc);
+  assert.match(b, /Agentes disponibles hoy: Creativo\./);
+});

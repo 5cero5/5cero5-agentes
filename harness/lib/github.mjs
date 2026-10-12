@@ -73,20 +73,24 @@ function destinoDe(c, agente) {
   if (!gd) throw new Error(`${agente} no abre PRs en GitHub`);
   const g = c.github || {};
   const d = g.destinos?.[gd.destino] || {};
-  const faltan = [['appId', g.appId], ['installationId', g.installationId], ['privateKey', g.privateKey], [d.credVar || 'cred', d.cred], [d.vaultVar || 'vault', d.vault]]
-    .filter(([, v]) => !v).map(([k]) => k);
+  // Un agente de solo lectura (Pauta) no lleva token de escritura: no necesita credencial ni vault del destino.
+  const pide = [['appId', g.appId], ['installationId', g.installationId], ['privateKey', g.privateKey],
+    ...(gd.soloLectura ? [] : [[d.credVar || 'cred', d.cred], [d.vaultVar || 'vault', d.vault]])];
+  const faltan = pide.filter(([, v]) => !v).map(([k]) => k);
   if (faltan.length) throw new Error(`Falta configuración de GitHub para ${agente}: ${faltan.join(', ')}`);
   return { g, d, gd };
 }
 
 // Antes de abrir la sesión: credencial de escritura en el vault del agente, token de lectura (montaje y sha de main).
 export async function preparaGithub({ client, c, agente = 'Landing', fetchImpl = fetch }) {
-  const { g, d } = destinoDe(c, agente);
+  const { g, d, gd } = destinoDe(c, agente);
   const base = { appId: g.appId, pem: g.privateKey, installationId: g.installationId, repo: d.repo, fetchImpl };
-  const escritura = await tokenInstalacion({ ...base, permisos: { contents: 'write', pull_requests: 'write' } });
+  const escritura = gd.soloLectura ? null : await tokenInstalacion({ ...base, permisos: { contents: 'write', pull_requests: 'write' } });
   const lectura = await tokenInstalacion({ ...base, permisos: { contents: 'read' } });
-  await client.beta.vaults.credentials.update(d.cred, {
-    vault_id: d.vault, auth: { type: 'environment_variable', secret_value: escritura.token } });
+  if (escritura) {
+    await client.beta.vaults.credentials.update(d.cred, {
+      vault_id: d.vault, auth: { type: 'environment_variable', secret_value: escritura.token } });
+  }
   return { lectura: lectura.token, mainSha: await shaDeMain(lectura.token, d.repo, fetchImpl) };
 }
 

@@ -30,7 +30,7 @@ export function parametrosSesion(fila, c) {
     budget: { type: 'limit', max_list_cost: { amount: String(centavos), currency: 'USD' } },
     metadata: { notion_page_id: fila.id, agente: fila.agente, intento: String(fila.intentos + 1) },
     vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,
-    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def) }] }],
+    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
   };
   if (resources.length) p.resources = resources;
   return p;

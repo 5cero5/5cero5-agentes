@@ -12,8 +12,48 @@ const COMUNES = [
 ];
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const NOMBRE_META = /^\d{4}-\d{2}_[a-z0-9][a-z0-9-]{1,20}_[a-z0-9][a-z0-9-]{1,40}$/;
+
+// Comando de meta_pauta.py con los datos de Meta de la configuración (no son secretos; el token va en el vault).
+export function comandoPauta(m = {}) {
+  return ['python3 /workspace/agentes/herramientas/meta_pauta.py --trabajo /tmp/pauta --piezas /workspace/piezas',
+    `--cuenta ${m.cuenta} --pagina ${m.pagina}`, m.ig ? `--ig ${m.ig}` : '', m.pixel ? `--pixel ${m.pixel}` : '',
+    `--tope-mxn ${m.topeDiarioMxn} --dominios ${(m.dominios || []).join(',')}`].filter(Boolean).join(' ');
+}
 
 export const AGENTES = {
+  // Arma UNA campaña de Meta, siempre EN PAUSA, con piezas ya fusionadas en 5cero5-piezas (meta_pauta.py: cuenta, plan,
+  // crear, comprobar). Aprobar la fila es aprobar el presupuesto; encender la campaña es de Al o Bonzo en el
+  // Administrador de anuncios. Al cerrar, el harness lee en Meta lo creado (lib/meta.mjs) y pausa lo que no esté en pausa.
+  Pauta: {
+    env: 'MA_AGENT_PAUTA',
+    vaultEnv: 'MA_VAULT_PAUTA',
+    repos: ['agentes', 'piezas'],
+    github: { destino: 'piezas', montar: true, soloLectura: true },
+    meta: true,
+    contexto: c => {
+      const m = c.meta || {};
+      const faltan = [['META_AD_ACCOUNT_ID', m.cuenta], ['META_PAGE_ID', m.pagina]].filter(([, v]) => !v).map(([k]) => k);
+      if (faltan.length) throw new Error(`Falta configuración de Meta para Pauta: ${faltan.join(', ')}`);
+      return [
+        `Datos de Meta: cuenta ${m.cuenta}, página ${m.pagina}${m.ig ? `, Instagram ${m.ig}` : ', sin Instagram'}${m.pixel ? `, Pixel ${m.pixel}` : ', sin Pixel (solo objetivo trafico)'}.`,
+        `Tope de presupuesto diario por campaña: ${m.topeDiarioMxn} MXN. Destinos permitidos: ${(m.dominios || []).join(', ')}.`,
+        `"pm" en tu prompt es exactamente: ${comandoPauta(m)}`,
+      ];
+    },
+    reglas: [
+      'Usa solo /workspace/agentes/herramientas/meta_pauta.py (cuenta, plan, crear, comprobar). Nunca llamas a la API de Meta por tu cuenta y nunca activas, editas ni borras nada en Meta.',
+      'Una sesión = una campaña con un conjunto y un anuncio por pieza, todo en pausa. Solo piezas fusionadas en 5cero5-piezas.',
+      'Presupuesto, fechas, público y destino salen del brief aprobado. Si el brief no los trae o pasan el tope, terminas sin crear nada.',
+    ],
+    respuesta: {
+      ejemplo: '{"campana_meta_id":"...","nombre":"2026-10_mty_angulo","cuenta":"act_...","conjunto_id":"...","anuncios":[{"id":"...","nombre":"a01_post4x5_gancho","pieza":"..."}],"presupuesto_diario_mxn":500,"objetivo":"trafico"}',
+      claves: ['campana_meta_id', 'nombre', 'cuenta', 'conjunto_id', 'anuncios'],
+      revisa: r => (!NOMBRE_META.test(String(r.nombre)) ? 'nombre_fuera_de_convencion'
+        : !/^\d+$/.test(String(r.campana_meta_id)) || !/^\d+$/.test(String(r.conjunto_id)) ? 'ids_invalidos'
+        : !Array.isArray(r.anuncios) || !r.anuncios.length || r.anuncios.some(a => !/^\d+$/.test(String(a?.id))) ? 'anuncios_invalidos' : null),
+    },
+  },
   // Arma UNA pieza (post 4:5, post 1:1 o historia 9:16) con las plantillas de marca y abre un PR en 5cero5-piezas con
   // pr_pieza.py. Aprobar es fusionar el PR (Al); subirla a Meta la hace Bonzo a mano. Foto de Higgsfield solo si el brief
   // la pide. El token de GitHub dura una hora y lo pone el harness; al cerrar, el harness comprueba el PR y la carpeta.
@@ -93,10 +133,11 @@ export const AGENTES = {
 // Solo entradas propias del catálogo (evita que "constructor" u otra propiedad heredada pase como agente).
 export const agenteDe = nombre => (nombre && Object.hasOwn(AGENTES, nombre) ? AGENTES[nombre] : null);
 
-export function mensajeInicial(fila, def) {
+export function mensajeInicial(fila, def, c = {}) {
   return [
     `Trabajo: ${fila.trabajo}`,
     fila.campana ? `Campaña: ${fila.campana}` : '',
+    ...(def.contexto ? def.contexto(c) : []),
     '',
     'Brief aprobado:',
     fila.brief,

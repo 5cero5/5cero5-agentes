@@ -4,6 +4,7 @@ import { ultimoMensajeAgente } from './sessions.mjs';
 import { agenteDe, revisaRespuesta, ultimoJson } from './agentes.mjs';
 import { compruebaFilasCMO } from './campanas.mjs';
 import { compruebaPR } from './github.mjs';
+import { compruebaCampana } from './meta.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -51,6 +52,13 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
+  } else if (agenteDe(fila.agente)?.meta) {
+    // El trabajo de Pauta es una campaña en Meta: el harness la lee en Meta y pausa lo que no esté en pausa (regla 8).
+    const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido. Revisar a mano en el Administrador de anuncios que no haya nada encendido.' }
+      : await compruebaCampana({ c, respuesta: ultimoJson(resultado), inicio: fila.inicio, fetchImpl });
+    props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
+    props.Estado = P.estado('Para revisar');
+    props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
   } else if (agenteDe(fila.agente)?.github) {
     // El trabajo de Landing y Creativo es un PR: el harness lo comprueba en GitHub (regla 8). Publicar sigue siendo de Al o Bonzo.
     const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
@@ -62,5 +70,5 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     props['Informe del Verificador'] = P.texto(`Verificador no activo: revisar a mano contra reglas.md. Formato de la respuesta: ${formato ?? 'OK'}.`);
   }
   await notion.update(fila.id, props);
-  return fila.agente !== 'CMO' && !agenteDe(fila.agente)?.github && c.verificadorActivo ? 'verificando' : 'para_revisar';
+  return fila.agente !== 'CMO' && !agenteDe(fila.agente)?.github && !agenteDe(fila.agente)?.meta && c.verificadorActivo ? 'verificando' : 'para_revisar';
 }

@@ -23,6 +23,7 @@ HOSTS = [
     "firebasestorage.googleapis.com", # CRM: HTML guardado de las plantillas (correo.py comprobar)
     "api.notion.com",                 # CMO: leer campañas y proponer filas
     "api.github.com",                 # Landing y Creativo: PRs en 5cero5-landings y 5cero5-piezas (nunca fusionan)
+    "graph.facebook.com",             # Pauta: Marketing API (crea en pausa; el token solo va en su vault)
     "api.higgsfield.ai",              # Creativo: fotos con Higgsfield (solo si el brief las pide; llave solo en su vault)
     "cdn.playwright.dev",             # Landing y Creativo: navegador para render y Verificador (playwright install chromium)
     "playwright.download.prss.microsoft.com",
