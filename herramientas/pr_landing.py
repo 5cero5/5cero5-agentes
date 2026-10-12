@@ -2,7 +2,7 @@
 """Herramienta del agente Landing: arma o cambia UNA landing del repo 5cero5-landings y abre un PR. Nunca fusiona.
 
   python3 pr_landing.py nueva   --slug buen-fin --nombre "Buen Fin 2026"   carpeta nueva desde la plantilla de marca
-  python3 pr_landing.py revisar --slug buen-fin                            build del repo (si hay node) + Verificador de marca
+  python3 pr_landing.py revisar --slug buen-fin                            build y pruebas del repo (si hay node) + Verificador de marca
   python3 pr_landing.py abrir   --slug buen-fin --titulo "..." [--cuerpo "..."]   rama agente/<slug>-<fecha> + PR a main
 
 Rutas (por defecto las de la sesión del agente): --landings /tmp/landings (copia del repo), --marca /tmp/marca (copia del repo de marca).
@@ -99,6 +99,12 @@ def cmd_revisar(a) -> None:
         print(r.stdout + r.stderr)
         if r.returncode != 0:
             die("El build del repo de landings rechaza los cambios (arriba el detalle).")
+        # Las mismas pruebas que corre el deploy preview: si fallan aquí, el preview fallaría.
+        r = subprocess.run(["node", "--test"], cwd=landings, capture_output=True, text=True)
+        resumen = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith(("not ok", "# pass", "# fail"))]
+        print("\n".join(resumen))
+        if r.returncode != 0:
+            die("Las pruebas del repo de landings fallan (arriba cuáles). El deploy preview fallaría igual: no se abre PR.")
     else:
         print("⚠ No hay node: el build del repo lo revisará el deploy preview de Netlify.")
     # Verificador de marca sobre la landing tal como se publica (sin landing.json), en /<slug>/.
