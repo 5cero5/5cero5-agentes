@@ -20,7 +20,8 @@ export function parametrosSesion(fila, c) {
   const resources = def.repos.map(nombre => {
     const r = c.repos[nombre];
     if (!r?.url) throw new Error(`Falta ${r?.variable || nombre} para el agente ${fila.agente}`);
-    return { type: 'github_repository', url: r.url, mount_path: r.mount, ...(r.token ? { authorization_token: r.token } : {}) };
+    // Repos con token dinámico (landings): el token de lectura lo pone preparaGithub justo antes de crear la sesión.
+    return { type: 'github_repository', url: r.url, mount_path: r.mount, ...(r.token && !r.dinamico ? { authorization_token: r.token } : {}) };
   });
   const p = {
     agent,

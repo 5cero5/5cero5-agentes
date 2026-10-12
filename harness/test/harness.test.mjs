@@ -309,23 +309,118 @@ test('cierre del CMO: si una fila reportada no existe, Verificador Rechazada', a
   assert.equal(props.Verificador.select.name, 'Rechazada'); assert.match(props['Informe del Verificador'].rich_text[0].text.content, /fantasma: no existe/);
 });
 
-// ---- Agente Landing ----
-const cL = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_LANDING: 'agent_landing', MA_VAULT_LANDING: 'v_netlify',
-  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok' });
-test('router: Landing monta marca y agentes, usa su vault y solo construye borradores en /landingtest', () => {
-  const p = parametrosSesion(fila({ agente: 'Landing', brief: 'landing de la promo' }), cL);
-  assert.equal(p.agent, 'agent_landing');
-  assert.deepEqual(p.vault_ids, ['v_netlify']);
-  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/marca', '/workspace/agentes']);
-  const m = p.initial_events[0].content[0].text;
-  assert.match(m, /landing\.py/); assert.match(m, /Nunca promover/); assert.match(m, /--base-dir \/tmp\/marca\/landing\/base/);
-  assert.match(m, /\/landingtest/); assert.match(m, /"ruta":"landingtest"/); assert.doesNotMatch(m, /correo\.py/);
+// ---- Agente Landing (PR en 5cero5-landings con la GitHub App) ----
+import { generateKeyPairSync, createVerify } from 'node:crypto';
+import { jwtApp, compruebaPR, preparaGithub } from '../lib/github.mjs';
+const { privateKey: PEM, publicKey: PUB } = generateKeyPairSync('rsa', { modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+const cL = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_LANDING: 'agent_landing', MA_VAULT_LANDING: 'v_landing',
+  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
+  GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM.replace(/\n/g, '\\n'), MA_CRED_GITHUB_LANDING: 'vcrd_gh' });
+const filaL = (o = {}) => fila({ agente: 'Landing', trabajo: 'Landing Buen Fin', brief: 'landing de la promo', ...o });
+
+// GitHub falso: tokens de instalación, main, PR y sus archivos.
+function ghFalso(o = {}) {
+  const st = { tokens: [], pr: { state: 'open', merged: false, base: { ref: 'main' }, head: { ref: 'agente/buen-fin-1', sha: 'abc1234' }, html_url: 'https://github.com/5cero5/5cero5-landings/pull/7' },
+    archivos: [{ filename: 'landings/buen-fin/index.html' }, { filename: 'landings/buen-fin/landing.json' }], main: ['m1'], ...o };
+  st.fetch = async (url, init = {}) => {
+    const u = new URL(url); const body = init.body ? JSON.parse(init.body) : null;
+    const ok = x => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+    if (u.pathname === '/app/installations/456/access_tokens') {
+      st.tokens.push({ auth: init.headers.Authorization, body });
+      return ok({ token: `ghs_${st.tokens.length}`, expires_at: '2026-10-12T05:00:00Z' });
+    }
+    if (u.pathname === '/repos/5cero5/5cero5-landings/git/ref/heads/main') return ok({ object: { sha: st.main.length > 1 ? st.main.shift() : st.main[0] } });
+    if (u.pathname === '/repos/5cero5/5cero5-landings/pulls/7') return ok(st.pr);
+    if (u.pathname === '/repos/5cero5/5cero5-landings/pulls/7/files') return ok(st.archivos);
+    return { ok: false, status: 404, text: async () => '{"message":"Not Found"}' };
+  };
+  return st;
+}
+const respL = { pr_url: 'https://github.com/5cero5/5cero5-landings/pull/7', pr_numero: 7, rama: 'agente/buen-fin-1', commit: 'abc1234', slug: 'buen-fin', cambios: ['titular'] };
+
+test('github: el JWT de la app va firmado con su llave y vence en menos de 10 minutos', () => {
+  const t = jwtApp('123', PEM.replace(/\n/g, '\\n'), 1000);
+  const [h, p, f] = t.split('.');
+  assert.ok(createVerify('RSA-SHA256').update(`${h}.${p}`).verify(PUB, Buffer.from(f, 'base64url')));
+  const c = JSON.parse(Buffer.from(p, 'base64url'));
+  assert.equal(c.iss, '123'); assert.ok(c.exp - c.iat <= 600);
 });
-test('formato: Landing exige deploy_id, ruta y build, y solo la ruta landingtest', () => {
+test('router: Landing monta marca, agentes y landings, usa su vault y abre PRs con pr_landing.py', () => {
+  const p = parametrosSesion(filaL(), cL);
+  assert.equal(p.agent, 'agent_landing'); assert.deepEqual(p.vault_ids, ['v_landing']);
+  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/marca', '/workspace/agentes', '/workspace/landings']);
+  assert.ok(!p.resources[2].authorization_token, 'el token del repo de landings lo pone preparaGithub');
+  const m = p.initial_events[0].content[0].text;
+  assert.match(m, /pr_landing\.py/); assert.match(m, /Nunca fusionas/); assert.match(m, /landings\/<slug>\//); assert.match(m, /pr_numero/);
+  assert.doesNotMatch(m, /landing\.py construir/); assert.doesNotMatch(m, /correo\.py/);
+});
+test('github: antes de la sesión, token de escritura limitado al repo en el vault y token de lectura para montar', async () => {
+  const g = ghFalso(); const upd = [];
+  const client = { beta: { vaults: { credentials: { update: async (id, prm) => upd.push([id, prm]) } } } };
+  const r = await preparaGithub({ client, c: cL, fetchImpl: g.fetch });
+  assert.deepEqual(g.tokens.map(t => t.body), [
+    { repositories: ['5cero5-landings'], permissions: { contents: 'write', pull_requests: 'write' } },
+    { repositories: ['5cero5-landings'], permissions: { contents: 'read' } }]);
+  assert.ok(g.tokens.every(t => t.auth.startsWith('Bearer ey')), 'se pide con el JWT de la app');
+  assert.deepEqual(upd, [['vcrd_gh', { vault_id: 'v_landing', auth: { type: 'environment_variable', secret_value: 'ghs_1' } }]]);
+  assert.equal(r.lectura, 'ghs_2'); assert.equal(r.mainSha, 'm1');
+});
+test('github: sin la configuración de la app no se abre la sesión de Landing', async () => {
+  await assert.rejects(preparaGithub({ client: {}, c: cfg({ MA_VAULT_LANDING: 'v' }) }), /Falta configuración de GitHub para Landing: appId, installationId, privateKey, credLanding/);
+});
+test('despacha Landing: renueva el token, monta landings con el de lectura y guarda el sha de main', async () => {
+  const g = ghFalso(); const f = [filaL()]; const cl = mockClient(); const upd = [];
+  cl.beta.vaults = { credentials: { update: async (id, prm) => upd.push(id) } };
+  await despacha({ client: cl, notion: mockNotion(f), c: cL, fetchImpl: g.fetch });
+  assert.equal(f[0].estado, 'En curso'); assert.deepEqual(upd, ['vcrd_gh']);
+  const p = cl.calls.create[0];
+  assert.equal(p.resources.find(r => r.mount_path === '/workspace/landings').authorization_token, 'ghs_2');
+  assert.equal(p.metadata.main_sha, 'm1');
+});
+test('despacha Landing: si GitHub falla, la fila pasa a Error y no hay sesión', async () => {
+  const f = [filaL()]; const cl = mockClient();
+  cl.beta.vaults = { credentials: { update: async () => {} } };
+  const caido = async () => ({ ok: false, status: 500, text: async () => '{"message":"boom"}' });
+  await despacha({ client: cl, notion: mockNotion(f), c: cL, fetchImpl: caido });
+  assert.equal(f[0].estado, 'Error'); assert.equal(cl.calls.create.length, 0);
+});
+test('formato: Landing exige pr_url, pr_numero, rama de agente, commit y slug', () => {
   const d = AGENTES.Landing;
-  assert.equal(revisaRespuesta(d, 'Listo\n```json\n{"deploy_id":"6a1","ruta":"landingtest","build":"b1","cambios":["titular"]}\n```'), null);
-  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"","build":"b1"}'), 'faltan_claves:ruta');
-  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"promo","build":"b1"}'), 'ruta_no_permitida');
-  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"landingtest"}'), 'faltan_claves:build');
-  assert.equal(revisaRespuesta(d, '{"deploy_id":"","ruta":"","build":"","motivo":"el brief pide fotos"}'), 'faltan_claves:deploy_id,ruta,build');
+  assert.equal(revisaRespuesta(d, 'Listo\n```json\n' + JSON.stringify(respL) + '\n```'), null);
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respL, rama: 'main' })), 'rama_no_es_de_agente');
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respL, slug: '../otra' })), 'slug_invalido');
+  assert.equal(revisaRespuesta(d, '{"pr_url":"","pr_numero":"","rama":"","commit":"","slug":"","motivo":"el brief pide fotos"}'), 'faltan_claves:pr_url,pr_numero,rama,commit,slug');
+});
+test('comprobación del PR: pasa si está abierto, sin fusionar, con su commit y solo con su carpeta', async () => {
+  const r = await compruebaPR({ c: cL, respuesta: respL, mainAntes: 'm1', fetchImpl: ghFalso().fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /PR #7/);
+});
+test('comprobación del PR: falla si está fusionado, toca otra carpeta, cambió el commit o main se movió', async () => {
+  const casos = [
+    [{ pr: { ...ghFalso().pr, state: 'closed', merged: true, merged_at: 'x' } }, /fusionado/],
+    [{ archivos: [{ filename: 'landings/buen-fin/index.html' }, { filename: 'netlify/functions/prospecto/prospecto.js' }] }, /fuera de landings\/buen-fin\//],
+    [{ pr: { ...ghFalso().pr, head: { ref: 'agente/buen-fin-1', sha: 'otro999' } } }, /no es el reportado/],
+    [{ pr: { ...ghFalso().pr, head: { ref: 'main', sha: 'abc1234' } } }, /no empieza con agente\//],
+    [{ main: ['m2'] }, /main cambió durante la sesión/],
+    [{ archivos: [] }, /no cambia ningún archivo/],
+  ];
+  for (const [o, re] of casos) {
+    const r = await compruebaPR({ c: cL, respuesta: respL, mainAntes: 'm1', fetchImpl: ghFalso(o).fetch });
+    assert.equal(r.ok, false); assert.match(r.informe, re);
+  }
+  const r = await compruebaPR({ c: cL, respuesta: { ...respL, pr_numero: 99 }, mainAntes: 'm1', fetchImpl: ghFalso().fetch });
+  assert.equal(r.ok, false); assert.match(r.informe, /#99 no existe/);
+});
+test('cierre de Landing: comprueba el PR en GitHub y marca el Verificador; nunca Listo', async () => {
+  const f = [filaL({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
+  const cl = mockClient({ msg: JSON.stringify(respL) });
+  cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'p1', main_sha: 'm1' }, usage: {} });
+  await cierraSesion({ client: cl, notion: n, c: cL, sessionId: 'sesn_1', fetchImpl: ghFalso().fetch });
+  const props = n.log.at(-1)[1];
+  assert.equal(f[0].estado, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
+  assert.match(props['Informe del Verificador'].rich_text[0].text.content, /PR #7/);
+  const f2 = [filaL({ estado: 'En curso', sesion: 'sesn_1' })]; const n2 = mockNotion(f2);
+  await cierraSesion({ client: cl, notion: n2, c: cL, sessionId: 'sesn_1', fetchImpl: ghFalso({ main: ['m9'] }).fetch });
+  assert.equal(n2.log.at(-1)[1].Verificador.select.name, 'Rechazada'); assert.equal(f2[0].estado, 'Para revisar');
 });

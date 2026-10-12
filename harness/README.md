@@ -20,7 +20,7 @@ El harness solo despacha agentes que están en el catálogo y tienen su id en un
 | Agente | Variable | Monta | Termina con |
 |---|---|---|---|
 | Creativo | MA_AGENT_CREATIVO | marca | `deploy_id`, `archivos`, `sha1` |
-| Landing | MA_AGENT_LANDING | marca y agentes | `deploy_id`, `ruta` (solo `landingtest`), `build`, `cambios` |
+| Landing | MA_AGENT_LANDING | marca, agentes y landings | `pr_url`, `pr_numero`, `rama` (`agente/…`), `commit`, `slug`, `cambios` |
 | CRM | MA_AGENT_CRM | marca y agentes | `plantilla_id`, `nombre` (con prefijo `[agente] `), `html_sha1` |
 | CMO | MA_AGENT_CMO | marca | `campana_id`, `filas` (al menos una), `sin_agente` |
 
@@ -34,15 +34,19 @@ El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe c
 
 Al cerrar la sesión del CMO, el harness comprueba en Notion cada fila que el CMO dice que escribió (regla 8): que exista, esté en Propuesta, sin Aprobó, con un agente de pieza y ligada a la campaña. Si todo cuadra, Verificador = Aprobada; si no, Rechazada con el detalle en el informe. La fila del CMO siempre queda en Para revisar.
 
-### Landing → publicar
-El agente Landing cambia solo textos de la landing sobre una copia del repo de marca y deja un **borrador** en Netlify con `landing.py construir` y `borrador`, conservando la raíz con `5cero5-marca/landing/base`. Nunca publica. Publicar es de Al o Bonzo con `landing.py promover --desde-notion <fila>` (ver `poc-conectores/README_landing.md`): revisa el borrador contra Netlify y el repo de marca local, lo pasa por el Verificador y pide la frase de confirmación.
+### Landing → PR en 5cero5-landings
+Las landings viven en el repo `5cero5/5cero5-landings` (sitio marketing.5cero5.com), una carpeta por landing. El agente Landing crea o cambia **una** carpeta con `herramientas/pr_landing.py` (nueva, revisar, abrir) y abre un PR a `main` desde una rama `agente/…`. El deploy preview de Netlify es el borrador; publicar es aprobar y fusionar el PR en GitHub, solo Al o Bonzo.
+
+- **Token (GitHub App `5cero5-agentes`, instalada solo en ese repo):** antes de cada sesión de Landing, el disparador saca un token de instalación de 1 hora con permisos `contents` y `pull_requests` de escritura, limitado a ese repo, y lo pone en la credencial `GITHUB_TOKEN` del vault de Landing (solo en encabezados hacia api.github.com). Saca otro, de solo lectura, para montar el repo en `/workspace/landings`, y guarda el sha de `main` en la metadata de la sesión.
+- **Al cerrar (regla 8):** el harness comprueba en GitHub que el PR existe, está abierto y sin fusionar, va de `agente/…` a `main`, su commit es el que reportó el agente, solo cambia `landings/<slug>/` y que `main` no se movió durante la sesión. Verificador = Aprobada o Rechazada con el detalle; la fila queda en Para revisar.
+- **Mientras no haya protección de `main`** (GitHub Team, pendiente de decidir con Bonzo), un token de escritura de la app podría fusionar: el límite lo ponen el prompt, que el agente solo use `pr_landing.py` y la comprobación de arriba. No se configura la app en el harness hasta decidirlo.
 
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
-   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
+   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Landing (GitHub App): GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_PRIVATE_KEY (secreta; la llave .pem completa, sirve con saltos de línea o con \\n) y MA_CRED_GITHUB_LANDING (la imprime `crear_agente_landing.py`); opcionales GH_LANDINGS_URL y GH_LANDINGS_REPO. Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion: compartir la base Aprobaciones con la integración "5cero5 agentes" (Connections).
 4. Deploy a producción (las funciones programadas solo corren en deploys publicados).
 5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion` con los eventos `session.status_idled`, `session.status_terminated` y `session.budget_reached` (los `session.thread_*` no hacen falta: se ignoran). Copiar la signing key a ANTHROPIC_WEBHOOK_SIGNING_KEY y volver a hacer deploy.
@@ -53,7 +57,7 @@ Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo ano
 `crear_agente_crm.py`, `crear_agente_cmo.py` y `crear_agente_landing.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`. El entorno común lleva `httpx` y `playwright` (pip); el Chromium del Verificador de landing lo baja cada sesión del agente Landing desde los hosts de Playwright que están en HOSTS.
 
 ## Pruebas
-`npm ci && npm test` (44 casos con mocks de Notion y de Anthropic).
+`npm ci && npm test` (52 casos con mocks de Notion y de Anthropic).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

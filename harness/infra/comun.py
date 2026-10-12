@@ -22,7 +22,7 @@ HOSTS = [
     "services.leadconnectorhq.com",   # CRM: API de HighLevel
     "firebasestorage.googleapis.com", # CRM: HTML guardado de las plantillas (correo.py comprobar)
     "api.notion.com",                 # CMO: leer campañas y proponer filas
-    "api.netlify.com",                # Landing: borradores con landing.py (nunca publica)
+    "api.github.com",                 # Landing: PRs en 5cero5-landings con pr_landing.py (nunca fusiona)
     "cdn.playwright.dev",             # Landing: navegador del Verificador (playwright install chromium)
     "playwright.download.prss.microsoft.com",
     "playwright.azureedge.net",
