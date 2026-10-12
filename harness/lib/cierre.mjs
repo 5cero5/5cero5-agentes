@@ -54,8 +54,12 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
   } else if (agenteDe(fila.agente)?.meta) {
     // El trabajo de Pauta es una campaña en Meta: el harness la lee en Meta y pausa lo que no esté en pausa (regla 8).
-    const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido. Revisar a mano en el Administrador de anuncios que no haya nada encendido.' }
-      : await compruebaCampana({ c, respuesta: ultimoJson(resultado), inicio: fila.inicio, fetchImpl });
+    // Aunque la respuesta venga incompleta (creación a medias), si trae el id de una campaña se lee en Meta y se frena.
+    const r = ultimoJson(resultado);
+    const conId = /^\d+$/.test(String(r?.campana_meta_id || ''));
+    let rev = conId ? await compruebaCampana({ c, respuesta: r, inicio: fila.inicio, fetchImpl })
+      : { ok: false, informe: 'Sin comprobación: la respuesta no trae el id de la campaña. Revisar a mano en el Administrador de anuncios que no haya nada encendido.' };
+    if (formato && rev.ok) rev = { ...rev, ok: false };
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);

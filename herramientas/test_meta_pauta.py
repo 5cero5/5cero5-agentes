@@ -179,7 +179,7 @@ camp = S.posts[0][1]; conj = S.posts[1][1]; cre = S.posts[3][1]
 caso("crear: campaña de tráfico sin categoría especial", camp["objective"] == "OUTCOME_TRAFFIC" and json.loads(camp["special_ad_categories"]) == [], str(camp))
 caso("crear: presupuesto en centavos de MXN", conj["daily_budget"] == "50000", str(conj))
 t = json.loads(conj["targeting"])
-caso("crear: público con radio y edades", t["custom_locations"][0]["radius"] == 40 and t["age_min"] == 28 and t["age_max"] == 60, str(t))
+caso("crear: público con radio dentro de geo_locations y edades", t["geo_locations"]["custom_locations"][0]["radius"] == 40 and t["age_min"] == 28 and t["age_max"] == 60, str(t))
 caso("crear: fechas en hora de México", conj["start_time"].startswith("2099-01-05T00:00:00-06:00") and conj["end_time"].startswith("2099-02-05T23:59:00-06:00"), str(conj))
 spec = json.loads(cre["object_story_spec"])
 caso("crear: creativo con página, destino, imagen y UTMs por url_tags",
@@ -195,9 +195,26 @@ cid = res["campana_meta_id"]; S.objs[res["anuncios"][0]["id"]]["status"] = "ACTI
 rc, out = corre("comprobar", "--nombre", "2026-10_mty_agencia-vs-505")
 caso("comprobar: detecta un anuncio activo", rc != 0 and "ACTIVE" in out, out)
 
-limpia(); corre("plan", "--archivo", str(plan())); S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505"}]
+limpia(); corre("plan", "--archivo", str(plan())); S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "ACTIVE", "objective": "OUTCOME_TRAFFIC"}]
 rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
-caso("crear: no duplica un nombre que ya existe en Meta", rc != 0 and "Ya existe" in out and not S.posts, out)
+caso("crear: no duplica un nombre que ya existe en Meta (no vacía o no en pausa)", rc != 0 and "Ya existe" in out and not S.posts, out)
+
+limpia(); corre("plan", "--archivo", str(plan()))
+S.objs["77"] = {"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "_tipo": "campaign"}
+S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "objective": "OUTCOME_TRAFFIC"}]
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+rutas = [p for p, _ in S.posts]
+caso("crear: retoma la campaña vacía y en pausa de un intento a medias, sin crear otra",
+     rc == 0 and "retomada" in out and f"/{CTA}/campaigns" not in rutas and S.posts[0][1].get("campaign_id") == "77", out)
+rc, out = corre("comprobar", "--nombre", "2026-10_mty_agencia-vs-505")
+caso("comprobar: la campaña retomada queda completa y en pausa", rc == 0 and '"estado": "PAUSED"' in out, out)
+
+limpia(); corre("plan", "--archivo", str(plan()))
+S.objs["77"] = {"id": "77", "name": "x", "status": "PAUSED", "_tipo": "campaign"}
+S.objs["78"] = {"id": "78", "name": "conj", "status": "PAUSED", "_tipo": "adset", "_campana": "77", "daily_budget": "1"}
+S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "objective": "OUTCOME_TRAFFIC"}]
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+caso("crear: no retoma una campaña que ya tiene conjuntos", rc != 0 and "Ya existe" in out and not S.posts, out)
 
 limpia(); corre("plan", "--archivo", str(plan()))
 pj = TRABAJO / "2026-10_mty_agencia-vs-505" / "plan.json"; d = json.loads(pj.read_text()); d["presupuesto_diario_mxn"] = 9000; pj.write_text(json.dumps(d))

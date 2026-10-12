@@ -674,3 +674,16 @@ test('CMO: Pauta no aparece entre los agentes de pieza disponibles', () => {
   const b = briefDeCampana({ nombre: 'K', id: 'k1', ruta: 'Cita', canales: [], formatos: [], piezas: 1 }, cc);
   assert.match(b, /Agentes disponibles hoy: Creativo\./);
 });
+
+test('cierre de Pauta a medias: con el id de la campaña igual la lee en Meta y frena; sin id, revisión a mano', async () => {
+  const f = [filaP({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
+  const m = metaFalsa({ conjuntos: [], ads: [] }); m.camp.status = 'ACTIVE';
+  const resp = { ...respP, conjunto_id: '', anuncios: [], motivo: 'Meta rechazó el conjunto' };
+  await cierraSesion({ client: mockClient({ msg: JSON.stringify(resp) }), notion: n, c: cP, sessionId: 'sesn_1', fetchImpl: m.fetch });
+  const props = n.log.at(-1)[1]; const inf = props['Informe del Verificador'].rich_text[0].text.content;
+  assert.equal(props.Verificador.select.name, 'Rechazada'); assert.match(inf, /faltan_claves:conjunto_id/);
+  assert.match(inf, /campaña 900/); assert.match(inf, /el harness la pausó/); assert.deepEqual(m.posts.map(p => p[0]), ['/v25.0/900']);
+  const f2 = [filaP({ estado: 'En curso', sesion: 'sesn_1' })]; const n2 = mockNotion(f2);
+  await cierraSesion({ client: mockClient({ msg: '{"campana_meta_id":"","motivo":"no"}' }), notion: n2, c: cP, sessionId: 'sesn_1', fetchImpl: metaFalsa().fetch });
+  assert.match(n2.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /no trae el id de la campaña/);
+});

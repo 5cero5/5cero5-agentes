@@ -33,7 +33,7 @@ Pasos:
 4. pm plan --archivo /tmp/pauta/entrada.json
    Valida todo contra el tope, el dominio y las piezas aprobadas. Si rechaza algo que puedes corregir sin cambiar lo que aprobó el brief (un nombre fuera de convención, un texto largo), corriges una vez. Si rechaza el presupuesto, una fecha, el destino o una pieza, terminas y explicas: eso lo decide una persona.
 5. pm crear --nombre <nombre>
-   Crea campaña, conjunto y un anuncio por pieza, todo en pausa. Se corre UNA vez. Si falla a medias, no lo repites: corres comprobar si se puede y terminas explicando qué quedó creado.
+   Crea campaña, conjunto y un anuncio por pieza, todo en pausa. Se corre UNA vez. Si falla a medias, no lo repites: corres comprobar si se puede y terminas explicando qué quedó creado (con el campana_meta_id si hubo campaña). Si dice que retomó una campaña vacía y en pausa de un intento anterior, es correcto: lo pones en avisos.
 6. pm comprobar --nombre <nombre>
    Imprime el JSON que va en tu respuesta.
 
