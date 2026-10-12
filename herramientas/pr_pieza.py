@@ -97,6 +97,21 @@ def huella(d: Path) -> str:
     return h.hexdigest()
 
 
+H1_PX = re.compile(r"(h1\s*\{[^}]*?font:\s*400\s+)(\d+)(px)")
+AJUSTE_MIN = 0.70   # el titular puede bajar hasta 70 % del tamaño de la plantilla (reglas: se baja el tamaño, no se cambia la fuente)
+
+
+def tam_h1(html_txt: str) -> int:
+    m = H1_PX.search(html_txt)
+    if not m:
+        die("No encontré el tamaño del titular (h1) en la plantilla.")
+    return int(m.group(2))
+
+
+def con_tam_h1(html_txt: str, px: int) -> str:
+    return H1_PX.sub(lambda m: f"{m.group(1)}{px}{m.group(3)}", html_txt, count=1)
+
+
 # ------------------------------------------------------------------ nueva
 def cmd_nueva(a) -> None:
     d = pieza_dir(a)
@@ -221,6 +236,10 @@ def cmd_llenar(a) -> None:
     h1 = "<br>".join(esc(x) for x in lineas[:-1]) + ("<br>" if len(lineas) > 1 else "") + f'<span class="marca">{esc(lineas[-1])}</span>'
     p = d / "plantillas" / "pieza.html"
     h = p.read_text(encoding="utf-8")
+    meta = lee_json(d / "pieza.json")
+    original = Path(a.marca) / meta["plantilla"]
+    if original.exists():  # cada llenado empieza con el titular al tamaño de la plantilla
+        h = con_tam_h1(h, tam_h1(original.read_text(encoding="utf-8")))
     for patron, valor in ((r'(<div class="kicker">).*?(</div>)', esc(c["kicker"])), (r"(<h1>).*?(</h1>)", h1),
                           (r'(<p class="sub">).*?(</p>)', esc(c["subtitulo"])), (r'(<div class="nota">).*?(</div>)', esc(c["nota"]))):
         h, n = re.subn(patron, lambda m, v=valor: m.group(1) + v + m.group(2), h, count=1, flags=re.S)
@@ -231,7 +250,7 @@ def cmd_llenar(a) -> None:
 
 
 # ------------------------------------------------------------------ revisar
-def renderiza(d: Path, ancho: int, alto: int) -> bytes:
+def renderiza(d: Path, ancho: int, alto: int) -> tuple[bytes, list[str]]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -254,15 +273,14 @@ def renderiza(d: Path, ancho: int, alto: int) -> bytes:
             encimado = json.loads(datos["e"] or "null")
             if encimado is None:
                 die("La plantilla no dice si sus textos se enciman (data-encimado): usa la plantilla del repo de marca v0.12.0 o más nueva.")
-            if encimado:
-                die(f"Se enciman {', '.join(encimado)}: acorta la copia (titular en menos líneas o palabras más cortas, subtítulo más corto) y vuelve a llenar y revisar.")
-            return pg.screenshot(full_page=False)
+            return pg.screenshot(full_page=False), encimado
         finally:
             b.close()
 
 
 def cmd_revisar(a) -> None:
     d = pieza_dir(a)
+    (d / ".revisado").unlink(missing_ok=True)  # una revisión fallida nunca deja aprobada la anterior
     meta = lee_json(d / "pieza.json")
     marca = Path(a.marca)
     f = lee_json(marca / "tokens.json")["formatos"][meta["formato"]]
@@ -272,7 +290,25 @@ def cmd_revisar(a) -> None:
     html_txt = (d / "plantillas" / "pieza.html").read_text(encoding="utf-8")
     if 'class="marca"></span>' in html_txt or "<h1></h1>" in html_txt:
         die("La plantilla no tiene la copia: corre 'llenar' primero.")
-    png = renderiza(d, f["ancho"], f["alto"])
+    # Si el titular se encima, se baja su tamaño (como dice la plantilla) hasta 70 % del original; nada más se mueve.
+    plantilla_html = d / "plantillas" / "pieza.html"
+    inicial = tam_h1(html_txt)
+    minimo = int(tam_h1((marca / meta["plantilla"]).read_text(encoding="utf-8")) * AJUSTE_MIN) if (marca / meta["plantilla"]).exists() else int(inicial * AJUSTE_MIN)
+    px = inicial
+    while True:
+        png, encimado = renderiza(d, f["ancho"], f["alto"])
+        if not encimado:
+            break
+        if not all("titular" in e for e in encimado) or px <= minimo:
+            die(f"Se enciman {', '.join(encimado)}" + (f" aun con el titular a {px} px (mínimo {minimo})" if px <= minimo else "") +
+                ": acorta la copia (titular en menos líneas o palabras más cortas, subtítulo más corto) y vuelve a llenar y revisar.")
+        px = max(minimo, int(px * 0.92))
+        html_txt = con_tam_h1(html_txt, px)
+        plantilla_html.write_text(html_txt, encoding="utf-8")
+    if px != inicial:
+        print(f"· Titular ajustado de {inicial} a {px} px para que no se encime.")
+        meta["titular_px"] = px
+        escribe_json(d / "pieza.json", meta)
     (d / "pieza.png").write_bytes(png)
     shutil.copy(d / "plantillas" / "pieza.html", d / "pieza.html")
     sys.path.insert(0, str(marca / "verificador"))
