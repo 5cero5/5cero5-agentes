@@ -27,21 +27,24 @@ export const AGENTES = {
     ],
     respuesta: RESPUESTA_DEPLOY,
   },
-  // Deja un borrador en Netlify con la raíz original intacta. Publicarlo es de Al o Bonzo:
-  // `landing.py promover --desde-notion <fila>` lo revisa contra Netlify y el repo de marca, no contra lo que dice el agente.
+  // Abre un PR en 5cero5-landings con una sola carpeta (landings/<slug>/). El deploy preview de Netlify es el borrador;
+  // publicar es aprobar y fusionar el PR en GitHub, y eso solo lo hacen Al o Bonzo. El token de GitHub dura una hora y
+  // lo pone el harness al abrir la sesión (lib/github.mjs); al cerrar, el harness comprueba el PR en GitHub.
   Landing: {
     env: 'MA_AGENT_LANDING',
     vaultEnv: 'MA_VAULT_LANDING',
-    repos: ['marca', 'agentes'],
+    repos: ['marca', 'agentes', 'landings'],
+    github: true,
     reglas: [
-      'Usa /workspace/agentes/poc-conectores/landing.py sobre una copia del repo de marca en /tmp/marca: solo construir y borrador. Nunca promover ni revertir.',
-      'La landing va solo en /landingtest y la raíz de mkt.5cero5.com se conserva con --base-dir /tmp/marca/landing/base. Nunca uses --reemplazar-raiz.',
-      'Solo cambias textos de landing/index.html. No tocas estilos, scripts, formulario, aviso, funciones ni landing/base.',
+      'Usa solo /workspace/agentes/herramientas/pr_landing.py (nueva, revisar, abrir) sobre copias en /tmp. Nunca fusionas, nunca tocas main y nunca llamas a la API de GitHub por tu cuenta.',
+      'Un PR cambia una sola carpeta: landings/<slug>/. No tocas otras landings, la función, el build ni correos/.',
+      'Cambias textos y, si el brief lo pide, campos extra del formulario declarados en landing.json. Nada de scripts de terceros, otros dominios ni datos inventados.',
     ],
     respuesta: {
-      ejemplo: '{"deploy_id":"...","ruta":"landingtest","build":"...","cambios":["..."]}',
-      claves: ['deploy_id', 'ruta', 'build'],
-      revisa: r => (r.ruta === 'landingtest' ? null : 'ruta_no_permitida'),
+      ejemplo: '{"pr_url":"https://github.com/...","pr_numero":1,"rama":"agente/...","commit":"...","slug":"...","cambios":["..."]}',
+      claves: ['pr_url', 'pr_numero', 'rama', 'commit', 'slug'],
+      revisa: r => (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(String(r.slug)) ? 'slug_invalido'
+        : !String(r.rama).startsWith('agente/') ? 'rama_no_es_de_agente' : null),
     },
   },
   CRM: {

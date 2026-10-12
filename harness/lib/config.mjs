@@ -34,6 +34,17 @@ export function cfg(env = process.env) {
     repos: {
       marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL' },
       agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL' },
+      // Repo de landings: el token de lectura lo saca la GitHub App al abrir la sesión (lib/github.mjs).
+      landings: { url: env.GH_LANDINGS_URL || 'https://github.com/5cero5/5cero5-landings', mount: '/workspace/landings', variable: 'GH_LANDINGS_URL', dinamico: true },
+    },
+    // GitHub App "5cero5-agentes", instalada solo en el repo de landings. La llave privada va como variable secreta.
+    github: {
+      appId: env.GH_APP_ID,
+      installationId: env.GH_APP_INSTALLATION_ID,
+      privateKey: env.GH_APP_PRIVATE_KEY,
+      repoLandings: env.GH_LANDINGS_REPO || '5cero5/5cero5-landings',
+      credLanding: env.MA_CRED_GITHUB_LANDING,      // credencial GITHUB_TOKEN del vault de Landing (se renueva en cada sesión)
+      vaultLanding: (env.MA_VAULT_LANDING || '').split(',')[0].trim() || undefined,
     },
     topeDefaultUsd: num('TOPE_DEFAULT_USD', 2),
     topeMaxUsd: num('TOPE_MAX_USD', 5),        // ningún Notion puede subir el tope más allá de esto

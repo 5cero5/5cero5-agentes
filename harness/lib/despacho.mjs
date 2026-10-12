@@ -1,6 +1,8 @@
 import { P, leePagina } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
 import { despachaCampanas } from './campanas.mjs';
+import { agenteDe } from './agentes.mjs';
+import { preparaGithub } from './github.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -16,7 +18,18 @@ export function esDespachable(fila, c) {
   return null;
 }
 
-export async function despacha({ client, notion, c }) {
+// Agentes con GitHub (Landing): token de escritura nuevo en su vault, token de lectura para montar el repo de landings
+// y el sha de main al empezar (para comprobar al cerrar que nadie publicó durante la sesión).
+async function conGithub(params, fila, c, client, fetchImpl) {
+  if (!agenteDe(fila.agente)?.github) return params;
+  const g = await preparaGithub({ client, c, fetchImpl });
+  const mount = c.repos.landings.mount;
+  return { ...params,
+    resources: (params.resources || []).map(r => (r.mount_path === mount ? { ...r, authorization_token: g.lectura } : r)),
+    metadata: { ...params.metadata, main_sha: g.mainSha || '' } };
+}
+
+export async function despacha({ client, notion, c, fetchImpl = fetch }) {
   const out = { creadas: [], omitidas: [], error: null };
   if (c.pausa) { out.error = 'HARNESS_PAUSA'; return out; }
 
@@ -39,7 +52,7 @@ export async function despacha({ client, notion, c }) {
     // Se reclama ANTES de crear: si algo se cae a medias, no hay doble gasto.
     await notion.update(fila.id, { Estado: P.estado('En curso'), Intentos: P.numero(fila.intentos + 1), Inició: P.fecha(ahora()) });
     try {
-      const s = await client.beta.sessions.create(params);
+      const s = await client.beta.sessions.create(await conGithub(params, fila, c, client, fetchImpl));
       await notion.update(fila.id, { Sesión: P.texto(s.id) });
       out.creadas.push([fila.id, s.id]); cupo--;
     } catch (e) {
