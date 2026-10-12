@@ -60,6 +60,8 @@ def revisa_meta(a) -> dict:
     if permisos:
         dados = sorted(p["permission"] for p in permisos if p.get("status") == "granted")
         print(f"▸ Permisos: {', '.join(dados)}")
+        if "pages_manage_ads" not in dados:
+            print("⚠ Falta pages_manage_ads. Si al crear anuncios Meta responde (#200) por permisos de la página, agrégalo a la app y genera el token otra vez.")
         if "ads_management" not in dados:
             raise SystemExit("✗ El token no tiene ads_management. Genéralo otra vez con ads_management, ads_read, pages_show_list y business_management.")
 
@@ -80,11 +82,18 @@ def revisa_meta(a) -> dict:
     if not int(cuenta.get("spend_cap") or 0):
         print("⚠ La cuenta no tiene límite de gasto. Ponlo en Facturación › Configuración de pagos antes de encender cualquier campaña.")
 
-    obj = g(f"/{a.pagina}", metadata=1, fields="id,name")
-    tipo = (obj.get("metadata") or {}).get("type")
-    print(f"▸ {a.pagina} es de tipo «{tipo}»: {obj.get('name')}")
-    if tipo != "page":
-        raise SystemExit(f"✗ {a.pagina} no es una página de Facebook (es {tipo}). Busca el id de la página en Configuración del negocio › Cuentas › Páginas.")
+    # Si es página: el usuario del sistema la ve en /me/accounts (páginas asignadas), o al menos trae "category",
+    # que solo tienen las páginas. (metadata=1 no siempre regresa el tipo con tokens de usuario del sistema.)
+    asignadas = {p["id"]: p.get("name") for p in g("/me/accounts", fields="id,name", limit=100).get("data", [])}
+    if a.pagina in asignadas:
+        print(f"▸ {a.pagina} es la página «{asignadas[a.pagina]}», asignada al usuario del sistema")
+    else:
+        obj = g(f"/{a.pagina}", fields="id,name,category")
+        if obj.get("category"):
+            raise SystemExit(f"✗ {a.pagina} es la página «{obj.get('name')}», pero no está asignada a este usuario del sistema. "
+                             "Asígnala en Configuración del negocio › Usuarios del sistema › Asignar activos › Páginas (permiso de anuncios).")
+        vistas = ", ".join(f"{k} ({v})" for k, v in asignadas.items()) or "ninguna"
+        raise SystemExit(f"✗ {a.pagina} ({obj.get('name')}) no es una página de Facebook. Páginas que ve el token: {vistas}.")
     try:
         ig = (g(f"/{a.pagina}", fields="instagram_business_account{id,username}").get("instagram_business_account") or {})
     except SystemExit as e:
