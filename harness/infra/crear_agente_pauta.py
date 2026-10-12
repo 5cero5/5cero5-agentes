@@ -92,12 +92,29 @@ def revisa_meta(a) -> dict:
         raise SystemExit(f"✗ {a.pagina} no está entre las páginas asignadas al usuario del sistema. Páginas que ve el token: {vistas}.\n"
                          "  Revisa en Configuración del negocio › Cuentas › Páginas que la página esté en el portafolio (ahí sale su id) y\n"
                          "  asígnala en Usuarios del sistema › agente-pauta › Asignar activos › Páginas, con permiso de anuncios.")
+    # Instagram: el que la cuenta publicitaria puede usar en anuncios (/act_.../instagram_accounts). Es lo que importa
+    # para instagram_user_id. El campo instagram_business_account de la página puede venir vacío sin instagram_basic.
     try:
-        ig = (g(f"/{a.pagina}", fields="instagram_business_account{id,username}").get("instagram_business_account") or {})
+        usables = {x["id"]: x.get("username") for x in g(f"/{cuenta['id']}/instagram_accounts", fields="id,username", limit=50).get("data", [])}
     except SystemExit as e:
-        print(f"⚠ No se pudo leer el Instagram de la página ({e}). Sin Instagram, los anuncios salen con la identidad de la página.")
+        print(f"⚠ No se pudieron leer los Instagram de la cuenta publicitaria ({e}).")
+        usables = {}
+    if a.ig:
+        if a.ig not in usables:
+            raise SystemExit(f"✗ La cuenta {cuenta['id']} no puede anunciar con el Instagram {a.ig}. Instagram que sí puede usar: "
+                             f"{', '.join(f'{v} ({k})' for k, v in usables.items()) or 'ninguno'}.\n"
+                             "  Conéctalo: Configuración del negocio › Cuentas › Instagram › Connect assets › Ad accounts.")
+        ig = {"id": a.ig, "username": usables[a.ig]}
+    elif len(usables) == 1:
+        ig = {"id": next(iter(usables)), "username": next(iter(usables.values()))}
+    else:
         ig = {}
-    print(f"▸ Instagram de la página: {ig.get('username') or 'ninguno'} {ig.get('id') or ''}")
+        if usables:
+            print(f"⚠ La cuenta puede usar varios Instagram ({', '.join(usables)}): di cuál con --ig.")
+    print(f"▸ Instagram para anuncios: {ig.get('username') or 'ninguno'} {ig.get('id') or ''}")
+    if not ig:
+        print("  Sin Instagram, los anuncios salen en Instagram con el nombre y la foto de la página. Para usar la cuenta de Instagram:\n"
+              "  Configuración del negocio › Cuentas › Instagram › Connect assets › Ad accounts, y corre esto otra vez.")
     pixeles = g(f"/{cuenta['id']}/adspixels", fields="id,name").get("data", [])
     lista = ", ".join("%s (%s)" % (p.get("name"), p.get("id")) for p in pixeles) or "ninguno"
     print(f"▸ Pixeles de la cuenta: {lista}")
@@ -111,6 +128,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--pagina", required=True, help="id de la página de Facebook")
     ap.add_argument("--cuenta", help="cuenta publicitaria (act_...) si el token ve más de una")
+    ap.add_argument("--ig", help="id de la cuenta de Instagram para anuncios (si la cuenta publicitaria puede usar varias)")
     ap.add_argument("--pixel", help="id del Pixel (sin él, el agente solo arma campañas de tráfico)")
     ap.add_argument("--solo-revisar", action="store_true", help="solo revisa Meta; no toca Managed Agents")
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
