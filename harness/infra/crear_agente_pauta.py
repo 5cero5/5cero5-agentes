@@ -82,18 +82,16 @@ def revisa_meta(a) -> dict:
     if not int(cuenta.get("spend_cap") or 0):
         print("⚠ La cuenta no tiene límite de gasto. Ponlo en Facturación › Configuración de pagos antes de encender cualquier campaña.")
 
-    # Si es página: el usuario del sistema la ve en /me/accounts (páginas asignadas), o al menos trae "category",
-    # que solo tienen las páginas. (metadata=1 no siempre regresa el tipo con tokens de usuario del sistema.)
+    # La página tiene que estar asignada al usuario del sistema: entonces sale en /me/accounts.
+    # (metadata=1 no regresa el tipo con tokens de usuario del sistema, y otros nodos no tienen "category".)
     asignadas = {p["id"]: p.get("name") for p in g("/me/accounts", fields="id,name", limit=100).get("data", [])}
     if a.pagina in asignadas:
         print(f"▸ {a.pagina} es la página «{asignadas[a.pagina]}», asignada al usuario del sistema")
     else:
-        obj = g(f"/{a.pagina}", fields="id,name,category")
-        if obj.get("category"):
-            raise SystemExit(f"✗ {a.pagina} es la página «{obj.get('name')}», pero no está asignada a este usuario del sistema. "
-                             "Asígnala en Configuración del negocio › Usuarios del sistema › Asignar activos › Páginas (permiso de anuncios).")
-        vistas = ", ".join(f"{k} ({v})" for k, v in asignadas.items()) or "ninguna"
-        raise SystemExit(f"✗ {a.pagina} ({obj.get('name')}) no es una página de Facebook. Páginas que ve el token: {vistas}.")
+        vistas = ", ".join(f"{v} ({k})" for k, v in asignadas.items()) or "ninguna"
+        raise SystemExit(f"✗ {a.pagina} no está entre las páginas asignadas al usuario del sistema. Páginas que ve el token: {vistas}.\n"
+                         "  Revisa en Configuración del negocio › Cuentas › Páginas que la página esté en el portafolio (ahí sale su id) y\n"
+                         "  asígnala en Usuarios del sistema › agente-pauta › Asignar activos › Páginas, con permiso de anuncios.")
     try:
         ig = (g(f"/{a.pagina}", fields="instagram_business_account{id,username}").get("instagram_business_account") or {})
     except SystemExit as e:
