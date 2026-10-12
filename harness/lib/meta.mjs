@@ -42,8 +42,8 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
   let camp, conjuntos = [], ads = [];
   try {
     camp = await g(`/${cid}`, { fields: 'id,name,status,effective_status,objective,account_id,created_time' });
-    conjuntos = (await g(`/${cid}/adsets`, { fields: 'id,name,status,daily_budget,lifetime_budget', limit: 50 })).data || [];
-    ads = (await g(`/${cid}/ads`, { fields: 'id,name,status,creative{id,object_story_spec,url_tags}', limit: 50 })).data || [];
+    conjuntos = (await g(`/${cid}/adsets`, { fields: 'id,name,status,daily_budget,lifetime_budget,created_time', limit: 50 })).data || [];
+    ads = (await g(`/${cid}/ads`, { fields: 'id,name,status,created_time,creative{id,object_story_spec,url_tags}', limit: 50 })).data || [];
   } catch (e) {
     return { ok: false, informe: `Comprobación en Meta: no se pudo leer la campaña ${cid} (${e.message}). Revisar a mano en el Administrador de anuncios.` };
   }
@@ -58,8 +58,15 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
   }
   if (`act_${camp.account_id}` !== m.cuenta) problemas.push(`la campaña es de la cuenta act_${camp.account_id}, no de ${m.cuenta}`);
   if (camp.name !== r.nombre) problemas.push(`la campaña se llama ${camp.name}, el agente dijo ${r.nombre}`);
-  if (inicio && camp.created_time && Date.parse(camp.created_time) < Date.parse(inicio) - 5 * 60e3)
-    problemas.push(`la campaña es de ${camp.created_time}, anterior a esta sesión`);
+  // Una campaña (y su conjunto) puede venir de un intento anterior a medias que la herramienta retomó; los anuncios no:
+  // se crean siempre en la sesión. Si nada es de esta sesión, el agente reportó algo viejo.
+  if (inicio) {
+    const viejo = e => e?.created_time && Date.parse(e.created_time) < Date.parse(inicio) - 5 * 60e3;
+    const viejos = ads.filter(viejo);
+    if (viejos.length) problemas.push(`anuncios anteriores a esta sesión: ${viejos.map(a => a.id).join(', ')}`);
+    if (viejo(camp) && !ads.length && conjuntos.every(viejo)) problemas.push(`nada de la campaña ${cid} se creó en esta sesión`);
+    else if (viejo(camp)) avisos.push(`la campaña es de ${camp.created_time}: se retomó de un intento anterior a medias`);
+  }
   if (conjuntos.length !== 1) problemas.push(`${conjuntos.length} conjuntos (se espera 1)`);
   else if (String(conjuntos[0].id) !== String(r.conjunto_id)) problemas.push(`el conjunto ${conjuntos[0].id} no es el reportado (${r.conjunto_id})`);
   for (const s of conjuntos) {

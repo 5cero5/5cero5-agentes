@@ -642,7 +642,8 @@ test('meta: falla por cuenta, página, destino, tope, presupuesto total, anuncio
     [m => { m.conjuntos[0].lifetime_budget = '900000'; }, /presupuesto total/],
     [m => { m.ads.push(m.ad('904')); }, /Meta tiene 3/],
     [m => { m.conjuntos.push({ ...m.conjuntos[0], id: '905' }); }, /2 conjuntos/],
-    [m => { m.camp.created_time = '2026-10-01T00:00:00+0000'; }, /anterior a esta sesión/],
+    [m => { m.camp.created_time = '2026-10-01T00:00:00+0000'; m.ads[0].created_time = '2026-10-01T00:00:00+0000'; }, /anuncios anteriores a esta sesión: 902/],
+    [m => { m.camp.created_time = '2026-10-01T00:00:00+0000'; m.conjuntos[0].created_time = '2026-10-01T00:00:00+0000'; m.ads = []; }, /nada de la campaña 900 se creó en esta sesión/],
     [m => { m.camp.name = 'otra'; }, /se llama otra/],
   ];
   for (const [cambia, re] of casos) {
@@ -686,4 +687,11 @@ test('cierre de Pauta a medias: con el id de la campaña igual la lee en Meta y 
   const f2 = [filaP({ estado: 'En curso', sesion: 'sesn_1' })]; const n2 = mockNotion(f2);
   await cierraSesion({ client: mockClient({ msg: '{"campana_meta_id":"","motivo":"no"}' }), notion: n2, c: cP, sessionId: 'sesn_1', fetchImpl: metaFalsa().fetch });
   assert.match(n2.log.at(-1)[1]['Informe del Verificador'].rich_text[0].text.content, /no trae el id de la campaña/);
+});
+
+test('meta: campaña retomada de un intento anterior pasa con aviso si los anuncios son de esta sesión', async () => {
+  const m = metaFalsa(); m.camp.created_time = '2026-10-14T10:00:00+0000';
+  m.ads.forEach(a => { a.created_time = '2026-10-14T16:06:00+0000'; });
+  const r = await compruebaCampana({ c: cP, respuesta: respP, inicio: '2026-10-14T16:00:00.000Z', fetchImpl: m.fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /se retomó de un intento anterior/);
 });

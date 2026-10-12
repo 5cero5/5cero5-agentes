@@ -214,7 +214,25 @@ S.objs["77"] = {"id": "77", "name": "x", "status": "PAUSED", "_tipo": "campaign"
 S.objs["78"] = {"id": "78", "name": "conj", "status": "PAUSED", "_tipo": "adset", "_campana": "77", "daily_budget": "1"}
 S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "objective": "OUTCOME_TRAFFIC"}]
 rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
-caso("crear: no retoma una campaña que ya tiene conjuntos", rc != 0 and "Ya existe" in out and not S.posts, out)
+caso("crear: no retoma un conjunto con otro nombre o presupuesto", rc != 0 and "Ya existe" in out and not S.posts, out)
+
+limpia(); corre("plan", "--archivo", str(plan()))
+S.objs["77"] = {"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "_tipo": "campaign"}
+S.objs["78"] = {"id": "78", "name": "mty_duenos-pyme", "status": "PAUSED", "_tipo": "adset", "_campana": "77", "daily_budget": "50000"}
+S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "objective": "OUTCOME_TRAFFIC"}]
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+rutas = [p for p, _ in S.posts]
+caso("crear: retoma campaña y conjunto del intento a medias y solo agrega los anuncios",
+     rc == 0 and f"/{CTA}/campaigns" not in rutas and f"/{CTA}/adsets" not in rutas and rutas.count(f"/{CTA}/ads") == 2
+     and all(b.get("adset_id") == "78" for p_, b in S.posts if p_.endswith("/ads")), out)
+
+limpia(); corre("plan", "--archivo", str(plan()))
+S.objs["77"] = {"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "_tipo": "campaign"}
+S.objs["78"] = {"id": "78", "name": "mty_duenos-pyme", "status": "PAUSED", "_tipo": "adset", "_campana": "77", "daily_budget": "50000"}
+S.objs["79"] = {"id": "79", "name": "a01", "status": "PAUSED", "_tipo": "ad", "_campana": "77"}
+S.campanas_existentes = [{"id": "77", "name": "2026-10_mty_agencia-vs-505", "status": "PAUSED", "objective": "OUTCOME_TRAFFIC"}]
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+caso("crear: no retoma una campaña que ya tiene anuncios", rc != 0 and "Ya existe" in out and not S.posts, out)
 
 limpia(); corre("plan", "--archivo", str(plan()))
 pj = TRABAJO / "2026-10_mty_agencia-vs-505" / "plan.json"; d = json.loads(pj.read_text()); d["presupuesto_diario_mxn"] = 9000; pj.write_text(json.dumps(d))
