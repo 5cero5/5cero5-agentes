@@ -301,22 +301,35 @@ def cmd_crear(a) -> None:
     res_p = d / "resultado.json"
     if res_p.exists():
         die(f"Ya se creó algo para {a.nombre} (resultado.json). No se crea otra vez: usa comprobar.")
-    ya = meta_get(f"/{cta}/campaigns", {"fields": "id,name,status",
-                                         "filtering": [{"field": "name", "operator": "EQUAL", "value": plan["nombre"]}], "limit": 5})
-    if ya.get("data"):
-        die(f"Ya existe una campaña llamada {plan['nombre']} en la cuenta ({ya['data'][0].get('id')}). No se duplica.")
     res = {"nombre": plan["nombre"], "cuenta": cta, "anuncios": []}
     guarda = lambda: escribe_json(res_p, res)  # noqa: E731  progreso: si algo falla a medias, se sabe qué quedó creado
     objective, goal = OBJETIVOS[plan["objetivo"]]
+    ya = meta_get(f"/{cta}/campaigns", {"fields": "id,name,status,objective",
+                                         "filtering": [{"field": "name", "operator": "EQUAL", "value": plan["nombre"]}], "limit": 5}).get("data", [])
+    if ya:
+        # Se retoma solo una campaña vacía que quedó de un intento a medias: mismo nombre, en pausa, mismo objetivo y sin
+        # conjuntos ni anuncios. Nada se edita: solo se le agregan el conjunto y los anuncios. Cualquier otra cosa, se para.
+        e = ya[0]
+        vacia = (len(ya) == 1 and e.get("status") == "PAUSED" and e.get("objective") == objective
+                 and not meta_get(f"/{e['id']}/adsets", {"fields": "id", "limit": 1}).get("data")
+                 and not meta_get(f"/{e['id']}/ads", {"fields": "id", "limit": 1}).get("data"))
+        if not vacia:
+            die(f"Ya existe una campaña llamada {plan['nombre']} en la cuenta ({e.get('id')}) y no está vacía y en pausa. No se duplica.")
+        res["campana_meta_id"] = e["id"]
+        res["retomada"] = True
+        guarda()
+        print(f"✓ campaña {e['id']} retomada: ya existía vacía y en pausa (intento anterior a medias)")
+    else:
+        c = meta_post(cta, f"/{cta}/campaigns", {
+            "name": plan["nombre"], "objective": objective, "status": "PAUSED", "special_ad_categories": [],
+            "buying_type": "AUCTION", "is_adset_budget_sharing_enabled": "false"})
+        res["campana_meta_id"] = c["id"]
+        guarda()
+        print(f"✓ campaña {c['id']} en pausa")
+    c = {"id": res["campana_meta_id"]}
 
-    c = meta_post(cta, f"/{cta}/campaigns", {
-        "name": plan["nombre"], "objective": objective, "status": "PAUSED", "special_ad_categories": [],
-        "buying_type": "AUCTION", "is_adset_budget_sharing_enabled": "false"})
-    res["campana_meta_id"] = c["id"]
-    guarda()
-    print(f"✓ campaña {c['id']} en pausa")
-
-    targeting = {**plan["publico"]["geo"], "age_min": plan["publico"]["edad_min"], "age_max": plan["publico"]["edad_max"],
+    # La ubicación va dentro de geo_locations (sin eso Meta responde "Add at least one location", subcode 1885364).
+    targeting = {"geo_locations": plan["publico"]["geo"], "age_min": plan["publico"]["edad_min"], "age_max": plan["publico"]["edad_max"],
                  "targeting_automation": {"advantage_audience": 0}}
     conj = {"name": plan["publico"]["nombre"], "campaign_id": c["id"], "status": "PAUSED",
             "daily_budget": int(round(plan["presupuesto_diario_mxn"] * 100)), "billing_event": "IMPRESSIONS",
