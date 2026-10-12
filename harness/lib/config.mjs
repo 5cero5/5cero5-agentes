@@ -37,14 +37,18 @@ export function cfg(env = process.env) {
       // Repo de landings: el token de lectura lo saca la GitHub App al abrir la sesión (lib/github.mjs).
       landings: { url: env.GH_LANDINGS_URL || 'https://github.com/5cero5/5cero5-landings', mount: '/workspace/landings', variable: 'GH_LANDINGS_URL', dinamico: true },
     },
-    // GitHub App "5cero5-agentes", instalada solo en el repo de landings. La llave privada va como variable secreta.
+    // GitHub App "5cero5-agentes", instalada en los repos donde los agentes abren PRs. La llave privada va como variable secreta.
+    // Un destino por repo: a qué repo escribe el agente y en qué credencial de qué vault va su token de 1 hora.
     github: {
       appId: env.GH_APP_ID,
       installationId: env.GH_APP_INSTALLATION_ID,
       privateKey: env.GH_APP_PRIVATE_KEY,
-      repoLandings: env.GH_LANDINGS_REPO || '5cero5/5cero5-landings',
-      credLanding: env.MA_CRED_GITHUB_LANDING,      // credencial GITHUB_TOKEN del vault de Landing (se renueva en cada sesión)
-      vaultLanding: (env.MA_VAULT_LANDING || '').split(',')[0].trim() || undefined,
+      destinos: {
+        landings: { repo: env.GH_LANDINGS_REPO || '5cero5/5cero5-landings', cred: env.MA_CRED_GITHUB_LANDING, credVar: 'MA_CRED_GITHUB_LANDING',
+          vault: (env.MA_VAULT_LANDING || '').split(',')[0].trim() || undefined, vaultVar: 'MA_VAULT_LANDING' },
+        piezas: { repo: env.GH_PIEZAS_REPO || '5cero5/5cero5-piezas', cred: env.MA_CRED_GITHUB_CREATIVO, credVar: 'MA_CRED_GITHUB_CREATIVO',
+          vault: (env.MA_VAULT_CREATIVO || '').split(',')[0].trim() || undefined, vaultVar: 'MA_VAULT_CREATIVO' },
+      },
     },
     topeDefaultUsd: num('TOPE_DEFAULT_USD', 2),
     topeMaxUsd: num('TOPE_MAX_USD', 5),        // ningún Notion puede subir el tope más allá de esto

@@ -22,13 +22,21 @@ HOSTS = [
     "services.leadconnectorhq.com",   # CRM: API de HighLevel
     "firebasestorage.googleapis.com", # CRM: HTML guardado de las plantillas (correo.py comprobar)
     "api.notion.com",                 # CMO: leer campañas y proponer filas
-    "api.github.com",                 # Landing: PRs en 5cero5-landings con pr_landing.py (nunca fusiona)
-    "cdn.playwright.dev",             # Landing: navegador del Verificador (playwright install chromium)
+    "api.github.com",                 # Landing y Creativo: PRs en 5cero5-landings y 5cero5-piezas (nunca fusionan)
+    "api.higgsfield.ai",              # Creativo: fotos con Higgsfield (solo si el brief las pide; llave solo en su vault)
+    "cdn.playwright.dev",             # Landing y Creativo: navegador para render y Verificador (playwright install chromium)
     "playwright.download.prss.microsoft.com",
     "playwright.azureedge.net",
 ]
-RED = {"type": "limited", "allowed_hosts": HOSTS, "allow_mcp_servers": False, "allow_package_managers": True}
-PAQUETES = {"pip": ["httpx", "playwright"]}  # playwright: Verificador de landing (el navegador se baja en la sesión)
+# Hosts que se conocen al correr un script (por ejemplo, el que sirve las imágenes de Higgsfield): se guardan en
+# estado-entorno.json ("hosts_extra") para que ningún otro script los quite al reaplicar la red.
+def red(extra: list[str] | None = None) -> dict:
+    hosts = list(dict.fromkeys(HOSTS + list(extra or [])))
+    return {"type": "limited", "allowed_hosts": hosts, "allow_mcp_servers": False, "allow_package_managers": True}
+
+
+RED = red()
+PAQUETES = {"pip": ["httpx", "playwright", "pillow"]}  # playwright: render y Verificador (el navegador se baja en la sesión); pillow: Verificador de piezas
 HERRAMIENTAS = [{
     "type": "agent_toolset_20260401",
     "default_config": {"enabled": True, "permission_policy": {"type": "always_allow"}},
@@ -52,9 +60,14 @@ def guarda(nombre: str, estado: dict) -> None:
     (AQUI / f"estado-{nombre}.json").write_text(json.dumps(estado, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def entorno(b) -> str:
-    """Crea el entorno común o le reaplica la red y los paquetes completos. Adopta el id que haya creado una versión anterior."""
+def entorno(b, hosts_extra: list[str] | None = None) -> str:
+    """Crea el entorno común o le reaplica la red y los paquetes completos. Adopta el id que haya creado una versión anterior.
+    hosts_extra se suma a los que ya estaban guardados en estado-entorno.json."""
     e = carga("entorno")
+    if hosts_extra:
+        e["hosts_extra"] = list(dict.fromkeys(e.get("hosts_extra", []) + hosts_extra))
+        guarda("entorno", e)
+    RED = red(e.get("hosts_extra"))
     if "environment_id" not in e and "environment_id" in carga("crm"):
         e["environment_id"] = carga("crm")["environment_id"]
         guarda("entorno", e)
@@ -70,7 +83,7 @@ def entorno(b) -> str:
         print(f"▸ Entorno creado: {env.id}")
     else:
         b.environments.update(e["environment_id"], config={"type": "cloud", "networking": RED, "packages": PAQUETES})
-        print(f"▸ Entorno {e['environment_id']}: red = {', '.join(HOSTS)} · pip = {', '.join(PAQUETES['pip'])}")
+        print(f"▸ Entorno {e['environment_id']}: red = {', '.join(RED['allowed_hosts'])} · pip = {', '.join(PAQUETES['pip'])}")
     return e["environment_id"]
 
 

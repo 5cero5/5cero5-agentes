@@ -17,7 +17,6 @@ Lo que se impone:
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -25,22 +24,16 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gh_pr import die, sube_carpeta  # noqa: E402
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 RESERVADAS = {"assets", "netlify", "api", "admin"}
 BASURA = {".DS_Store", "Thumbs.db", "desktop.ini"}
 MAX_ARCHIVOS, MAX_BYTES = 80, 8 * 1024 * 1024
-API = os.environ.get("GITHUB_API_BASE", "https://api.github.com")
 REPO = os.environ.get("GH_LANDINGS_REPO", "5cero5/5cero5-landings")
-
-
-def die(m: str) -> None:
-    print(f"\n✗ {m}")
-    sys.exit(1)
 
 
 def carpeta(a) -> Path:
@@ -127,27 +120,7 @@ def cmd_revisar(a) -> None:
     print(f"\n✓ landings/{a.slug}/ revisada. Ya se puede abrir el PR.")
 
 
-# ------------------------------------------------------------------ abrir (API de GitHub)
-def gh(method: str, path: str, body: dict | None = None) -> dict:
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        die("Falta GITHUB_TOKEN.")
-    req = urllib.request.Request(API + path, method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-                                          "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "5cero5-agente-landing",
-                                          **({"Content-Type": "application/json"} if body is not None else {})})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            t = r.read()
-            return json.loads(t) if t else {}
-    except urllib.error.HTTPError as e:
-        die(f"GitHub respondió {e.code} a {method} {path.split('?')[0]}: {e.read()[:300].decode('utf-8', 'ignore')}")
-
-
-def blob_sha(b: bytes) -> str:
-    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
-
-
+# ------------------------------------------------------------------ abrir (API de GitHub, con gh_pr.py)
 def cmd_abrir(a) -> None:
     dir_ = carpeta(a)
     marca = dir_ / ".revisado"
@@ -159,36 +132,14 @@ def cmd_abrir(a) -> None:
     if len(locales) > MAX_ARCHIVOS or sum(map(len, locales.values())) > MAX_BYTES:
         die(f"Demasiados archivos o demasiado peso (máximo {MAX_ARCHIVOS} y {MAX_BYTES // 1024 // 1024} MB).")
     pref = f"landings/{a.slug}/"
-    base = gh("GET", f"/repos/{REPO}/git/ref/heads/main")["object"]["sha"]
-    tree_base = gh("GET", f"/repos/{REPO}/git/commits/{base}")["tree"]["sha"]
-    remoto = {e["path"][len(pref):]: e["sha"] for e in gh("GET", f"/repos/{REPO}/git/trees/{tree_base}?recursive=1").get("tree", [])
-              if e.get("type") == "blob" and e["path"].startswith(pref)}
-    cambios = []
-    for k, b in locales.items():
-        if remoto.get(k) == blob_sha(b):
-            continue
-        sha = gh("POST", f"/repos/{REPO}/git/blobs", {"content": base64.b64encode(b).decode(), "encoding": "base64"})["sha"]
-        cambios.append({"path": pref + k, "mode": "100644", "type": "blob", "sha": sha})
-    for k in remoto:
-        if k not in locales:
-            cambios.append({"path": pref + k, "mode": "100644", "type": "blob", "sha": None})
-    if not cambios:
-        die("No hay cambios contra main en esa carpeta.")
-    if any(not c["path"].startswith(pref) for c in cambios):
-        die("Un cambio cae fuera de la carpeta de la landing.")  # no debería pasar nunca
-    arbol = gh("POST", f"/repos/{REPO}/git/trees", {"base_tree": tree_base, "tree": cambios})["sha"]
-    nueva = not remoto
-    msg = f"{'Nueva landing' if nueva else 'Landing'} {a.slug}: {a.titulo}"
-    commit = gh("POST", f"/repos/{REPO}/git/commits", {"message": msg, "tree": arbol, "parents": [base]})["sha"]
-    rama = f"agente/{a.slug}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-    gh("POST", f"/repos/{REPO}/git/refs", {"ref": f"refs/heads/{rama}", "sha": commit})
-    cuerpo = (a.cuerpo or "") + ("\n\n" if a.cuerpo else "") + \
-        f"Abierto por el agente Landing. Solo cambia `{pref}` ({len(cambios)} archivo(s)).\n\n" \
+    cuerpo = lambda nueva, n: (a.cuerpo or "") + ("\n\n" if a.cuerpo else "") + \
+        f"Abierto por el agente Landing. Solo cambia `{pref}` ({n} archivo(s)).\n\n" \
         f"Para revisar: el deploy preview de Netlify en `/{a.slug}/` y `/.netlify/functions/prospecto?verificar=1&landing={a.slug}`.\n" \
         "Publicar = aprobar y fusionar este PR (solo Al o Bonzo)."
-    pr = gh("POST", f"/repos/{REPO}/pulls", {"title": msg[:120], "head": rama, "base": "main", "body": cuerpo})
-    out = {"pr_url": pr.get("html_url"), "pr_numero": pr.get("number"), "rama": rama, "commit": commit, "slug": a.slug,
-           "archivos": [c["path"] for c in cambios]}
+    r = sube_carpeta(repo=REPO, pref=pref, locales=locales, rama_base=a.slug, ua="5cero5-agente-landing",
+                     mensaje=lambda nueva, n: f"{'Nueva landing' if nueva else 'Landing'} {a.slug}: {a.titulo}", cuerpo=cuerpo)
+    out = {k: r[k] for k in ("pr_url", "pr_numero", "rama", "commit")}
+    out.update(slug=a.slug, archivos=r["archivos"])
     print(json.dumps(out, ensure_ascii=False))
 
 

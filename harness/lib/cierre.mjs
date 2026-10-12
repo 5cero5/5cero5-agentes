@@ -52,9 +52,9 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
   } else if (agenteDe(fila.agente)?.github) {
-    // El trabajo de Landing es un PR: el harness lo comprueba en GitHub (regla 8). Publicar sigue siendo de Al o Bonzo.
+    // El trabajo de Landing y Creativo es un PR: el harness lo comprueba en GitHub (regla 8). Publicar sigue siendo de Al o Bonzo.
     const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
-      : await compruebaPR({ c, respuesta: ultimoJson(resultado), mainAntes: session.metadata?.main_sha, fetchImpl });
+      : await compruebaPR({ c, agente: fila.agente, respuesta: ultimoJson(resultado), mainAntes: session.metadata?.main_sha, fetchImpl });
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);

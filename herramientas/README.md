@@ -5,5 +5,8 @@ Herramientas que usan los agentes dentro de su sesión de Managed Agents (el rep
 | Archivo | Agente | Qué hace |
 |---|---|---|
 | `pr_landing.py` | Landing | `nueva` (carpeta desde la plantilla de marca), `revisar` (build del repo de landings + Verificador de marca con navegador) y `abrir` (rama `agente/<slug>-<fecha>` y PR a `main` por la API de GitHub). Solo sube `landings/<slug>/`; nunca toca `main` ni fusiona. |
+| `pr_pieza.py` | Creativo | `nueva` (pieza desde la plantilla del formato: post 4:5, post 1:1 o historia 9:16, con o sin foto), `foto` (Higgsfield: una por pieza, dos por sesión, el prompt debe pedir sin texto y sin logos), `llenar` (escribe `copia.json` en los SLOT), `revisar` (render con Playwright y Verificador de marca) y `abrir` (PR a `5cero5-piezas` con `piezas/<campaña>/<pieza>/`: pieza.png, pieza.html, copia.json, pieza.json, informe.json y, si lleva foto, `fotos/` y prompt.txt). Nunca fusiona. |
+| `gh_pr.py` | (común) | API de Git de GitHub: sube una sola carpeta a una rama `agente/*` y abre el PR a `main`. Lo usan las dos herramientas. |
 
 Pruebas: `MARCA_REPO=… LANDINGS_REPO=… python3 test_pr_landing.py` (GitHub falso; necesita Playwright con Chromium y node). 15 comprobaciones.
+`MARCA_REPO=… python3 test_pr_pieza.py` (GitHub y Higgsfield falsos; necesita Pillow y Playwright con Chromium). 29 comprobaciones.
