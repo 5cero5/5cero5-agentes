@@ -50,7 +50,8 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
       out.omitidas.push([fila.id, 'params']); continue;
     }
     // Se reclama ANTES de crear: si algo se cae a medias, no hay doble gasto.
-    await notion.update(fila.id, { Estado: P.estado('En curso'), Intentos: P.numero(fila.intentos + 1), Inició: P.fecha(ahora()) });
+    // Se limpia el Error de un intento anterior para que la fila no muestre un error que ya no aplica.
+    await notion.update(fila.id, { Estado: P.estado('En curso'), Intentos: P.numero(fila.intentos + 1), Inició: P.fecha(ahora()), Error: P.texto('') });
     try {
       const s = await client.beta.sessions.create(await conGithub(params, fila, c, client, fetchImpl));
       await notion.update(fila.id, { Sesión: P.texto(s.id) });

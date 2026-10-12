@@ -385,6 +385,12 @@ test('despacha Landing: renueva el token, monta landings con el de lectura y gua
   assert.equal(p.resources.find(r => r.mount_path === '/workspace/landings').authorization_token, 'ghs_2');
   assert.equal(p.metadata.main_sha, 'm1');
 });
+test('despacha: al reclamar un reintento limpia el Error del intento anterior', async () => {
+  const f = [filaCRM({ intentos: 1 })]; const n = mockNotion(f);
+  await despacha({ client: mockClient(), notion: n, c: cCRM });
+  const reclamo = n.log.find(([, p]) => p.Estado?.select?.name === 'En curso')[1];
+  assert.deepEqual(reclamo.Error, { rich_text: [] });
+});
 test('despacha Landing: si GitHub falla, la fila pasa a Error y no hay sesión', async () => {
   const f = [filaL()]; const cl = mockClient();
   cl.beta.vaults = { credentials: { update: async () => {} } };
