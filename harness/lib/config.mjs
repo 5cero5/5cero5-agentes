@@ -36,6 +36,20 @@ export function cfg(env = process.env) {
       agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL' },
       // Repo de landings: el token de lectura lo saca la GitHub App al abrir la sesión (lib/github.mjs).
       landings: { url: env.GH_LANDINGS_URL || 'https://github.com/5cero5/5cero5-landings', mount: '/workspace/landings', variable: 'GH_LANDINGS_URL', dinamico: true },
+      // Repo de piezas (solo lo monta Pauta, para subir a Meta las piezas ya fusionadas). Token de lectura de la GitHub App.
+      piezas: { url: env.GH_PIEZAS_URL || 'https://github.com/5cero5/5cero5-piezas', mount: '/workspace/piezas', variable: 'GH_PIEZAS_URL', dinamico: true },
+    },
+    // Meta Ads (agente Pauta). Ids no secretos; META_TOKEN es el del usuario del sistema y va como variable secreta:
+    // el harness lo usa para comprobar lo que creó el agente y para pausar cualquier cosa que no esté en pausa.
+    meta: {
+      cuenta: env.META_AD_ACCOUNT_ID ? (String(env.META_AD_ACCOUNT_ID).startsWith('act_') ? env.META_AD_ACCOUNT_ID : `act_${env.META_AD_ACCOUNT_ID}`) : undefined,
+      pagina: env.META_PAGE_ID,
+      ig: env.META_IG_USER_ID || '',
+      pixel: env.META_PIXEL_ID || '',
+      token: env.META_TOKEN,
+      topeDiarioMxn: num('META_TOPE_DIARIO_MXN', 1500),
+      dominios: (env.META_DOMINIOS || 'marketing.5cero5.com').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+      api: env.META_API_BASE || 'https://graph.facebook.com/v25.0',
     },
     // GitHub App "5cero5-agentes", instalada en los repos donde los agentes abren PRs. La llave privada va como variable secreta.
     // Un destino por repo: a qué repo escribe el agente y en qué credencial de qué vault va su token de 1 hora.

@@ -15,10 +15,11 @@ Lo que hace: lee la base Aprobaciones de Notion, y cuando Al o Bonzo aprueban un
 - Pasar de MAX_MINUTOS_SESION: se interrumpe y queda en Error.
 
 ## Agentes (`lib/agentes.mjs`)
-El harness solo despacha agentes que están en el catálogo y tienen su id en una variable. Cada uno declara qué repos monta, sus reglas fijas y el JSON con el que termina. Una fila con otro agente (Pauta, Datos, CMO) pasa a Error sin abrir sesión.
+El harness solo despacha agentes que están en el catálogo y tienen su id en una variable. Cada uno declara qué repos monta, sus reglas fijas y el JSON con el que termina. Una fila con otro agente (Datos, CMO) pasa a Error sin abrir sesión.
 
 | Agente | Variable | Monta | Termina con |
 |---|---|---|---|
+| Pauta | MA_AGENT_PAUTA | agentes y piezas (solo lectura) | `campana_meta_id`, `nombre` (AAAA-MM_zona_angulo), `cuenta`, `conjunto_id`, `anuncios` (id, nombre, pieza), `presupuesto_diario_mxn`, `objetivo` |
 | Creativo | MA_AGENT_CREATIVO | marca y agentes | `pr_url`, `pr_numero`, `rama` (`agente/…`), `commit`, `campana`, `pieza`, `formato` (post-4x5, post-1x1, historia-9x16), `foto` |
 | Landing | MA_AGENT_LANDING | marca, agentes y landings | `pr_url`, `pr_numero`, `rama` (`agente/…`), `commit`, `slug`, `cambios` |
 | CRM | MA_AGENT_CRM | marca y agentes | `plantilla_id`, `nombre` (con prefijo `[agente] `), `html_sha1` |
@@ -48,12 +49,22 @@ Cada pieza (post 4:5, post 1:1 o historia 9:16) vive en `piezas/<campaña>/<piez
 - **Foto:** solo si el brief dice "Foto: sí". La llave de Higgsfield vive solo en el vault del Creativo (hacia api.higgsfield.ai); `pr_pieza.py` permite una foto por pieza y dos por sesión. El tope real de gasto es el saldo de la API de Higgsfield.
 - **Al cerrar (regla 8):** lo mismo que Landing (PR abierto, sin fusionar, rama `agente/…`, commit, solo su carpeta, `main` quieto) y además, en la punta del PR: solo los archivos permitidos, informe.json aprobado y del mismo PNG (sha del blob), formato y foto como dijo el agente, y el PNG mide lo de su formato. Verificador = Aprobada o Rechazada; la fila queda en Para revisar.
 
+### Pauta → campaña en Meta, en pausa
+Una sesión arma una campaña de Meta con un conjunto y un anuncio por pieza ya fusionada en `5cero5-piezas`, todo con status PAUSED, con `herramientas/meta_pauta.py` (cuenta, plan, crear, comprobar) por la Marketing API (v25.0). Aprobar la fila es aprobar presupuesto, fechas, público y destino; encender la campaña es de Al o Bonzo en el Administrador de anuncios.
+
+- **Por qué API y no el MCP oficial de Meta:** el MCP (`mcp.facebook.com/ads`) crea en pausa, pero trae `ads_activate_entity` y no tiene herramienta para subir imágenes. Con la API, la única salida de escritura de `meta_pauta.py` solo crea en `/act_<cuenta>/{campaigns,adsets,ads,adcreatives,adimages}` y siempre con PAUSED; no puede activar, editar ni borrar. El MCP queda para reportes.
+- **Token:** usuario del sistema del portafolio con `ads_management` (acceso estándar basta para la cuenta propia). Va en el vault de Pauta (META_TOKEN, solo en encabezados hacia graph.facebook.com) y, como variable secreta, en Netlify para la comprobación.
+- **Piezas:** el repo `5cero5-piezas` se monta en `/workspace/piezas` con un token de **lectura** de la GitHub App; Pauta no recibe token de escritura de GitHub.
+- **Tope:** META_TOPE_DIARIO_MXN (1,500 por omisión) por campaña, en la herramienta y en la comprobación. El freno de fondo es el límite de gasto de la cuenta: sin él, la comprobación avisa.
+- **Al cerrar (regla 8, `lib/meta.mjs`):** lee la campaña en Meta: cuenta y página correctas, creada en esta sesión, un conjunto con presupuesto diario dentro del tope, los anuncios que reportó el agente y nada más, destino en META_DOMINIOS y todo en pausa. **Lo que no esté en pausa, el harness lo pausa en ese momento** y la fila sale Rechazada.
+- **Riesgo que queda:** el agente tiene bash y el token sustituido en encabezados hacia graph.facebook.com; si ignorara su prompt podría activar algo durante la sesión. Lo acotan el límite de gasto de la cuenta, el inicio futuro del conjunto que pide el brief, la sesión de 30 minutos como máximo y el freno al cerrar.
+
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
-   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Landing (GitHub App): GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_PRIVATE_KEY (secreta; la llave .pem completa, sirve con saltos de línea o con \\n) y MA_CRED_GITHUB_LANDING (la imprime `crear_agente_landing.py`); opcionales GH_LANDINGS_URL y GH_LANDINGS_REPO. Creativo (misma App): MA_CRED_GITHUB_CREATIVO (la imprime `crear_agente_creativo.py`); opcional GH_PIEZAS_REPO. Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
+   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Landing (GitHub App): GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_PRIVATE_KEY (secreta; la llave .pem completa, sirve con saltos de línea o con \\n) y MA_CRED_GITHUB_LANDING (la imprime `crear_agente_landing.py`); opcionales GH_LANDINGS_URL y GH_LANDINGS_REPO. Creativo (misma App): MA_CRED_GITHUB_CREATIVO (la imprime `crear_agente_creativo.py`); opcional GH_PIEZAS_REPO. Pauta: MA_AGENT_PAUTA, MA_VAULT_PAUTA, META_AD_ACCOUNT_ID, META_PAGE_ID, opcionales META_IG_USER_ID y META_PIXEL_ID (los imprime `crear_agente_pauta.py`), META_TOPE_DIARIO_MXN, META_DOMINIOS (marketing.5cero5.com por omisión), GH_PIEZAS_URL; y META_TOKEN como secreta. Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion: compartir la base Aprobaciones con la integración "5cero5 agentes" (Connections).
 4. Deploy a producción (las funciones programadas solo corren en deploys publicados).
 5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion` con los eventos `session.status_idled`, `session.status_terminated` y `session.budget_reached` (los `session.thread_*` no hacen falta: se ignoran). Copiar la signing key a ANTHROPIC_WEBHOOK_SIGNING_KEY y volver a hacer deploy.
@@ -61,10 +72,10 @@ Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo ano
 6. Probar: fila de prueba con brief corto, Aprobó=tú, Estado=Aprobado; en Netlify > Functions > disparador > Run now.
 
 ## Alta de agentes (`infra/`)
-`crear_agente_crm.py`, `crear_agente_cmo.py` y `crear_agente_landing.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`. El entorno común lleva `httpx` y `playwright` (pip); el Chromium del Verificador de landing lo baja cada sesión del agente Landing desde los hosts de Playwright que están en HOSTS.
+`crear_agente_crm.py`, `crear_agente_cmo.py`, `crear_agente_landing.py`, `crear_agente_creativo.py` y `crear_agente_pauta.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`. El entorno común lleva `httpx` y `playwright` (pip); el Chromium del Verificador de landing lo baja cada sesión del agente Landing desde los hosts de Playwright que están en HOSTS.
 
 ## Pruebas
-`npm ci && npm test` (52 casos con mocks de Notion y de Anthropic).
+`npm ci && npm test` (73 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.
