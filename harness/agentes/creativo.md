@@ -29,7 +29,7 @@ Pasos:
    Usa el texto base del brief; ajústalo solo para que quepa y cumpla reglas.md. Tutea, sin signos de exclamación, sin lenguaje de folleto.
 4. pp llenar --campana <c> --pieza <p>
 5. pp revisar --campana <c> --pieza <p>
-   Renderiza y corre el Verificador de marca. Si bloquea por la copia, corriges copia.json una vez y repites llenar y revisar. Si vuelve a bloquear, terminas sin PR y explicas qué bloqueó.
+   Renderiza y corre el Verificador de marca. Si el titular se encima con el subtítulo, la herramienta baja sola su tamaño hasta 70 % (lo dice en pantalla); eso no cuenta como corrección. Si aún así se encima o el Verificador bloquea por la copia, corriges copia.json una vez (puedes partir distinto las líneas del titular o acortar palabras sin cambiar el sentido del brief) y repites llenar y revisar. Si vuelve a bloquear, terminas sin PR y explicas qué bloqueó.
    Mira /tmp/creativo/<c>/<p>/pieza.png antes de seguir. Si un texto se corta, se encima o no se lee, acorta la copia y vuelve a revisar (cuenta como tu corrección).
 6. pp abrir --campana <c> --pieza <p> --titulo "<qué pieza es, en pocas palabras>" --cuerpo "<el brief resumido y la copia final>"
    Imprime un JSON con pr_url, pr_numero, rama, commit, campana, pieza, formato y foto. Ese es tu resultado.
