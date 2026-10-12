@@ -346,6 +346,13 @@ test('github: el JWT de la app va firmado con su llave y vence en menos de 10 mi
   const c = JSON.parse(Buffer.from(p, 'base64url'));
   assert.equal(c.iss, '123'); assert.ok(c.exp - c.iat <= 600);
 });
+test('github: la llave sirve aunque Netlify la guarde con espacios, \\n, CRLF o en base64; si no es PEM, error claro', () => {
+  const verifica = pem => { const [h, p, f] = jwtApp('123', pem, 1000).split('.');
+    return createVerify('RSA-SHA256').update(`${h}.${p}`).verify(PUB, Buffer.from(f, 'base64url')); };
+  for (const v of [PEM, PEM.replace(/\n/g, ' '), PEM.replace(/\n/g, '\\n'), PEM.replace(/\n/g, '\r\n'), Buffer.from(PEM).toString('base64'), `  ${PEM}  `])
+    assert.ok(verifica(v));
+  assert.throws(() => jwtApp('123', 'no-es-una-llave', 1000), /GH_APP_PRIVATE_KEY/);
+});
 test('router: Landing monta marca, agentes y landings, usa su vault y abre PRs con pr_landing.py', () => {
   const p = parametrosSesion(filaL(), cL);
   assert.equal(p.agent, 'agent_landing'); assert.deepEqual(p.vault_ids, ['v_landing']);

@@ -13,12 +13,27 @@ const b64url = b => Buffer.from(b).toString('base64').replace(/=+$/, '').replace
 export function jwtApp(appId, pem, ahora = Math.floor(Date.now() / 1000)) {
   const h = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const p = b64url(JSON.stringify({ iat: ahora - 60, exp: ahora + 540, iss: String(appId) }));
-  const firma = createSign('RSA-SHA256').update(`${h}.${p}`).sign(normalizaPem(pem));
+  let firma;
+  try { firma = createSign('RSA-SHA256').update(`${h}.${p}`).sign(normalizaPem(pem)); }
+  catch (e) { throw new Error(`No se pudo firmar con GH_APP_PRIVATE_KEY (${e.message}). Revisa que sea la llave .pem completa de la GitHub App.`); }
   return `${h}.${p}.${b64url(firma)}`;
 }
 
-// Netlify guarda las variables en una línea: acepta la llave con "\n" literales.
-export const normalizaPem = pem => String(pem || '').replace(/\\n/g, '\n').trim() + '\n';
+// Al pegar la llave en Netlify los saltos de línea pueden llegar como "\n" literales, espacios o CRLF, o la llave
+// puede venir entera en base64. Se rearma el PEM: encabezado, cuerpo en base64 sin espacios en líneas de 64 y pie.
+export function normalizaPem(pem) {
+  const s = String(pem || '').replace(/\\n/g, '\n').replace(/\r/g, '').trim();
+  const m = s.match(/-----BEGIN ([A-Z ]+)-----([\s\S]*?)-----END \1-----/);
+  if (!m) {
+    if (/^[A-Za-z0-9+/=\s]+$/.test(s)) {
+      const dec = Buffer.from(s.replace(/\s/g, ''), 'base64').toString('utf8');
+      if (dec.includes('-----BEGIN ')) return normalizaPem(dec);
+    }
+    throw new Error('GH_APP_PRIVATE_KEY no parece una llave PEM (falta -----BEGIN ... PRIVATE KEY-----)');
+  }
+  const cuerpo = m[2].replace(/[^A-Za-z0-9+/=]/g, '');
+  return `-----BEGIN ${m[1]}-----\n${cuerpo.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
+}
 
 async function gh(fetchImpl, method, path, token, body, tipo = 'Bearer') {
   const r = await fetchImpl(API() + path, {
