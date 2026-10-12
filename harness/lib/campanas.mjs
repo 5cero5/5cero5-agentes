@@ -56,6 +56,9 @@ export function briefDeCampana(k, c) {
     `Pauta: ${k.presupuesto ?? '?'} MXN · Vigencia: ${vig}`,
     `Brief de la campaña: ${k.brief || '(ver cuerpo de la página)'}`,
     `Agentes disponibles hoy: ${disponibles.join(', ') || 'ninguno'}.`,
+    c.agentes.Pauta && c.meta?.cuenta
+      ? `Agente de Pauta (Meta): disponible. Tope diario por campaña: ${c.meta.topeDiarioMxn} MXN. Destinos permitidos: ${(c.meta.dominios || []).join(', ')}. Objetivo: ${c.meta.pixel ? 'Tráfico o Clientes potenciales (hay Pixel)' : 'solo Tráfico (sin Pixel)'}.`
+      : 'Agente de Pauta (Meta): no disponible.',
     `Escribe las filas en Aprobaciones (data source ${c.notionDataSource}) con Campaña = "${k.nombre}" y Campaña ligada = ${k.id}.`,
   ].join('\n');
 }
@@ -110,7 +113,7 @@ export async function compruebaFilasCMO(notion, filaCMO, respuesta) {
     problemas.push(`campana_id ${respuesta.campana_id} no es la campaña de la fila`);
   }
   const filas = Array.isArray(respuesta?.filas) ? respuesta.filas : [];
-  let buenas = 0;
+  let buenas = 0, pautas = 0;
   for (const f of filas) {
     let page;
     try { page = await notion.get(f.id); } catch { problemas.push(`${f.id}: no existe o no se puede leer`); continue; }
@@ -119,12 +122,29 @@ export async function compruebaFilasCMO(notion, filaCMO, respuesta) {
     if (page.archived || page.in_trash) mal.push('está en la papelera');
     if (p['Estado']?.select?.name !== 'Propuesta') mal.push(`Estado = ${p['Estado']?.select?.name || 'vacío'}`);
     if ((p['Aprobó']?.people || []).length) mal.push('tiene Aprobó');
-    if (!AGENTES_DE_PIEZA.includes(p['Agente']?.select?.name)) mal.push(`Agente = ${p['Agente']?.select?.name || 'vacío'}`);
+    const agente = p['Agente']?.select?.name;
+    if (agente === 'Pauta') pautas++;
+    else if (!AGENTES_DE_PIEZA.includes(agente)) mal.push(`Agente = ${agente || 'vacío'}`);
     const ligadas = (p['Campaña ligada']?.relation || []).map(r => sinGuiones(r.id));
     if (!campana || !ligadas.includes(sinGuiones(campana))) mal.push('no está ligada a la campaña');
     if (mal.length) problemas.push(`${f.id}: ${mal.join(', ')}`); else buenas++;
   }
-  const informe = `Comprobación en Notion: ${buenas}/${filas.length} filas en Propuesta, ligadas y sin aprobar.` +
+  if (pautas > 1) problemas.push(`${pautas} filas de Pauta (se permite una por campaña)`);
+  const informe = `Comprobación en Notion: ${buenas}/${filas.length} filas en Propuesta, ligadas y sin aprobar${pautas ? ` (una de Pauta)` : ''}.` +
     (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : '');
   return { ok: filas.length > 0 && problemas.length === 0, informe };
+}
+
+// Una fila de Pauta ligada a una campaña espera a sus piezas: no se despacha mientras alguna fila del Creativo de esa
+// campaña no esté en Listo (Rechazado no cuenta). Sin campaña ligada (fila hecha a mano), no hay nada que esperar.
+export async function piezasPendientes(notion, c, fila) {
+  const campana = fila.campanaLigada?.[0];
+  if (!campana) return null;
+  const r = await notion.query(c.notionDataSource, { and: [
+    { property: 'Campaña ligada', relation: { contains: campana } },
+    { property: 'Agente', select: { equals: 'Creativo' } },
+  ] }, 50);
+  const piezas = r.results.map(pg => pg.properties?.Estado?.select?.name).filter(e => e !== 'Rechazado');
+  if (!piezas.length) return 'sin_piezas_del_creativo';
+  return piezas.every(e => e === 'Listo') ? null : 'piezas_pendientes';
 }
