@@ -18,14 +18,15 @@ export function esDespachable(fila, c) {
   return null;
 }
 
-// Agentes con GitHub (Landing): token de escritura nuevo en su vault, token de lectura para montar el repo de landings
-// y el sha de main al empezar (para comprobar al cerrar que nadie publicó durante la sesión).
+// Agentes con GitHub (Landing, Creativo): token de escritura nuevo en su vault, token de lectura para montar su repo
+// (si lo monta) y el sha de main al empezar (para comprobar al cerrar que nadie publicó durante la sesión).
 async function conGithub(params, fila, c, client, fetchImpl) {
-  if (!agenteDe(fila.agente)?.github) return params;
-  const g = await preparaGithub({ client, c, fetchImpl });
-  const mount = c.repos.landings.mount;
+  const gd = agenteDe(fila.agente)?.github;
+  if (!gd) return params;
+  const g = await preparaGithub({ client, c, agente: fila.agente, fetchImpl });
+  const mount = gd.montar ? c.repos[gd.destino]?.mount : null;
   return { ...params,
-    resources: (params.resources || []).map(r => (r.mount_path === mount ? { ...r, authorization_token: g.lectura } : r)),
+    resources: (params.resources || []).map(r => (mount && r.mount_path === mount ? { ...r, authorization_token: g.lectura } : r)),
     metadata: { ...params.metadata, main_sha: g.mainSha || '' } };
 }
 

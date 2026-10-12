@@ -7,6 +7,8 @@
   3. Agente "5cero5 · CMO" con el prompt de harness/agentes/cmo.md.
 
 Imprime las variables que van en Netlify: MA_AGENT_CMO y MA_VAULT_CMO (y MA_ENVIRONMENT_ID, que no cambia).
+NOTION_TOKEN_AGENTES solo hace falta la primera vez o para cambiar el token: si el vault ya tiene la credencial,
+se deja como está (por ejemplo, para subir solo el prompt con --actualizar-agente).
 
   cd harness/infra
   read -rs "ANTHROPIC_API_KEY?Llave de Anthropic: " && export ANTHROPIC_API_KEY && echo
@@ -18,7 +20,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from comun import AGENTES, alta, entorno, need
+from comun import AGENTES, alta, carga, entorno, need
 
 MODELO = os.environ.get("MODELO_CMO", "claude-sonnet-5-5")
 
@@ -28,7 +30,9 @@ def main() -> None:
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
     a = ap.parse_args()
     need("ANTHROPIC_API_KEY")
-    token = need("NOTION_TOKEN_AGENTES")
+    token = os.environ.get("NOTION_TOKEN_AGENTES", "").strip()
+    if not token and "cred_notion_id" not in carga("cmo"):
+        need("NOTION_TOKEN_AGENTES")  # primera vez: sin token no hay credencial
     prompt = (AGENTES / "cmo.md").read_text(encoding="utf-8")
 
     from anthropic import Anthropic
@@ -37,7 +41,7 @@ def main() -> None:
     env_id = entorno(b)
     e = alta(b, clave="cmo", vault_nombre="5cero5 · CMO", meta=meta, actualizar=a.actualizar_agente,
              credenciales=[{"key": "cred_notion_id", "secret_name": "NOTION_TOKEN", "value": token,
-                            "host": "api.notion.com", "label": "Notion · integración 5cero5 agentes"}],
+                            "host": "api.notion.com", "label": "Notion · integración 5cero5 agentes"}] if token else [],
              agente={"name": "5cero5 · CMO", "description": "Desglosa campañas aprobadas en filas Propuesta. Nunca aprueba.",
                      "model": MODELO, "system": prompt})
 

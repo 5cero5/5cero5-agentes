@@ -9,8 +9,10 @@ import { barre } from '../lib/barrido.mjs';
 import { AGENTES, revisaRespuesta } from '../lib/agentes.mjs';
 
 const AL = 'user-al', BONZO = 'user-bonzo', INTRUSO = 'user-x';
-const c = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_c', MA_VAULT_IDS: 'v1', GH_REPO_URL: 'https://github.com/o/r' });
-const fila = (o = {}) => ({ id: 'p1', editadoPor: { id: AL }, trabajo: 'Pieza 1', agente: 'Creativo', estado: 'Aprobado', brief: 'haz algo', campana: 'C1', sesion: '', intentos: 0, tope: null, aprobo: [AL], aprobadoEl: '2026-10-02', inicio: null, ...o });
+// Las pruebas generales usan CRM (sin GitHub App). Las de Landing y Creativo, más abajo, configuran la app.
+const c = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_c', MA_VAULT_IDS: 'v1',
+  GH_REPO_URL: 'https://github.com/o/r', GH_AGENTES_URL: 'https://github.com/o/a' });
+const fila = (o = {}) => ({ id: 'p1', editadoPor: { id: AL }, trabajo: 'Pieza 1', agente: 'CRM', estado: 'Aprobado', brief: 'haz algo', campana: 'C1', sesion: '', intentos: 0, tope: null, aprobo: [AL], aprobadoEl: '2026-10-02', inicio: null, ...o });
 
 function pageDe(f) {
   return { id: f.id, last_edited_by: f.editadoPor, properties: {
@@ -129,18 +131,18 @@ test('router: CRM usa su agente, monta marca y agentes, y lleva sus reglas', () 
   assert.doesNotMatch(m, /deploy_id/);
 });
 test('vault: cada agente usa el suyo; sin vault propio, el común', () => {
-  const cv = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_c', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_comun', MA_VAULT_CRM: 'v_hl',
+  const cv = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CMO: 'agent_cmo', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_comun', MA_VAULT_CRM: 'v_hl',
     GH_REPO_URL: 'https://github.com/o/m', GH_AGENTES_URL: 'https://github.com/o/a' });
   assert.deepEqual(parametrosSesion(filaCRM(), cv).vault_ids, ['v_hl']);
-  assert.deepEqual(parametrosSesion(fila(), cv).vault_ids, ['v_comun']);
+  assert.deepEqual(parametrosSesion(fila({ agente: 'CMO' }), cv).vault_ids, ['v_comun']);
 });
-test('router: Creativo no recibe las reglas de CRM', () => {
+test('router: CRM no recibe las reglas de Creativo', () => {
   const m = parametrosSesion(fila(), c).initial_events[0].content[0].text;
-  assert.match(m, /deploy_id/); assert.doesNotMatch(m, /correo\.py/); assert.match(m, /C30/);
+  assert.doesNotMatch(m, /pr_pieza\.py/); assert.match(m, /correo\.py/); assert.match(m, /C30/);
 });
 test('router: agente fuera del catálogo o sin id no se despacha', () => {
   assert.throws(() => parametrosSesion(fila({ agente: 'Pauta' }), c), /Agente sin configurar: Pauta/);
-  assert.throws(() => parametrosSesion(filaCRM(), c), /Agente sin configurar: CRM/);
+  assert.throws(() => parametrosSesion(fila({ agente: 'Creativo' }), c), /Agente sin configurar: Creativo/);
   assert.throws(() => parametrosSesion(fila({ agente: 'constructor' }), c), /Agente sin configurar: constructor/);
 });
 test('router: falta un repo que el agente declara → no hay sesión', () => {
@@ -168,7 +170,7 @@ test('formato: CRM válido, en bloque ```json, sin prefijo, sin claves y sin JSO
   assert.equal(revisaRespuesta(d, '{"plantilla_id":"t1","nombre":"W1","html_sha1":"ab"}'), 'nombre_sin_prefijo_agente');
   assert.equal(revisaRespuesta(d, '{"plantilla_id":"t1","nombre":"[agente] W1"}'), 'faltan_claves:html_sha1');
   assert.equal(revisaRespuesta(d, 'Ya quedó la plantilla.'), 'sin_json');
-  assert.equal(revisaRespuesta(AGENTES.Creativo, '{"deploy_id":"d1","archivos":["a"],"sha1":{"a":"x"}}'), null);
+  assert.equal(revisaRespuesta(AGENTES.Creativo, '{"deploy_id":"d1","archivos":["a"],"sha1":{"a":"x"}}'), 'faltan_claves:pr_url,pr_numero,rama,commit,campana,pieza,formato');
 });
 test('cierre: anota el formato de la respuesta en el informe', async () => {
   const f = [filaCRM({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
@@ -374,7 +376,7 @@ test('github: antes de la sesión, token de escritura limitado al repo en el vau
   assert.equal(r.lectura, 'ghs_2'); assert.equal(r.mainSha, 'm1');
 });
 test('github: sin la configuración de la app no se abre la sesión de Landing', async () => {
-  await assert.rejects(preparaGithub({ client: {}, c: cfg({ MA_VAULT_LANDING: 'v' }) }), /Falta configuración de GitHub para Landing: appId, installationId, privateKey, credLanding/);
+  await assert.rejects(preparaGithub({ client: {}, c: cfg({ MA_VAULT_LANDING: 'v' }) }), /Falta configuración de GitHub para Landing: appId, installationId, privateKey, MA_CRED_GITHUB_LANDING/);
 });
 test('despacha Landing: renueva el token, monta landings con el de lectura y guarda el sha de main', async () => {
   const g = ghFalso(); const f = [filaL()]; const cl = mockClient(); const upd = [];
@@ -436,4 +438,116 @@ test('cierre de Landing: comprueba el PR en GitHub y marca el Verificador; nunca
   const f2 = [filaL({ estado: 'En curso', sesion: 'sesn_1' })]; const n2 = mockNotion(f2);
   await cierraSesion({ client: cl, notion: n2, c: cL, sessionId: 'sesn_1', fetchImpl: ghFalso({ main: ['m9'] }).fetch });
   assert.equal(n2.log.at(-1)[1].Verificador.select.name, 'Rechazada'); assert.equal(f2[0].estado, 'Para revisar');
+});
+
+// ---- Agente Creativo (PR en 5cero5-piezas con la misma GitHub App) ----
+import { medidasPng } from '../lib/github.mjs';
+const cC = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_creativo', MA_VAULT_CREATIVO: 'v_creativo',
+  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
+  GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM, MA_CRED_GITHUB_CREATIVO: 'vcrd_cr' });
+const filaC = (o = {}) => fila({ agente: 'Creativo', trabajo: 'Post 4:5 · agencia vs 5cero5', brief: 'post del diagnóstico. Foto: no', ...o });
+const respC = { pr_url: 'https://github.com/5cero5/5cero5-piezas/pull/8', pr_numero: 8, rama: 'agente/poc-post-a-1', commit: 'abc1234',
+  campana: 'poc', pieza: 'post-a', formato: 'post-4x5', foto: false };
+function png(w, h) {
+  const b = Buffer.alloc(40); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8); b.write('IHDR', 12, 'ascii'); b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20); return b;
+}
+// GitHub falso de piezas: PR #8, sus archivos y la carpeta en la punta del PR.
+function ghPiezas(o = {}) {
+  const pref = 'piezas/poc/post-a';
+  const st = { tokens: [], main: ['m1'],
+    pr: { state: 'open', merged: false, base: { ref: 'main' }, head: { ref: 'agente/poc-post-a-1', sha: 'abc1234' }, html_url: respC.pr_url },
+    carpeta: ['pieza.png', 'pieza.html', 'copia.json', 'pieza.json', 'informe.json'].map(name => ({ name, type: 'file', sha: name === 'pieza.png' ? 'pngsha' : `s-${name}` })),
+    fotos: null, png: png(1080, 1350),
+    informe: { aprobada: true, png_blob_sha: 'pngsha', formato: 'post-4x5', formato_pedido: 'post-4x5', repo_version: '0.12.0', avisos: [{ id: 'paleta' }] },
+    meta: { campana: 'poc', pieza: 'post-a', formato: 'post-4x5', foto: false }, ...o };
+  st.archivos = o.archivos || st.carpeta.map(e => ({ filename: `${pref}/${e.name}`, sha: e.sha }));
+  st.fetch = async (url, init = {}) => {
+    const u = new URL(url); const body = init.body ? JSON.parse(init.body) : null;
+    const ok = x => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+    const b64 = x => ({ content: Buffer.from(typeof x === 'string' ? x : JSON.stringify(x)).toString('base64'), encoding: 'base64' });
+    const R = '/repos/5cero5/5cero5-piezas';
+    if (u.pathname === '/app/installations/456/access_tokens') { st.tokens.push({ body }); return ok({ token: `ghs_${st.tokens.length}` }); }
+    if (u.pathname === `${R}/git/ref/heads/main`) return ok({ object: { sha: st.main.length > 1 ? st.main.shift() : st.main[0] } });
+    if (u.pathname === `${R}/pulls/8`) return ok(st.pr);
+    if (u.pathname === `${R}/pulls/8/files`) return ok(st.archivos);
+    if (u.pathname === `${R}/contents/${pref}`) return ok([...st.carpeta, ...(st.fotos ? [{ name: 'fotos', type: 'dir' }] : [])]);
+    if (u.pathname === `${R}/contents/${pref}/fotos` && st.fotos) return ok(st.fotos);
+    if (u.pathname === `${R}/contents/${pref}/informe.json`) return ok(b64(st.informe));
+    if (u.pathname === `${R}/contents/${pref}/pieza.json`) return ok(b64(st.meta));
+    if (u.pathname === `${R}/git/blobs/pngsha`) return ok({ content: st.png.toString('base64'), encoding: 'base64' });
+    return { ok: false, status: 404, text: async () => '{"message":"Not Found"}' };
+  };
+  return st;
+}
+
+test('router: Creativo monta marca y agentes, usa su vault y trabaja con pr_pieza.py', () => {
+  const p = parametrosSesion(filaC(), cC);
+  assert.equal(p.agent, 'agent_creativo'); assert.deepEqual(p.vault_ids, ['v_creativo']);
+  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/marca', '/workspace/agentes']);
+  const m = p.initial_events[0].content[0].text;
+  assert.match(m, /pr_pieza\.py/); assert.match(m, /Nunca fusionas/); assert.match(m, /Foto: sí/); assert.match(m, /pr_numero/);
+  assert.doesNotMatch(m, /deploy_id/); assert.doesNotMatch(m, /Netlify/);
+});
+test('github: el Creativo recibe un token de escritura solo de 5cero5-piezas, en su credencial', async () => {
+  const g = ghPiezas(); const upd = [];
+  const client = { beta: { vaults: { credentials: { update: async (id, prm) => upd.push([id, prm]) } } } };
+  const r = await preparaGithub({ client, c: cC, agente: 'Creativo', fetchImpl: g.fetch });
+  assert.deepEqual(g.tokens.map(t => t.body.repositories), [['5cero5-piezas'], ['5cero5-piezas']]);
+  assert.deepEqual(upd, [['vcrd_cr', { vault_id: 'v_creativo', auth: { type: 'environment_variable', secret_value: 'ghs_1' } }]]);
+  assert.equal(r.mainSha, 'm1');
+  await assert.rejects(preparaGithub({ client, c: cfg({ ...{ GH_APP_ID: '1' } }), agente: 'Creativo' }), /Creativo: installationId, privateKey, MA_CRED_GITHUB_CREATIVO, MA_VAULT_CREATIVO/);
+});
+test('despacha Creativo: renueva su token y guarda el sha de main; no monta piezas', async () => {
+  const g = ghPiezas(); const f = [filaC()]; const cl = mockClient(); const upd = [];
+  cl.beta.vaults = { credentials: { update: async id => upd.push(id) } };
+  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: g.fetch });
+  assert.deepEqual(upd, ['vcrd_cr']); const p = cl.calls.create[0];
+  assert.equal(p.metadata.main_sha, 'm1'); assert.ok(p.resources.every(r => r.authorization_token === 'tok'));
+});
+test('formato: Creativo exige PR, campaña, pieza y formato conocido', () => {
+  const d = AGENTES.Creativo;
+  assert.equal(revisaRespuesta(d, JSON.stringify(respC)), null);
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respC, formato: 'reel' })), 'formato_desconocido');
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respC, pieza: '../x' })), 'carpeta_invalida');
+  assert.equal(revisaRespuesta(d, JSON.stringify({ ...respC, rama: 'main' })), 'rama_no_es_de_agente');
+});
+test('medidas del PNG desde su cabecera', () => {
+  assert.deepEqual(medidasPng(png(1080, 1920)), [1080, 1920]); assert.equal(medidasPng(Buffer.from('no es png')), null);
+});
+test('comprobación de la pieza: pasa con su carpeta completa, informe aprobado del mismo PNG y medidas del formato', async () => {
+  const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: respC, mainAntes: 'm1', fetchImpl: ghPiezas().fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /PR #8/); assert.match(r.informe, /v0\.12\.0: aprobada, 1 aviso/);
+  const conFoto = ghPiezas({ meta: { ...ghPiezas().meta, foto: true }, fotos: [{ name: 'fondo.jpg', type: 'file' }] });
+  conFoto.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' });
+  const r2 = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', fetchImpl: conFoto.fetch });
+  assert.equal(r2.ok, true, r2.informe); assert.match(r2.informe, /con foto de Higgsfield/);
+});
+test('comprobación de la pieza: falla por informe, PNG, formato, foto, archivos de más o fuera de su carpeta', async () => {
+  const base = ghPiezas();
+  const casos = [
+    [{ informe: { ...base.informe, aprobada: false } }, respC, /no está aprobado/],
+    [{ informe: { ...base.informe, png_blob_sha: 'otro' } }, respC, /de otro PNG/],
+    [{ png: png(1080, 1080) }, respC, /mide 1080x1080, no 1080x1350/],
+    [{}, { ...respC, formato: 'post-1x1' }, /formato: el agente dice post-1x1/],
+    [{}, { ...respC, foto: true }, /foto: el agente dice true/],
+    [{ meta: { ...base.meta, foto: true } }, { ...respC, foto: true }, /faltan la foto o prompt\.txt/],
+    [{ carpeta: [...base.carpeta, { name: 'script.js', type: 'file', sha: 'x' }] }, respC, /no van en una pieza: script\.js/],
+    [{ carpeta: base.carpeta.filter(e => e.name !== 'informe.json') }, respC, /faltan en la carpeta: informe\.json/],
+    [{ archivos: [{ filename: 'piezas/poc/post-a/pieza.png' }, { filename: 'piezas/otra/x/pieza.png' }] }, respC, /fuera de piezas\/poc\/post-a\//],
+    [{ pr: { ...base.pr, merged: true, merged_at: 'x', state: 'closed' } }, respC, /fusionado/],
+  ];
+  for (const [o, resp, re] of casos) {
+    const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: resp, mainAntes: 'm1', fetchImpl: ghPiezas(o).fetch });
+    assert.equal(r.ok, false, `${re}`); assert.match(r.informe, re);
+  }
+});
+test('cierre de Creativo: comprueba PR y pieza y deja la fila Para revisar; nunca Listo', async () => {
+  const f = [filaC({ estado: 'En curso', sesion: 'sesn_1' })]; const n = mockNotion(f);
+  const cl = mockClient({ msg: 'Listo.\n```json\n' + JSON.stringify(respC) + '\n```' });
+  cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'p1', main_sha: 'm1' }, usage: {} });
+  await cierraSesion({ client: cl, notion: n, c: cC, sessionId: 'sesn_1', fetchImpl: ghPiezas().fetch });
+  const props = n.log.at(-1)[1];
+  assert.equal(f[0].estado, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
+  assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Pieza post-4x5/);
 });

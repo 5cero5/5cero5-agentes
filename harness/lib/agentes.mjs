@@ -11,21 +11,29 @@ const COMUNES = [
   'Lo que digas que hiciste se comprueba en la herramienta, no en tu respuesta.',
 ];
 
-const RESPUESTA_DEPLOY = {
-  ejemplo: '{"deploy_id":"...","archivos":["..."],"sha1":{"<archivo>":"..."}}',
-  claves: ['deploy_id', 'archivos', 'sha1'],
-};
+const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 export const AGENTES = {
+  // Arma UNA pieza (post 4:5, post 1:1 o historia 9:16) con las plantillas de marca y abre un PR en 5cero5-piezas con
+  // pr_pieza.py. Aprobar es fusionar el PR (Al); subirla a Meta la hace Bonzo a mano. Foto de Higgsfield solo si el brief
+  // la pide. El token de GitHub dura una hora y lo pone el harness; al cerrar, el harness comprueba el PR y la carpeta.
   Creativo: {
     env: 'MA_AGENT_CREATIVO',
     vaultEnv: 'MA_VAULT_CREATIVO',
-    repos: ['marca'],
+    repos: ['marca', 'agentes'],
+    github: { destino: 'piezas', montar: false },
     reglas: [
-      'Usa solo las plantillas, reglas y tokens del repo de marca en /workspace/marca.',
-      'Sube el resultado a un draft deploy de Netlify; nunca a producción.',
+      'Usa solo /workspace/agentes/herramientas/pr_pieza.py (nueva, foto, llenar, revisar, abrir) con la marca copiada en /tmp/marca. Nunca fusionas y nunca llamas a GitHub ni a Higgsfield por tu cuenta.',
+      'Una sesión = una pieza = un PR en piezas/<campaña>/<pieza>/. La copia sale del brief; no inventas cifras, casos ni promesas.',
+      'Foto solo si el brief dice "Foto: sí". Una por pieza; si falla, no se repite.',
     ],
-    respuesta: RESPUESTA_DEPLOY,
+    respuesta: {
+      ejemplo: '{"pr_url":"https://github.com/...","pr_numero":1,"rama":"agente/...","commit":"...","campana":"...","pieza":"...","formato":"post-4x5","foto":false}',
+      claves: ['pr_url', 'pr_numero', 'rama', 'commit', 'campana', 'pieza', 'formato'],
+      revisa: r => (!SLUG.test(String(r.campana)) || !SLUG.test(String(r.pieza)) ? 'carpeta_invalida'
+        : !['post-4x5', 'post-1x1', 'historia-9x16'].includes(r.formato) ? 'formato_desconocido'
+        : !String(r.rama).startsWith('agente/') ? 'rama_no_es_de_agente' : null),
+    },
   },
   // Abre un PR en 5cero5-landings con una sola carpeta (landings/<slug>/). El deploy preview de Netlify es el borrador;
   // publicar es aprobar y fusionar el PR en GitHub, y eso solo lo hacen Al o Bonzo. El token de GitHub dura una hora y
@@ -34,7 +42,7 @@ export const AGENTES = {
     env: 'MA_AGENT_LANDING',
     vaultEnv: 'MA_VAULT_LANDING',
     repos: ['marca', 'agentes', 'landings'],
-    github: true,
+    github: { destino: 'landings', montar: true },
     reglas: [
       'Usa solo /workspace/agentes/herramientas/pr_landing.py (nueva, revisar, abrir) sobre copias en /tmp. Nunca fusionas, nunca tocas main y nunca llamas a la API de GitHub por tu cuenta.',
       'Un PR cambia una sola carpeta: landings/<slug>/. No tocas otras landings, la función, el build ni correos/.',
@@ -43,7 +51,7 @@ export const AGENTES = {
     respuesta: {
       ejemplo: '{"pr_url":"https://github.com/...","pr_numero":1,"rama":"agente/...","commit":"...","slug":"...","cambios":["..."]}',
       claves: ['pr_url', 'pr_numero', 'rama', 'commit', 'slug'],
-      revisa: r => (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(String(r.slug)) ? 'slug_invalido'
+      revisa: r => (!SLUG.test(String(r.slug)) ? 'slug_invalido'
         : !String(r.rama).startsWith('agente/') ? 'rama_no_es_de_agente' : null),
     },
   },
