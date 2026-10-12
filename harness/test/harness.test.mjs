@@ -308,3 +308,24 @@ test('cierre del CMO: si una fila reportada no existe, Verificador Rechazada', a
   const props = n.log.at(-1)[1];
   assert.equal(props.Verificador.select.name, 'Rechazada'); assert.match(props['Informe del Verificador'].rich_text[0].text.content, /fantasma: no existe/);
 });
+
+// ---- Agente Landing ----
+const cL = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_LANDING: 'agent_landing', MA_VAULT_LANDING: 'v_netlify',
+  GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok' });
+test('router: Landing monta marca y agentes, usa su vault y solo construye borradores en /landingtest', () => {
+  const p = parametrosSesion(fila({ agente: 'Landing', brief: 'landing de la promo' }), cL);
+  assert.equal(p.agent, 'agent_landing');
+  assert.deepEqual(p.vault_ids, ['v_netlify']);
+  assert.deepEqual(p.resources.map(r => r.mount_path), ['/workspace/marca', '/workspace/agentes']);
+  const m = p.initial_events[0].content[0].text;
+  assert.match(m, /landing\.py/); assert.match(m, /Nunca promover/); assert.match(m, /--base-dir \/tmp\/marca\/landing\/base/);
+  assert.match(m, /\/landingtest/); assert.match(m, /"ruta":"landingtest"/); assert.doesNotMatch(m, /correo\.py/);
+});
+test('formato: Landing exige deploy_id, ruta y build, y solo la ruta landingtest', () => {
+  const d = AGENTES.Landing;
+  assert.equal(revisaRespuesta(d, 'Listo\n```json\n{"deploy_id":"6a1","ruta":"landingtest","build":"b1","cambios":["titular"]}\n```'), null);
+  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"","build":"b1"}'), 'faltan_claves:ruta');
+  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"promo","build":"b1"}'), 'ruta_no_permitida');
+  assert.equal(revisaRespuesta(d, '{"deploy_id":"6a1","ruta":"landingtest"}'), 'faltan_claves:build');
+  assert.equal(revisaRespuesta(d, '{"deploy_id":"","ruta":"","build":"","motivo":"el brief pide fotos"}'), 'faltan_claves:deploy_id,ruta,build');
+});

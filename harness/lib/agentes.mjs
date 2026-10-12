@@ -27,15 +27,22 @@ export const AGENTES = {
     ],
     respuesta: RESPUESTA_DEPLOY,
   },
+  // Deja un borrador en Netlify con la raíz original intacta. Publicarlo es de Al o Bonzo:
+  // `landing.py promover --desde-notion <fila>` lo revisa contra Netlify y el repo de marca, no contra lo que dice el agente.
   Landing: {
     env: 'MA_AGENT_LANDING',
     vaultEnv: 'MA_VAULT_LANDING',
     repos: ['marca', 'agentes'],
     reglas: [
-      'Usa /workspace/agentes/poc-conectores/landing.py con MARCA_REPO=/workspace/marca: solo construir y borrador. Nunca promover.',
-      'Solo cambias /landingtest; la raíz de mkt.5cero5.com no se toca.',
+      'Usa /workspace/agentes/poc-conectores/landing.py sobre una copia del repo de marca en /tmp/marca: solo construir y borrador. Nunca promover ni revertir.',
+      'La landing va solo en /landingtest y la raíz de mkt.5cero5.com se conserva con --base-dir /tmp/marca/landing/base. Nunca uses --reemplazar-raiz.',
+      'Solo cambias textos de landing/index.html. No tocas estilos, scripts, formulario, aviso, funciones ni landing/base.',
     ],
-    respuesta: RESPUESTA_DEPLOY,
+    respuesta: {
+      ejemplo: '{"deploy_id":"...","ruta":"landingtest","build":"...","cambios":["..."]}',
+      claves: ['deploy_id', 'ruta', 'build'],
+      revisa: r => (r.ruta === 'landingtest' ? null : 'ruta_no_permitida'),
+    },
   },
   CRM: {
     env: 'MA_AGENT_CRM',

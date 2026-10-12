@@ -64,3 +64,26 @@ Regla: mkt.5cero5.com/ se queda como está (deploy original 6ab9e4bf33abe600082e
 3. Con sitio base, el noindex aplica solo a /landingtest (cabecera en `_headers`) y no se escribe robots.txt: la raíz no cambia.
 
 `construir` sin `--base-dir` se niega a reemplazar la raíz, y `promover` no publica un borrador que no la conserve (salvo `--reemplazar-raiz`, decisión explícita).
+
+## Publicar lo que dejó el agente Landing (11 oct 2026)
+
+El agente Landing del harness corre `construir` y `borrador` en su propio entorno, con la raíz original de `5cero5-marca/landing/base`. Su manifiesto y su estado se quedan allá, así que `promover --deploy` no sirve desde tu Mac. Para publicarlo:
+
+```
+export NOTION_TOKEN="..."          # una integración con acceso a Aprobaciones (solo lee la fila)
+export MARCA_REPO="$HOME/Desktop/5cero5/5cero5-marca"    # al día: git pull, con landing/base
+landing promover --desde-notion <id de la fila> --acepto-aviso-provisional
+```
+
+Qué revisa antes de pedir la frase, sin creerle al agente:
+
+1. La fila es del agente Landing, está en Para revisar (o Listo) y tiene a alguien en Aprobó. Su resultado trae `deploy_id` y una ruta que no es la raíz.
+2. El deploy es de este sitio, está listo y no es el publicado.
+3. En Netlify, la raíz del borrador es byte por byte `landing/base`, la landing solo trae los archivos que arma `armar.py` y no sobra ni falta nada. El `_headers` pone noindex solo a la landing.
+4. Baja el borrador, revisa que todas sus páginas lleven la misma marca de build y lo pasa por el Verificador (con navegador).
+5. La función del formulario responde en el borrador (la llama con `?verificar=1`; no crea nada en HighLevel).
+6. Publicarlo no quita ninguna página que hoy esté en línea.
+
+Después sigue igual que `promover --deploy`: frase `PUBLICAR <8 primeros del id>`, verificación de la URL pública y `landing revertir` para deshacer. Pasar la fila a Listo en Notion lo haces tú.
+
+Pruebas: `test_landing.py` suma 14 casos de `--desde-notion` (45 en total) contra Netlify y Notion falsos.

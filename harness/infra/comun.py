@@ -22,9 +22,13 @@ HOSTS = [
     "services.leadconnectorhq.com",   # CRM: API de HighLevel
     "firebasestorage.googleapis.com", # CRM: HTML guardado de las plantillas (correo.py comprobar)
     "api.notion.com",                 # CMO: leer campañas y proponer filas
+    "api.netlify.com",                # Landing: borradores con landing.py (nunca publica)
+    "cdn.playwright.dev",             # Landing: navegador del Verificador (playwright install chromium)
+    "playwright.download.prss.microsoft.com",
+    "playwright.azureedge.net",
 ]
 RED = {"type": "limited", "allowed_hosts": HOSTS, "allow_mcp_servers": False, "allow_package_managers": True}
-PAQUETES = {"pip": ["httpx"]}
+PAQUETES = {"pip": ["httpx", "playwright"]}  # playwright: Verificador de landing (el navegador se baja en la sesión)
 HERRAMIENTAS = [{
     "type": "agent_toolset_20260401",
     "default_config": {"enabled": True, "permission_policy": {"type": "always_allow"}},
@@ -49,7 +53,7 @@ def guarda(nombre: str, estado: dict) -> None:
 
 
 def entorno(b) -> str:
-    """Crea el entorno común o le reaplica la red completa. Adopta el id que haya creado una versión anterior."""
+    """Crea el entorno común o le reaplica la red y los paquetes completos. Adopta el id que haya creado una versión anterior."""
     e = carga("entorno")
     if "environment_id" not in e and "environment_id" in carga("crm"):
         e["environment_id"] = carga("crm")["environment_id"]
@@ -65,8 +69,8 @@ def entorno(b) -> str:
         guarda("entorno", e)
         print(f"▸ Entorno creado: {env.id}")
     else:
-        b.environments.update(e["environment_id"], config={"type": "cloud", "networking": RED})
-        print(f"▸ Entorno {e['environment_id']}: red = {', '.join(HOSTS)}")
+        b.environments.update(e["environment_id"], config={"type": "cloud", "networking": RED, "packages": PAQUETES})
+        print(f"▸ Entorno {e['environment_id']}: red = {', '.join(HOSTS)} · pip = {', '.join(PAQUETES['pip'])}")
     return e["environment_id"]
 
 

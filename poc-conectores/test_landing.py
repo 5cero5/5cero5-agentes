@@ -16,6 +16,7 @@ class Fake:
         self.published = "dep_old"; self.n = 0; self.tamper = False; self.publica_en_borrador = False; self.restore_noop = False; self.lista_sin_subcarpetas = True; self.hl_tags = ["prospecto", "discovery-pendiente"]
 
 F = Fake()
+F.notion = {}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -25,6 +26,10 @@ class H(BaseHTTPRequestHandler):
     def base(self): return f"http://127.0.0.1:{self.server.server_port}"
     def do_GET(self):
         p = self.path.split("?")[0]
+        if m := re.fullmatch(r"/notion/v1/pages/([\w-]+)", p):
+            if self.headers.get("Authorization") != "Bearer n": return self.send({"message": "unauthorized"}, 401)
+            fila = F.notion.get(m.group(1))
+            return self.send({"id": m.group(1), "properties": fila}) if fila else self.send({"message": "not found"}, 404)
         if p.startswith("/hl/"):
             q = dict(x.split("=", 1) for x in self.path.split("?", 1)[1].split("&")) if "?" in self.path else {}
             c = {"id": "c1", "email": "ana@ejemplo.com", "contactName": "Ana", "firstName": "Ana", "phone": "+528112345678", "companyName": "Abarrotes",
@@ -94,10 +99,11 @@ class H(BaseHTTPRequestHandler):
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 tmp = Path(tempfile.mkdtemp()); shutil.copy(HERE / "landing.py", tmp / "landing.py")
 ENV = {**os.environ, "HL_TOKEN": "h", "HL_LOCATION_ID": "loc", "HL_API_BASE": f"http://127.0.0.1:{srv.server_port}/hl", "NETLIFY_TOKEN": "x", "NETLIFY_SITE_ID": "sitio1", "MARCA_REPO": str(REPO),
-       "NETLIFY_API_BASE": f"http://127.0.0.1:{srv.server_port}/api/v1"}
+       "NETLIFY_API_BASE": f"http://127.0.0.1:{srv.server_port}/api/v1", "NOTION_TOKEN": "n", "NOTION_API_BASE": f"http://127.0.0.1:{srv.server_port}/notion/v1"}
 
-def run(*args):
-    r = subprocess.run([sys.executable, str(tmp / "landing.py"), *args], capture_output=True, text=True, env=ENV, cwd=tmp, stdin=subprocess.DEVNULL)
+def run(*args, en=None):
+    d = en or tmp
+    r = subprocess.run([sys.executable, str(d / "landing.py"), *args], capture_output=True, text=True, env=ENV, cwd=d, stdin=subprocess.DEVNULL)
     return r.returncode, r.stdout + r.stderr
 
 res = []
@@ -161,4 +167,53 @@ m = json.loads((tmp / ".manifiesto_landing.json").read_text()); m["reemplaza_rai
 c, o = run("promover", "--deploy", d3, "--acepto-aviso-provisional", "--confirmo", f"PUBLICAR {d3[:8]}"); check("promover no publica un borrador que no conserva la raíz", c != 0 and "no conserva la raíz" in o, o)
 c, o = run("lead", "--email", "Ana@Ejemplo.com", "--campana", "e2e"); check("lead: confirma en HighLevel un lead completo", c == 0 and "llegó completo" in o, o)
 F.hl_tags = ["prospecto"]; c, o = run("lead", "--email", "ana@ejemplo.com"); check("lead: detecta un tag que falta", c != 0 and "incompleto" in o, o)
+# --- promover --desde-notion: el agente Landing sube el borrador en su máquina y Al lo publica desde la suya
+F.published = "dep_old"; F.restore_noop = False
+def nueva_maquina():
+    d = Path(tempfile.mkdtemp()); shutil.copy(HERE / "landing.py", d / "landing.py"); return d
+agente, al = nueva_maquina(), nueva_maquina()
+base_copia = agente / "base"; (base_copia / "css").mkdir(parents=True)
+for k, v in F.deploys["dep_old"]["files"].items(): (base_copia / k.lstrip("/")).write_bytes(v)
+ENV["MARCA_REPO"] = str(REPO)
+c, o = run("construir", "--base-dir", str(base_copia), "--base-deploy", "dep_old", en=agente); c2, o2 = run("borrador", en=agente)
+da = json.loads((agente / ".estado_landing.json").read_text())["borrador"]["id"] if c2 == 0 else ""
+check("el agente arma y sube su borrador (raíz original + /landingtest)", c == 0 and c2 == 0 and da, o + o2)
+def fila(agente_="Landing", estado="Para revisar", aprobo=True, resultado=None):
+    txt = lambda t: {"rich_text": [{"plain_text": t}]}
+    r = resultado if resultado is not None else f'Listo.\n```json\n{{"deploy_id":"{da}","ruta":"landingtest","build":"x"}}\n```'
+    return {"Trabajo": {"title": [{"plain_text": "Landing · prueba"}]}, "Agente": {"select": {"name": agente_}}, "Estado": {"select": {"name": estado}},
+            "Aprobó": {"people": [{"id": "u1", "name": "Al"}] if aprobo else []}, "Resultado del agente": txt(r)}
+# la base de Al: su repo de marca con landing/base = la raíz original
+marca_al = Path(tempfile.mkdtemp()) / "marca"; shutil.copytree(REPO, marca_al, ignore=shutil.ignore_patterns(".git"))
+shutil.rmtree(marca_al / "landing" / "base", ignore_errors=True); shutil.copytree(base_copia, marca_al / "landing" / "base")
+ENV["MARCA_REPO"] = str(marca_al)
+OK = ["--acepto-aviso-provisional", "--confirmo", f"PUBLICAR {da[:8]}"]
+casos = [("rechaza una fila de otro agente", fila(agente_="CRM"), "no de Landing"),
+         ("rechaza una fila que no está en Para revisar", fila(estado="Propuesta"), "Solo se publica"),
+         ("rechaza una fila sin nadie en Aprobó", fila(aprobo=False), "nadie en Aprobó"),
+         ("rechaza un resultado sin deploy_id", fila(resultado='{"ruta":"landingtest"}'), "deploy_id"),
+         ("rechaza una landing en la raíz", fila(resultado=f'{{"deploy_id":"{da}","ruta":""}}'), "ruta válida")]
+for nombre, props, texto in casos:
+    F.notion["f1"] = props; c, o = run("promover", "--desde-notion", "f1", *OK, en=al)
+    check(f"--desde-notion {nombre}", c != 0 and texto in o and F.published == "dep_old", o)
+F.notion["f1"] = fila()
+F.deploys[da]["files"]["/extra.html"] = b"<html>colado</html>"
+c, o = run("promover", "--desde-notion", "f1", *OK, en=al); check("--desde-notion rechaza un archivo que no es de la raíz ni de la landing", c != 0 and "no son ni de la raíz" in o and F.published == "dep_old", o)
+del F.deploys[da]["files"]["/extra.html"]
+orig = F.deploys[da]["files"]["/index.html"]; F.deploys[da]["files"]["/index.html"] = b"<html>raiz cambiada</html>"
+c, o = run("promover", "--desde-notion", "f1", *OK, en=al); check("--desde-notion rechaza si la raíz del borrador no es la original", c != 0 and "NO es la original" in o and F.published == "dep_old", o)
+F.deploys[da]["files"]["/index.html"] = orig
+funcs = F.deploys[da]["funcs"]; F.deploys[da]["funcs"] = {}
+c, o = run("promover", "--desde-notion", "f1", *OK, en=al); check("--desde-notion rechaza si la función del formulario no responde en el borrador", c != 0 and "función del formulario" in o and F.published == "dep_old", o)
+F.deploys[da]["funcs"] = funcs
+F.deploys["dep_pub"] = {"files": {**F.deploys["dep_old"]["files"], "/promo.html": b"<html>promo</html>"}, "state": "ready"}; F.published = "dep_pub"
+c, o = run("promover", "--desde-notion", "f1", *OK, en=al); check("--desde-notion rechaza si quitaría una página que hoy está en línea", c != 0 and "quitaría páginas" in o and F.published == "dep_pub", o)
+F.published = "dep_old"
+c, o = run("promover", "--desde-notion", "f1", "--acepto-aviso-provisional", "--confirmo", "PUBLICAR otro", en=al); check("--desde-notion pide la frase exacta", c != 0 and F.published == "dep_old", o)
+c, o = run("promover", "--desde-notion", "f1", *OK, en=al)
+check("--desde-notion publica el borrador del agente y verifica la URL pública", c == 0 and F.published == da and "sirve este build" in o, o)
+check("--desde-notion: la raíz publicada sigue siendo la original", F.deploys[da]["files"].get("/index.html") == orig)
+est_al = json.loads((al / ".estado_landing.json").read_text())
+check("--desde-notion deja la publicación registrada para revertir", est_al.get("publicacion", {}).get("anterior") == "dep_old" and est_al["borrador"].get("notion_fila") == "f1", json.dumps(est_al))
+ENV["MARCA_REPO"] = str(REPO)
 print(f"\n{sum(res)}/{len(res)} comprobaciones correctas."); sys.exit(0 if all(res) else 1)

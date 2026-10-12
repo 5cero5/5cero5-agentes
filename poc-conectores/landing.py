@@ -5,10 +5,12 @@
                                                     lo revisa con el Verificador y guarda su manifiesto
   python3 landing.py borrador                       sube la carpeta a Netlify como borrador y verifica byte por byte
   python3 landing.py promover --deploy ID ...       APROBACIÓN: publica ese borrador en producción
+  python3 landing.py promover --desde-notion FILA   APROBACIÓN: publica el borrador que dejó el agente Landing en esa fila
+                                                    (lo revisa contra Netlify y el repo de marca local; no le cree al agente)
   python3 landing.py revertir                       regresa al deploy que estaba publicado antes
   python3 landing.py estado
 
-Variables: NETLIFY_TOKEN, NETLIFY_SITE_ID. Opcionales: MARCA_REPO (carpeta del repo 5cero5-marca; por defecto ../5cero5-marca),
+Variables: NETLIFY_TOKEN, NETLIFY_SITE_ID (y NOTION_TOKEN para --desde-notion). Opcionales: MARCA_REPO (carpeta del repo 5cero5-marca; por defecto ../5cero5-marca),
 NETLIFY_API_BASE (solo para pruebas con servidor falso).
 
 Reglas que este script se impone:
@@ -587,6 +589,8 @@ def revisa_noindex(url: str, ruta: str) -> str | None:
 
 
 def cmd_promover(a) -> None:
+    if a.desde_notion:
+        a.deploy = prepara_desde_notion(a)
     nf = NF(need("NETLIFY_TOKEN"), need("NETLIFY_SITE_ID"))
     est = carga_estado()
     b = est.get("borrador")
@@ -646,6 +650,168 @@ def cmd_promover(a) -> None:
     ruta = man.get("ruta", "")
     print(f"\n✓ Publicado: {url.rstrip('/')}/{ruta + '/' if ruta else ''}")
     print(f"  Para deshacer: landing revertir  (vuelve a {actual})")
+
+
+# ---------------------------------------------------------------- promover desde una fila de Notion
+NOTION_API = os.environ.get("NOTION_API_BASE", "https://api.notion.com/v1")
+BASE_RAIZ_MKT = "6ab9e4bf33abe600082e4939"   # deploy de la raíz de mkt.5cero5.com (copia en 5cero5-marca/landing/base)
+ESTADOS_FILA_LISTA = ("Para revisar", "Listo")
+META_BUILD = re.compile(r'<meta name="x-5cero5-build" content="([^"]+)">')
+
+
+def ultimo_json(texto: str) -> dict | None:
+    """El último objeto JSON del texto (el agente termina con uno; acepta ```json ... ```)."""
+    t = texto or ""
+    fin = t.rfind("}")
+    while fin >= 0:
+        ini = t.rfind("{", 0, fin)
+        while ini >= 0:
+            try:
+                r = json.loads(t[ini:fin + 1])
+                if isinstance(r, dict):
+                    return r
+            except ValueError:
+                pass
+            ini = t.rfind("{", 0, ini)
+        fin = t.rfind("}", 0, fin)
+    return None
+
+
+def lee_fila_notion(fila: str) -> dict:
+    token = need("NOTION_TOKEN")
+    r = httpx.get(f"{NOTION_API}/pages/{fila}", timeout=30,
+                  headers={"Authorization": f"Bearer {token}", "Notion-Version": "2025-09-03", "User-Agent": UA})
+    if r.status_code != 200:
+        die(f"Notion respondió {r.status_code} al leer la fila {fila}: {r.text[:200]}\n"
+            "  Revisa el id de la fila y que la integración de NOTION_TOKEN tenga acceso a Aprobaciones.")
+    p = r.json().get("properties") or {}
+    texto = lambda k: "".join(x.get("plain_text", "") for x in (p.get(k) or {}).get("rich_text") or (p.get(k) or {}).get("title") or [])
+    sel = lambda k: ((p.get(k) or {}).get("select") or {}).get("name")
+    return {"trabajo": texto("Trabajo"), "agente": sel("Agente"), "estado": sel("Estado"),
+            "aprobo": [x.get("name") or x.get("id") for x in (p.get("Aprobó") or {}).get("people") or []],
+            "resultado": texto("Resultado del agente")}
+
+
+def archivos_esperados_landing(repo: Path, ruta: str) -> list[str]:
+    """Nombres que arma.py produce para la landing (el agente solo cambia textos, no nombres de archivo)."""
+    sys.path.insert(0, str(repo / "landing"))
+    from armar import arma  # type: ignore
+    tmp = HERE / ".esperados_landing"
+    shutil.rmtree(tmp, ignore_errors=True)
+    arma(repo, tmp, ruta)
+    out = sorted(p.relative_to(tmp).as_posix() for p in tmp.rglob("*") if p.is_file())
+    shutil.rmtree(tmp, ignore_errors=True)
+    return out
+
+
+def prepara_desde_notion(a) -> str:
+    """Rearma en esta máquina el manifiesto y el estado de un borrador que subió el agente Landing, sin confiar en
+    lo que el agente dijo: todo sale de Netlify y del repo de marca local. Devuelve el id del deploy a promover."""
+    step(f"Leyendo la fila {a.desde_notion} en Notion")
+    f = lee_fila_notion(a.desde_notion)
+    print(f"  {f['trabajo'] or '(sin título)'} · agente {f['agente']} · estado {f['estado']} · aprobó {', '.join(f['aprobo']) or 'nadie'}")
+    if f["agente"] != "Landing":
+        die(f"La fila es del agente {f['agente']}, no de Landing.")
+    if f["estado"] not in ESTADOS_FILA_LISTA:
+        die(f"La fila está en {f['estado']}. Solo se publica una fila en {' o '.join(ESTADOS_FILA_LISTA)}.")
+    if not f["aprobo"]:
+        die("La fila no tiene a nadie en Aprobó.")
+    r = ultimo_json(f["resultado"]) or {}
+    did, ruta = str(r.get("deploy_id") or "").strip(), str(r.get("ruta") or "").strip().strip("/")
+    if not re.fullmatch(r"[0-9a-zA-Z_-]{6,40}", did):
+        die(f"El resultado del agente no trae un deploy_id válido: {did!r}")
+    if not ruta or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", ruta):
+        die(f"El resultado del agente no trae una ruta válida: {ruta!r}. Nunca se publica una landing en la raíz.")
+    print(f"  El agente reporta el borrador {did} en /{ruta}")
+
+    nf = NF(need("NETLIFY_TOKEN"), need("NETLIFY_SITE_ID"))
+    repo = repo_dir()
+    d = nf.deploy(did)
+    if d.get("site_id") and d["site_id"] != nf.site:
+        die(f"El deploy {did} es de otro sitio ({d['site_id']}).")
+    if d.get("state") != "ready":
+        die(f"El deploy {did} no está listo (estado {d.get('state')}).")
+    publicado = nf.publicado()
+    if publicado == did:
+        die("Ese deploy ya es el publicado.")
+
+    step("Revisando en Netlify que la raíz sea la original y que no sobre ni falte nada")
+    carpeta = Path(a.base_dir).expanduser() if a.base_dir else repo / "landing" / "base"
+    if not carpeta.is_dir():
+        die(f"No existe {carpeta}. Actualiza tu repo de marca (necesita landing/base) o pasa --base-dir.")
+    base = {p.relative_to(carpeta).as_posix(): p.read_bytes() for p in sorted(carpeta.rglob("*"))
+            if p.is_file() and p.name not in BASURA_DEL_SISTEMA and not p.name.startswith("._")}
+    esperados = sorted(set(base) | set(archivos_esperados_landing(repo, ruta)) | {"_headers"})
+    reg_crudo = nf.archivos(did, esperados)
+    reg_min = {k.lower(): v for k, v in reg_crudo.items() if v}
+    faltan = [k for k in esperados if not reg_min.get(k.lower())]
+    sobran = sorted(set(reg_min) - {k.lower() for k in esperados})
+    if faltan:
+        die(f"Al borrador le faltan archivos: {faltan[:8]}\n  Si el agente usó otra versión del repo de marca, actualiza el tuyo (git pull).")
+    if sobran:
+        die(f"El borrador trae archivos que no son ni de la raíz original ni de /{ruta}: {sobran[:8]}")
+    distintos = [k for k, b in base.items() if reg_min[k.lower()] != sha1(b)]
+    if distintos:
+        die(f"La raíz del borrador NO es la original (SHA1 distinto): {distintos[:8]}. No se publica.")
+    print(f"  ✓ Raíz idéntica a landing/base ({len(base)} archivos) y la landing solo en /{ruta}")
+
+    step("Bajando el borrador para revisarlo aquí")
+    shutil.rmtree(DIST, ignore_errors=True)
+    DIST.mkdir(parents=True)
+    for k in esperados:
+        b = nf.baja_archivo(did, k, reg_min[k.lower()])
+        if b is None:
+            die(f"No pude bajar {k} del borrador con su SHA1 registrado.")
+        (DIST / k).parent.mkdir(parents=True, exist_ok=True)
+        (DIST / k).write_bytes(b)
+    h_esperado = f"/{ruta}/*\n  X-Robots-Tag: noindex\n"
+    previo = base.get("_headers", b"").decode("utf-8")
+    h_esperado = (previo + "\n" if previo else "") + h_esperado
+    if (DIST / "_headers").read_text(encoding="utf-8") != h_esperado:
+        die("El _headers del borrador no es el que arma landing.py (noindex solo para la landing).")
+    paginas = sorted(DIST.joinpath(ruta).glob("*.html"))
+    builds = {p.name: (META_BUILD.search(p.read_text(encoding="utf-8", errors="ignore")) or [None, None])[1] for p in paginas}
+    build = builds.get("index.html")
+    if not build or any(v != build for v in builds.values()):
+        die(f"Las páginas de /{ruta} no traen la misma marca de build: {builds}")
+    print(f"  ✓ {len(esperados)} archivos bajados con su SHA1 · build {build}")
+
+    if publicado:
+        reg_pub = {k.lower() for k, v in nf.archivos(publicado).items() if v}
+        quita = sorted(k for k in reg_pub - {k.lower() for k in esperados} if k.endswith(".html"))
+        if quita:
+            die(f"Publicar este borrador quitaría páginas que hoy están en línea: {quita[:8]}. No se publica.")
+
+    step("Revisando la landing con el Verificador (navegador incluido)")
+    res = revisa(repo, CAPTURAS, ruta)
+    if not res["aprobada"]:
+        die("El Verificador rechazó la landing del agente. No se publica.")
+
+    sys.path.insert(0, str(repo / "landing"))
+    funciones = list(getattr(sys.modules.get("armar"), "FUNCIONES", ()))
+    url_b = d.get("deploy_ssl_url") or d.get("deploy_url")
+    if funciones:
+        step("Revisando la función del formulario en el borrador (no crea nada en HighLevel)")
+        if not imprime_funcion(revisa_funcion(url_b)):
+            die("La función del formulario no responde bien en el borrador. No se publica.")
+
+    est = carga_estado()
+    base_id = est.get("base_original") or a.base_deploy or BASE_RAIZ_MKT
+    est.setdefault("base_original", base_id)
+    man = {
+        "creado": ahora(), "repo_version": (repo / "VERSION").read_text().strip(), "ruta": ruta, "base": base_id,
+        "build": build, "archivos": {k: sha1((DIST / k).read_bytes()) for k in esperados},
+        "landing": sorted(k for k in esperados if k.startswith(ruta + "/")),
+        "funciones": {n: "en el borrador" for n in funciones}, "reemplaza_raiz": False,
+        "avisos": [{"id": x["id"], "detalle": x["detalle"]} for x in res["avisos"]],
+        "origen": {"notion_fila": a.desde_notion, "trabajo": f["trabajo"]},
+    }
+    MANIFIESTO.write_text(json.dumps(man, indent=2, ensure_ascii=False))
+    est["borrador"] = {"id": did, "creado": ahora(), "manifiesto_creado": man["creado"], "publicado_antes": publicado,
+                       "url": url_b, "notion_fila": a.desde_notion}
+    guarda_estado(est)
+    print(f"\n  Revisa el borrador antes de confirmar: {url_b}/{ruta}/")
+    return did
 
 
 def cmd_revertir(a) -> None:
@@ -744,7 +910,12 @@ def main() -> None:
     c.set_defaults(f=cmd_construir)
     sp.add_parser("borrador").set_defaults(f=cmd_borrador)
     p = sp.add_parser("promover")
-    p.add_argument("--deploy", required=True)
+    origen = p.add_mutually_exclusive_group(required=True)
+    origen.add_argument("--deploy", help="un borrador que subió este mismo script en esta máquina")
+    origen.add_argument("--desde-notion", metavar="FILA",
+                        help="id de una fila de Aprobaciones del agente Landing: revisa su borrador en Netlify y aquí, y lo publica")
+    p.add_argument("--base-dir", help="con --desde-notion: la raíz original (por defecto <repo de marca>/landing/base)")
+    p.add_argument("--base-deploy", help=f"con --desde-notion: id del deploy de la raíz original (por defecto {BASE_RAIZ_MKT})")
     p.add_argument("--acepto-aviso-provisional", action="store_true")
     p.add_argument("--confirmo")
     p.set_defaults(f=cmd_promover)
