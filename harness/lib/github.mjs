@@ -142,6 +142,10 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   if (!pref) problemas.push(`carpeta inválida en la respuesta (${gd.destino === 'piezas' ? `campana=${r.campana || 'vacío'}, pieza=${r.pieza || 'vacío'}` : `slug ${r.slug || 'vacío'}`})`);
   const numero = Number(r.pr_numero);
   if (!Number.isInteger(numero) || numero < 1) return { ok: false, informe: `Comprobación en GitHub: sin pr_numero válido.` };
+  // Con el ruteo, el PR tiene que ser del repo del cliente, no de otro con el mismo número.
+  if (c.cliente &&!String(r.pr_url).toLowerCase().startsWith(`https://github.com/${String(d.repo).toLowerCase()}/pull/`)) {
+    return { ok: false, informe: `Comprobación en GitHub: el PR reportado (${r.pr_url}) no es de ${d.repo}.` };
+  }
   let token;
   try { token = (await tokenInstalacion({ appId: g.appId, pem: g.privateKey, installationId: g.installationId, repo: d.repo,
     permisos: { contents: 'read', pull_requests: 'read' }, fetchImpl })).token; }
