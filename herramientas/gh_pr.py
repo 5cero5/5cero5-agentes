@@ -5,8 +5,9 @@ Lo que se impone aquí, para todas las herramientas:
   - Solo cambia archivos bajo el prefijo que se le da (una carpeta). Nada fuera de ella.
   - Solo crea ramas agente/*. No toca main, no fusiona y no cierra PRs.
   - GITHUB_TOKEN solo viaja en el encabezado hacia la API de GitHub (lo pone el harness; dura una hora).
-  - Solo escribe en el repo que se le da, y solo si el token es EXCLUSIVO de ese repo (el harness lo saca limitado al repo
-    del cliente). Un brief que pida otro repo no cambia a dónde se escribe: la herramienta se niega antes de escribir.
+  - Con exclusivo=True (las herramientas lo piden cuando reciben --repo, es decir con el ruteo por cliente): solo escribe
+    si el token es EXCLUSIVO de ese repo. Un brief que pida otro repo no cambia a dónde se escribe: se niega antes de escribir.
+    Sin --repo, como siempre.
 Variables: GITHUB_TOKEN; GITHUB_API_BASE solo para pruebas.
 """
 from __future__ import annotations
@@ -65,13 +66,14 @@ def blob_sha(b: bytes) -> str:
 
 
 def sube_carpeta(*, repo: str, pref: str, locales: dict[str, bytes], mensaje, rama_base: str, cuerpo,
-                 ua: str = "5cero5-agente") -> dict:
+                 ua: str = "5cero5-agente", exclusivo: bool = False) -> dict:
     """Sube los archivos de una carpeta (rutas relativas a pref) contra main: crea, cambia o borra solo dentro de pref.
     Abre una rama agente/<rama_base>-<fecha> y un PR a main. Devuelve {pr_url, pr_numero, rama, commit, archivos, nueva}.
     mensaje y cuerpo pueden ser texto o funciones (nueva, n_cambios) -> texto, para decir si la carpeta es nueva."""
     if not pref.endswith("/") or pref.startswith("/") or ".." in pref.split("/"):
         die(f"Prefijo inválido: {pref!r}")
-    repo_exclusivo(repo, ua)
+    if exclusivo:
+        repo_exclusivo(repo, ua)
     g = lambda m, p, b=None: gh(m, p, b, ua)
     base = g("GET", f"/repos/{repo}/git/ref/heads/main")["object"]["sha"]
     tree_base = g("GET", f"/repos/{repo}/git/commits/{base}")["tree"]["sha"]

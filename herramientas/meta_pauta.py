@@ -141,7 +141,8 @@ def huella(d: dict) -> str:
 
 def cmd_cuenta(a) -> None:
     cta = cuenta_id(a.cuenta)
-    cuenta_exclusiva(cta)
+    if a.cuenta_exclusiva:
+        cuenta_exclusiva(cta)
     c = meta_get(f"/{cta}", {"fields": "name,currency,timezone_name,account_status,disable_reason,spend_cap,amount_spent"})
     p = meta_get(f"/{a.pagina}", {"fields": "name"})
     problemas = []
@@ -307,7 +308,8 @@ def carga_plan(a) -> tuple[Path, dict]:
 def cmd_crear(a) -> None:
     d, plan = carga_plan(a)
     cta = plan["cuenta"]
-    cuenta_exclusiva(cta)
+    if a.cuenta_exclusiva:
+        cuenta_exclusiva(cta)
     res_p = d / "resultado.json"
     if res_p.exists():
         die(f"Ya se creó algo para {a.nombre} (resultado.json). No se crea otra vez: usa comprobar.")
@@ -436,6 +438,8 @@ def main() -> None:
     ap.add_argument("--trabajo", default="/tmp/pauta")
     ap.add_argument("--piezas", default="/workspace/piezas", help="repo 5cero5-piezas montado (main)")
     ap.add_argument("--cuenta", required=True, help="cuenta publicitaria (act_...)")
+    ap.add_argument("--cuenta-exclusiva", action="store_true",
+                    help="ruteo por cliente: el token tiene que ver solo --cuenta; si ve otra, no se crea nada")
     ap.add_argument("--pagina", required=True, help="id de la página de Facebook")
     ap.add_argument("--ig", default="", help="id de la cuenta de Instagram (opcional)")
     ap.add_argument("--pixel", default="", help="id del Pixel (opcional; sin él solo trafico)")

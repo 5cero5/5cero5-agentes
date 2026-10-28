@@ -178,7 +178,7 @@ for (const k of ['a', 'b']) {
       assert.deepEqual(p.vault_ids, [x.vaults[p.metadata.agente]]);
       const m = p.initial_events[0].content[0].text;
       for (const res of p.resources) if (res.mount_path !== '/workspace/agentes') assert.match(res.url, new RegExp(`github\\.com/${x.slug}/`));
-      if (p.metadata.agente === 'Pauta') { assert.match(m, new RegExp(`--cuenta act_${x.cuenta} --pagina ${x.pagina}`)); assert.match(m, new RegExp(`--dominios landings\\.${x.slug}\\.mx`)); }
+      if (p.metadata.agente === 'Pauta') { assert.match(m, new RegExp(`--cuenta act_${x.cuenta} --cuenta-exclusiva --pagina ${x.pagina}`)); assert.match(m, new RegExp(`--dominios landings\\.${x.slug}\\.mx`)); }
       if (p.metadata.agente === 'CRM') assert.match(m, new RegExp(`--location ${x.loc}`));
       if (p.metadata.agente === 'Landing') assert.match(m, new RegExp(`--repo ${x.landings}`));
       if (p.metadata.agente === 'Creativo') assert.match(m, new RegExp(`--repo ${x.piezas}`));
@@ -375,4 +375,8 @@ test('interruptor: sin RUTEO_CLIENTES no se lee ninguna ficha ni vault (comporta
   await despacha({ client: cl, notion, c: apagado, fetchImpl: mockApis().fetch });
   assert.equal(cl.creadas.length, 1); assert.deepEqual(cl.creadas[0].vault_ids, ['v_global_crm']); assert.equal(cl.vaultsLeidos.length, 0);
   assert.equal(cl.creadas[0].metadata.cliente_slug, undefined);
+  // Sin ruteo, los comandos son los de siempre: sin --repo, --location ni --cuenta-exclusiva (las herramientas no se endurecen).
+  const m = cl.creadas[0].initial_events[0].content[0].text;
+  assert.match(m, /HL_LOCATION_ID=locGLOBAL python3 \/workspace\/agentes\/poc-conectores\/correo\.py/);
+  assert.doesNotMatch(m, /--location|--repo|--cuenta-exclusiva/);
 });

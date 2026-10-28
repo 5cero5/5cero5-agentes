@@ -170,11 +170,13 @@ caso("plan: no llama a Meta", not S.posts and not S.gets, str(S.gets))
 
 # destino permitido: el token del cliente ve una sola cuenta; otra --cuenta o un token que ve más de una no escribe nada
 OTRA = "act_7654321"
-limpia(); rc, out = corre("cuenta", extra=("--cuenta", OTRA))
+limpia(); rc, out = corre("cuenta", extra=("--cuenta", OTRA, "--cuenta-exclusiva"))
 caso("cuenta: --cuenta de otro cliente se rechaza antes de leerla", rc != 0 and "no es exclusivo" in out and not any(g[0] == f"/{OTRA}" for g in S.gets), out)
 limpia(); corre("plan", "--archivo", str(plan())); S.cuentas_token = [CTA, OTRA]
-rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505", extra=("--cuenta-exclusiva",))
 caso("crear: token que ve otra cuenta además de la suya no crea nada", rc != 0 and "no es exclusivo" in out and not S.posts, out)
+limpia(); S.cuentas_token = [CTA, OTRA]; rc, out = corre("cuenta")
+caso("cuenta: sin --cuenta-exclusiva se comporta como antes (no pide /me/adaccounts)", rc == 0 and not any(g[0] == "/me/adaccounts" for g in S.gets), out)
 
 # crear
 limpia(); corre("plan", "--archivo", str(plan()))

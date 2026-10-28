@@ -87,14 +87,14 @@ def caso(n, c, o=""):
     res.append(bool(c)); print(("✓" if c else "✗"), n, "" if c else str(o)[-600:])
 
 
-def sube(repo, token):
+def sube(repo, token, exclusivo=True):
     """gh_pr.sube_carpeta en el mismo proceso. Devuelve (salió_bien, salida o error)."""
     os.environ["GITHUB_TOKEN"] = token
     import gh_pr
     importlib.reload(gh_pr)
     try:
         return True, gh_pr.sube_carpeta(repo=repo, pref="landings/promo/", locales={"index.html": b"<p>hola</p>"},
-                                        mensaje="m", rama_base="promo", cuerpo="c")
+                                        mensaje="m", rama_base="promo", cuerpo="c", exclusivo=exclusivo)
     except SystemExit:
         return False, ""
 
@@ -111,6 +111,10 @@ ok, _ = sube(REPO_A, "ghs_amplio")
 caso("gh_pr: un token que ve dos repos no escribe (debe ser exclusivo)", not ok and not S.escrituras, S.escrituras)
 ok, _ = sube("../otro", "ghs_a")
 caso("gh_pr: --repo con forma inválida se rechaza", not ok)
+S.escrituras.clear(); S.lecturas.clear()
+ok, r = sube(REPO_A, "ghs_amplio", exclusivo=False)
+caso("gh_pr: sin --repo (exclusivo=False) se comporta como antes: no pregunta qué repos ve el token",
+     ok and "/installation/repositories" not in S.lecturas, S.lecturas)
 
 # 2) Token de A contra un recurso de B: GitHub responde 404 (lo que haría con un token limitado a A)
 os.environ["GITHUB_TOKEN"] = "ghs_a"
@@ -134,8 +138,8 @@ def repo_de(modulo, argv):
 
 
 caso("pr_landing.py: --repo llega a sube_carpeta", repo_de("pr_landing", ["--repo", REPO_A, "abrir", "--slug", "promo", "--titulo", "t"]) == REPO_A)
-caso("pr_landing.py: sin --repo usa GH_LANDINGS_REPO o 5cero5/5cero5-landings (ruteo apagado)",
-     repo_de("pr_landing", ["abrir", "--slug", "promo", "--titulo", "t"]) == os.environ.get("GH_LANDINGS_REPO", "5cero5/5cero5-landings"))
+caso("pr_landing.py: sin --repo no hay destino estricto (cmd_abrir usa GH_LANDINGS_REPO o 5cero5/5cero5-landings, como antes)",
+     repo_de("pr_landing", ["abrir", "--slug", "promo", "--titulo", "t"]) is None)
 caso("pr_pieza.py: --repo llega a sube_carpeta",
      repo_de("pr_pieza", ["--repo", REPO_A, "abrir", "--campana", "c", "--pieza", "p", "--titulo", "t"]) == REPO_A)
 
@@ -143,10 +147,10 @@ caso("pr_pieza.py: --repo llega a sube_carpeta",
 tmp = Path(tempfile.mkdtemp()); (tmp / "c.html").write_text("<p>hola</p>")
 
 
-def correo(loc, token):
-    S.escrituras.clear()
-    env = {**os.environ, "HL_TOKEN": token, "HL_API_BASE": HL_BASE, "MARCA_REPO": str(tmp)}
-    r = subprocess.run([sys.executable, str(HERE.parent / "poc-conectores" / "correo.py"), "--location", loc, "subir",
+def correo(loc, token, flag=True):
+    S.escrituras.clear(); S.lecturas.clear()
+    env = {**os.environ, "HL_TOKEN": token, "HL_API_BASE": HL_BASE, "MARCA_REPO": str(tmp), "HL_LOCATION_ID": loc}
+    r = subprocess.run([sys.executable, str(HERE.parent / "poc-conectores" / "correo.py"), *(["--location", loc] if flag else []), "subir",
                         "--html", str(tmp / "c.html"), "--nombre", "[agente] W1"], capture_output=True, text=True, env=env)
     return r.returncode, r.stdout + r.stderr
 
@@ -156,6 +160,9 @@ caso("correo.py: --location de B con el token de A se rechaza (403) y no sube na
 rc, out = correo(LOC_A, "pit-a")
 caso("correo.py: --location de A con el token de A pasa la comprobación de subcuenta (sigue al Verificador)",
      "403" not in out and "no confirmó" not in out and not S.escrituras, out)
+
+rc, out = correo(LOC_B, "pit-a", flag=False)
+caso("correo.py: sin --location (HL_LOCATION_ID, como antes) no consulta la subcuenta", not any(p.startswith("/locations/") for p in S.lecturas), out)
 
 print(f"\n{sum(res)}/{len(res)} casos")
 sys.exit(0 if all(res) else 1)

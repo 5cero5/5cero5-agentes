@@ -37,7 +37,8 @@ def die(m: str) -> None:
     sys.exit(1)
 
 
-LOCATION = ""  # --location (o HL_LOCATION_ID): la subcuenta del cliente; la pone main()
+LOCATION = ""     # --location o, sin él, HL_LOCATION_ID (como antes); la pone main()
+ESTRICTO = False  # con --location (ruteo por cliente): antes de subir, el token tiene que leer esa subcuenta
 
 
 def need(v: str) -> str:
@@ -123,7 +124,8 @@ def cmd_verificar(a) -> None:
 def cmd_subir(a) -> None:
     html = Path(a.html).read_text(encoding="utf-8")
     loc = LOCATION
-    location_propia(loc)  # antes de todo: con un token de otra subcuenta no se sube nada
+    if ESTRICTO:
+        location_propia(loc)  # antes de todo: con un token de otra subcuenta no se sube nada
     print("▸ Verificando antes de subir")
     if not verifica(html, repo())["aprobada"]:
         die("El Verificador rechazó el correo. No se sube nada.")
@@ -177,17 +179,19 @@ def cmd_comprobar(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--location", default=os.environ.get("HL_LOCATION_ID", ""), help="Location ID de la subcuenta del cliente")
+    ap.add_argument("--location", help="Location ID de la subcuenta del cliente; con él, el token tiene que leer esa subcuenta")
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("armar"); p.add_argument("--copia", required=True); p.set_defaults(f=cmd_armar)
     p = sp.add_parser("verificar"); p.add_argument("--html", required=True); p.set_defaults(f=cmd_verificar)
     p = sp.add_parser("subir"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_subir)
     p = sp.add_parser("comprobar"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_comprobar)
     a = ap.parse_args()
-    global LOCATION
-    LOCATION = a.location.strip()
-    if a.cmd in ("subir", "comprobar") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", LOCATION):
-        die("Falta --location (o HL_LOCATION_ID) válido.")
+    global LOCATION, ESTRICTO
+    ESTRICTO = bool(a.location)
+    if a.cmd in ("subir", "comprobar"):
+        LOCATION = a.location.strip() if a.location else need("HL_LOCATION_ID")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", LOCATION):
+            die(f"Location ID inválido: {LOCATION!r}")
     a.f(a)
 
 
