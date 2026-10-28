@@ -2,7 +2,7 @@ import { leePagina, P } from './notion.mjs';
 import { cierraSesion } from './cierre.mjs';
 
 // Red de seguridad: el webhook no reenvía lo perdido. Revisa lo que lleva "En curso" demasiado.
-export async function barre({ client, notion, c, ahora = Date.now() }) {
+export async function barre({ client, notion, c, ahora = Date.now(), fetchImpl = fetch }) {
   const out = [];
   const r = await notion.query(c.notionDataSource, { property: 'Estado', select: { equals: 'En curso' } }, 50);
   for (const page of r.results) {
@@ -15,7 +15,7 @@ export async function barre({ client, notion, c, ahora = Date.now() }) {
       }
       continue;
     }
-    const res = await cierraSesion({ client, notion, c, sessionId: fila.sesion });
+    const res = await cierraSesion({ client, notion, c, sessionId: fila.sesion, fetchImpl });
     if (res.startsWith('aun_')) {
       const min = fila.inicio ? (ahora - Date.parse(fila.inicio)) / 60000 : 0;
       if (min > c.maxMinutosSesion) {

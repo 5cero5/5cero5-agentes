@@ -356,7 +356,7 @@ def cmd_abrir(a) -> None:
         "".join(f"\n- {x.get('id')}: {x.get('detalle')}" for x in avisos[:8]) + \
         f"\n\nPara revisar: abre `{pref}pieza.png` en la pestaña de archivos.\n" \
         "Aprobar = fusionar este PR (Al). Subirla a Meta la hace Bonzo a mano, con la campaña en pausa."
-    r = sube_carpeta(repo=REPO, pref=pref, locales=locales, rama_base=f"{a.campana}-{a.pieza}"[:60], ua="5cero5-agente-creativo",
+    r = sube_carpeta(repo=a.repo or REPO, exclusivo=bool(a.repo), pref=pref, locales=locales, rama_base=f"{a.campana}-{a.pieza}"[:60], ua="5cero5-agente-creativo",
                      mensaje=lambda nueva, n: f"{'Pieza nueva' if nueva else 'Pieza'} {a.campana}/{a.pieza} ({meta['formato']}): {a.titulo}",
                      cuerpo=cuerpo)
     out = {k: r[k] for k in ("pr_url", "pr_numero", "rama", "commit")}
@@ -367,6 +367,7 @@ def cmd_abrir(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", help="org/repo de piezas del cliente; con él, el token tiene que ser exclusivo de ese repo")
     ap.add_argument("--trabajo", default="/tmp/creativo")
     ap.add_argument("--marca", default="/tmp/marca")
     sp = ap.add_subparsers(dest="cmd", required=True)

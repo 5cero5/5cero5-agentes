@@ -14,13 +14,14 @@ Se puede correr varias veces: no duplica nada. Con --actualizar-agente sube prom
   cd harness/infra
   read -rs "ANTHROPIC_API_KEY?Llave de Anthropic: " && export ANTHROPIC_API_KEY && echo
   uv run --with "anthropic>=1.12" python crear_agente_landing.py --actualizar-agente
+  uv run --with "anthropic>=1.12" python crear_agente_landing.py --cliente <slug>   vault de otro cliente (el agente es común)
 """
 from __future__ import annotations
 
 import argparse
 import os
 
-from comun import AGENTES, alta, carga, entorno, guarda, need
+from comun import AGENTES, CLIENTE_BASE, agente_comun, alta, arg_cliente, carga, clave_de, cliente, entorno, guarda, imprime_ficha, meta_de, need
 
 MODELO = os.environ.get("MODELO_LANDING", "claude-sonnet-5-5")
 RELLENO = "se-renueva-en-cada-sesion"
@@ -29,34 +30,39 @@ RELLENO = "se-renueva-en-cada-sesion"
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
+    arg_cliente(ap)
     a = ap.parse_args()
+    slug = cliente(a)
+    clave = clave_de(slug, "landing")
     need("ANTHROPIC_API_KEY")
     prompt = (AGENTES / "landing.md").read_text(encoding="utf-8")
 
     from anthropic import Anthropic
     b = Anthropic().beta
-    meta = {"cliente": "5cero5", "rol": "landing", "origen": "harness/infra/crear_agente_landing.py"}
+    meta = meta_de(slug, "landing", "crear_agente_landing.py")
 
     # La versión anterior publicaba en Netlify por API: su credencial ya no debe existir.
-    estado = carga("landing")
+    estado = carga(clave)
     if estado.get("cred_netlify_id") and estado.get("vault_id"):
         b.vaults.credentials.delete(estado["cred_netlify_id"], vault_id=estado["vault_id"])
         print(f"▸ Credencial NETLIFY_TOKEN borrada del vault ({estado.pop('cred_netlify_id')}). Revoca también ese token en Netlify.")
-        guarda("landing", estado)
+        guarda(clave, estado)
 
     env_id = entorno(b)
     ya_tenia = "cred_github_id" in estado
-    e = alta(b, clave="landing", vault_nombre="5cero5 · Landing", meta=meta, actualizar=a.actualizar_agente,
+    e = alta(b, clave=clave, vault_nombre=f"{slug} · Landing", meta=meta, actualizar=a.actualizar_agente,
              credenciales=[] if ya_tenia else [{"key": "cred_github_id", "secret_name": "GITHUB_TOKEN", "value": RELLENO,
-                                                "host": "api.github.com", "label": "GitHub App 5cero5-agentes · 5cero5-landings (1 h)"}],
-             agente={"name": "5cero5 · Landing", "description": "Abre PRs en 5cero5-landings con pr_landing.py. Nunca fusiona ni publica.",
-                     "model": MODELO, "system": prompt})
+                                                "host": "api.github.com", "label": f"GitHub App 5cero5-agentes · landings de {slug} (1 h)"}],
+             agente=agente_comun(slug, "landing", {"name": "5cero5 · Landing", "description": "Abre PRs en el repo de landings del cliente con pr_landing.py. Nunca fusiona ni publica.",
+                                                   "model": MODELO, "system": prompt}))
 
-    print("\nVariables para el proyecto de Netlify del harness (no son secretas):")
-    print(f"  MA_ENVIRONMENT_ID={env_id}")
-    print(f"  MA_AGENT_LANDING={e['agent_id']}")
-    print(f"  MA_VAULT_LANDING={e['vault_id']}")
-    print(f"  MA_CRED_GITHUB_LANDING={e['cred_github_id']}")
+    if slug == CLIENTE_BASE:
+        print("\nVariables para el proyecto de Netlify del harness (no son secretas):")
+        print(f"  MA_ENVIRONMENT_ID={env_id}")
+        print(f"  MA_AGENT_LANDING={e['agent_id']}")
+        print(f"  MA_VAULT_LANDING={e['vault_id']}")
+        print(f"  MA_CRED_GITHUB_LANDING={e['cred_github_id']}")
+    imprime_ficha(slug, {"Vault Landing": e["vault_id"], "Credencial GitHub Landing": e["cred_github_id"]})
 
 
 if __name__ == "__main__":

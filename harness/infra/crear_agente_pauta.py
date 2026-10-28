@@ -16,6 +16,7 @@ prompt y modelo a una versión nueva; con --solo-revisar hace solo el paso 0.
   python3 crear_agente_pauta.py --pagina 1127307763190247 --solo-revisar
   read -rs "ANTHROPIC_API_KEY?Llave de Anthropic: " && export ANTHROPIC_API_KEY && echo
   uv run --with "anthropic>=1.12" python crear_agente_pauta.py --pagina 1127307763190247 [--cuenta act_...] [--pixel ...]
+  Otro cliente: META_TOKEN es el de SU usuario del sistema (asignado solo a su cuenta publicitaria) y --cliente <slug>.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from comun import AGENTES, alta, carga, entorno, need
+from comun import AGENTES, CLIENTE_BASE, agente_comun, alta, arg_cliente, carga, clave_de, cliente, entorno, imprime_ficha, meta_de, need
 
 MODELO = os.environ.get("MODELO_PAUTA", "claude-sonnet-5-5")
 API = os.environ.get("META_API_BASE", "https://graph.facebook.com/v25.0")
@@ -68,6 +69,10 @@ def revisa_meta(a) -> dict:
     cuentas = g("/me/adaccounts", fields="id,name,currency,account_status,timezone_name,spend_cap", limit=50).get("data", [])
     for c in cuentas:
         print(f"  · {c['id']} {c.get('name')} · {c.get('currency')} · estado {c.get('account_status')} · {c.get('timezone_name')} · límite {int(c.get('spend_cap') or 0) / 100:g} MXN")
+    if len(cuentas) != 1:
+        # meta_pauta.py solo crea si el token ve exactamente una cuenta: un usuario del sistema por cliente, asignado solo a la suya.
+        raise SystemExit(f"✗ El token ve {len(cuentas)} cuentas publicitarias. meta_pauta.py exige que vea solo la del cliente: "
+                         "usa un usuario del sistema asignado solo a esa cuenta (Usuarios del sistema › Asignar activos).")
     if a.cuenta:
         cid = a.cuenta if a.cuenta.startswith("act_") else f"act_{a.cuenta}"
         cuenta = next((c for c in cuentas if c["id"] == cid), None)
@@ -132,7 +137,9 @@ def main() -> None:
     ap.add_argument("--pixel", help="id del Pixel (sin él, el agente solo arma campañas de tráfico)")
     ap.add_argument("--solo-revisar", action="store_true", help="solo revisa Meta; no toca Managed Agents")
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
+    arg_cliente(ap)
     a = ap.parse_args()
+    slug = cliente(a)
     ids = revisa_meta(a)
     if a.solo_revisar:
         print("\n✓ Meta cuadra. Corre otra vez sin --solo-revisar (con ANTHROPIC_API_KEY) para crear el agente.")
@@ -142,14 +149,19 @@ def main() -> None:
 
     from anthropic import Anthropic
     b = Anthropic().beta
-    meta = {"cliente": "5cero5", "rol": "pauta", "origen": "harness/infra/crear_agente_pauta.py"}
+    meta = meta_de(slug, "pauta", "crear_agente_pauta.py")
     env_id = entorno(b)
-    e = alta(b, clave="pauta", vault_nombre="5cero5 · Pauta", meta=meta, actualizar=a.actualizar_agente,
+    e = alta(b, clave=clave_de(slug, "pauta"), vault_nombre=f"{slug} · Pauta", meta=meta, actualizar=a.actualizar_agente,
              credenciales=[{"key": "cred_meta_id", "secret_name": "META_TOKEN", "value": os.environ["META_TOKEN"].strip(),
-                            "host": "graph.facebook.com", "label": "Meta · usuario del sistema · Pauta"}],
-             agente={"name": "5cero5 · Pauta", "description": "Arma campañas de Meta EN PAUSA con piezas aprobadas, con meta_pauta.py. Nunca activa, edita ni borra.",
-                     "model": MODELO, "system": prompt})
+                            "host": "graph.facebook.com", "label": f"Meta · usuario del sistema · Pauta · {slug}"}],
+             agente=agente_comun(slug, "pauta", {"name": "5cero5 · Pauta", "description": "Arma campañas de Meta EN PAUSA con piezas aprobadas, con meta_pauta.py. Nunca activa, edita ni borra.",
+                                                 "model": MODELO, "system": prompt}))
 
+    imprime_ficha(slug, {"Vault Pauta": e["vault_id"], "Meta cuenta": ids["cuenta"], "Meta página": ids["pagina"],
+                         "Meta Instagram": ids["ig"], "Meta Pixel": ids["pixel"]})
+    if slug != CLIENTE_BASE:
+        print(f"\nY como variable SECRETA en Netlify (opcional): META_TOKEN_{slug.upper().replace('-', '_')}, el mismo token.")
+        return
     print("\nVariables para el proyecto de Netlify del harness (no son secretas):")
     print(f"  MA_ENVIRONMENT_ID={env_id}")
     print(f"  MA_AGENT_PAUTA={e['agent_id']}")

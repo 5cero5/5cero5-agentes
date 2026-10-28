@@ -94,6 +94,37 @@ export async function preparaGithub({ client, c, agente = 'Landing', fetchImpl =
   return { lectura: lectura.token, mainSha: await shaDeMain(lectura.token, d.repo, fetchImpl) };
 }
 
+// Token de LECTURA de 1 hora limitado a un repo, para montarlo en la sesión (con ruteo por cliente: marca, landings, piezas).
+export async function tokenLectura({ c, repo, fetchImpl = fetch }) {
+  const g = c.github || {};
+  const faltan = [['appId', g.appId], ['installationId', g.installationId], ['privateKey', g.privateKey]].filter(([, v]) => !v).map(([k]) => k);
+  if (faltan.length) throw new Error(`Falta configuración de GitHub para montar ${repo}: ${faltan.join(', ')}`);
+  return (await tokenInstalacion({ appId: g.appId, pem: g.privateKey, installationId: g.installationId, repo, permisos: { contents: 'read' }, fetchImpl })).token;
+}
+
+// Agentes con GitHub (Landing, Creativo): token de escritura nuevo en su vault, token de lectura para montar su repo
+// (si lo monta) y el sha de main al empezar (para comprobar al cerrar que nadie publicó durante la sesión).
+// Con cliente, además, cada repo suyo que se monta (marca, landings, piezas) lleva un token de lectura de 1 hora de ese repo.
+export async function conGithub({ params, fila, c, client, fetchImpl = fetch }) {
+  const gd = agenteDe(fila.agente)?.github;
+  if (!gd && !c.cliente) return params;
+  const tokens = {};
+  let metadata = params.metadata;
+  if (gd) {
+    const g = await preparaGithub({ client, c, agente: fila.agente, fetchImpl });
+    if (gd.montar) tokens[c.repos[gd.destino]?.mount] = g.lectura;
+    metadata = { ...metadata, main_sha: g.mainSha || '' };
+  }
+  if (c.cliente) {
+    for (const r of params.resources || []) {
+      const def = Object.values(c.repos).find(x => x.mount === r.mount_path);
+      if (def?.dinamico && def.repo && !tokens[r.mount_path]) tokens[r.mount_path] = await tokenLectura({ c, repo: def.repo, fetchImpl });
+    }
+  }
+  return { ...params, metadata,
+    resources: (params.resources || []).map(r => (tokens[r.mount_path] ? { ...r, authorization_token: tokens[r.mount_path] } : r)) };
+}
+
 // Carpeta que el PR puede tocar según la respuesta del agente.
 const PREFIJOS = {
   landings: r => (SLUG.test(String(r.slug || '')) ? `landings/${r.slug}/` : null),
@@ -111,6 +142,10 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   if (!pref) problemas.push(`carpeta inválida en la respuesta (${gd.destino === 'piezas' ? `campana=${r.campana || 'vacío'}, pieza=${r.pieza || 'vacío'}` : `slug ${r.slug || 'vacío'}`})`);
   const numero = Number(r.pr_numero);
   if (!Number.isInteger(numero) || numero < 1) return { ok: false, informe: `Comprobación en GitHub: sin pr_numero válido.` };
+  // Con el ruteo, el PR tiene que ser del repo del cliente, no de otro con el mismo número.
+  if (c.cliente &&!String(r.pr_url).toLowerCase().startsWith(`https://github.com/${String(d.repo).toLowerCase()}/pull/`)) {
+    return { ok: false, informe: `Comprobación en GitHub: el PR reportado (${r.pr_url}) no es de ${d.repo}.` };
+  }
   let token;
   try { token = (await tokenInstalacion({ appId: g.appId, pem: g.privateKey, installationId: g.installationId, repo: d.repo,
     permisos: { contents: 'read', pull_requests: 'read' }, fetchImpl })).token; }

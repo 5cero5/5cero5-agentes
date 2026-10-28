@@ -6,8 +6,8 @@
   python3 pr_landing.py abrir   --slug buen-fin --titulo "..." [--cuerpo "..."]   rama agente/<slug>-<fecha> + PR a main
 
 Rutas (por defecto las de la sesión del agente): --landings /tmp/landings (copia del repo), --marca /tmp/marca (copia del repo de marca).
-Variables: GITHUB_TOKEN (lo pone el harness; solo viaja en el encabezado hacia api.github.com). Opcionales: GH_LANDINGS_REPO
-(por defecto 5cero5/5cero5-landings), GITHUB_API_BASE (solo pruebas).
+Variables: GITHUB_TOKEN (lo pone el harness; solo viaja en el encabezado hacia api.github.com). --repo: el repo destino del cliente;
+con él, el token tiene que ser exclusivo de ese repo. Sin --repo: GH_LANDINGS_REPO o 5cero5/5cero5-landings, como antes. GITHUB_API_BASE solo pruebas.
 
 Lo que se impone:
   - Solo sube archivos de landings/<slug>/. Nada de la función, el build, correos/ u otras landings.
@@ -136,7 +136,7 @@ def cmd_abrir(a) -> None:
         f"Abierto por el agente Landing. Solo cambia `{pref}` ({n} archivo(s)).\n\n" \
         f"Para revisar: el deploy preview de Netlify en `/{a.slug}/` y `/.netlify/functions/prospecto?verificar=1&landing={a.slug}`.\n" \
         "Publicar = aprobar y fusionar este PR (solo Al o Bonzo)."
-    r = sube_carpeta(repo=REPO, pref=pref, locales=locales, rama_base=a.slug, ua="5cero5-agente-landing",
+    r = sube_carpeta(repo=a.repo or REPO, exclusivo=bool(a.repo), pref=pref, locales=locales, rama_base=a.slug, ua="5cero5-agente-landing",
                      mensaje=lambda nueva, n: f"{'Nueva landing' if nueva else 'Landing'} {a.slug}: {a.titulo}", cuerpo=cuerpo)
     out = {k: r[k] for k in ("pr_url", "pr_numero", "rama", "commit")}
     out.update(slug=a.slug, archivos=r["archivos"])
@@ -145,6 +145,7 @@ def cmd_abrir(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", help="org/repo de landings del cliente; con él, el token tiene que ser exclusivo de ese repo")
     ap.add_argument("--landings", default="/tmp/landings")
     ap.add_argument("--marca", default="/tmp/marca")
     sp = ap.add_subparsers(dest="cmd", required=True)
