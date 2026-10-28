@@ -3,6 +3,8 @@
 // y el barrido funcionan igual que con cualquier otra fila.
 import { P } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
+import { clienteDeCampana, validaCliente, compruebaVault, cfgCliente } from './clientes.mjs';
+import { conGithub } from './github.mjs';
 
 const RUTAS = ['Cita', 'Pedido', 'Visita']; // regla 2
 const ahora = () => new Date().toISOString();
@@ -50,7 +52,7 @@ export function briefDeCampana(k, c) {
   const vig = k.vigencia ? `${k.vigencia.start}${k.vigencia.end ? ` a ${k.vigencia.end}` : ''}` : 'sin fecha';
   return [
     `Desglosa la campaña "${k.nombre}" (página de Notion ${k.id}). Lee también el cuerpo de la página.`,
-    `Cliente: ${k.cliente || '?'} · Ruta: ${k.ruta} · Objetivo: ${k.objetivo || '?'}`,
+    `Cliente: ${c.cliente ? `${c.cliente.nombre} (${c.cliente.slug})` : k.cliente || '?'} · Ruta: ${k.ruta} · Objetivo: ${k.objetivo || '?'}`,
     `KPI: ${k.kpi || '?'} · Meta: ${k.meta ?? '?'} · Costo máximo por resultado: ${k.costoMax ?? '?'} MXN`,
     `Canales: ${k.canales.join(', ') || '?'} · Formatos: ${k.formatos.join(', ') || '?'} · Piezas: ${k.piezas} · Lleva landing: ${k.landing ? 'sí' : 'no'}`,
     `Pauta: ${k.presupuesto ?? '?'} MXN · Vigencia: ${vig}`,
@@ -63,7 +65,7 @@ export function briefDeCampana(k, c) {
   ].join('\n');
 }
 
-export async function despachaCampanas({ client, notion, c, cupo }) {
+export async function despachaCampanas({ client, notion, c, cupo, cache = new Map(), hoyCliente = new Map(), fetchImpl = fetch }) {
   const out = { creadas: [], omitidas: [] };
   const r = await notion.query(c.notionCampanas, { property: 'Estado', select: { equals: 'Aprobada' } }, 10);
   for (const page of r.results) {
@@ -71,27 +73,38 @@ export async function despachaCampanas({ client, notion, c, cupo }) {
     const motivo = esCampanaDespachable(k, c);
     if (motivo) { out.omitidas.push([k.id, motivo]); continue; }
     if (cupo <= 0) { out.omitidas.push([k.id, 'tope_diario']); continue; }
+    // Ruteo por cliente: la campaña tiene que tener un solo cliente Activo con Vault CMO suyo y Ruta. Si no, la fila del CMO
+    // se crea ya en Error con el motivo (queda a la vista y la campaña no se vuelve a despachar).
+    let cc = c, cli = null, errCliente = null;
+    if (c.ruteoClientes) {
+      try { cli = await clienteDeCampana(notion, c, k.id, cache); validaCliente(cli, 'CMO'); await compruebaVault(client, cli, 'CMO'); cc = cfgCliente(c, cli); }
+      catch (e) { errCliente = e.message; }
+      if (cli && !errCliente && (hoyCliente.get(cli.id) || 0) >= cc.maxSesionesPorDia) { out.omitidas.push([k.id, 'tope_diario_cliente']); continue; }
+    }
     // Se reclama ANTES de crear nada: la campaña sale de Aprobada y no se vuelve a despachar.
     await notion.update(k.id, { Estado: P.select('En producción') });
-    const brief = briefDeCampana(k, c);
+    const brief = briefDeCampana(k, cc);
     const trabajo = `Desglose · ${k.nombre}`;
     const nueva = await notion.create(c.notionDataSource, {
       Trabajo: P.titulo(trabajo),
       Agente: P.select('CMO'),
-      Estado: P.estado('En curso'),
+      Estado: P.estado(errCliente ? 'Error' : 'En curso'),
+      ...(errCliente ? { Error: P.texto(errCliente) } : {}),
       Campaña: P.texto(k.nombre),
       'Campaña ligada': P.relacion([k.id]),
       Brief: P.texto(brief),
       Aprobó: P.personas(k.aprobo.filter(id => c.aprobadores.includes(id))),
       Intentos: P.numero(1),
       Inició: P.fecha(ahora()),
-      'Tope de la sesión (USD)': P.numero(c.topeDefaultUsd),
+      'Tope de la sesión (USD)': P.numero(cc.topeDefaultUsd),
     });
+    if (errCliente) { out.omitidas.push([k.id, 'cliente']); continue; }
     const fila = { id: nueva.id, agente: 'CMO', trabajo, campana: k.nombre, brief, intentos: 0, tope: null };
     try {
-      const s = await client.beta.sessions.create(parametrosSesion(fila, c));
+      const s = await client.beta.sessions.create(await conGithub({ params: parametrosSesion(fila, cc), fila, c: cc, client, fetchImpl }));
       await notion.update(fila.id, { Sesión: P.texto(s.id) });
       out.creadas.push([k.id, fila.id, s.id]); cupo--;
+      if (cli) hoyCliente.set(cli.id, (hoyCliente.get(cli.id) || 0) + 1);
     } catch (e) {
       await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(`No se pudo crear la sesión del CMO: ${e.message}`) });
       out.omitidas.push([k.id, 'create_fallo']);

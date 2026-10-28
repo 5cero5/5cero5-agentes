@@ -17,6 +17,8 @@ export function parametrosSesion(fila, c) {
   // Managed Agents recibe el tope en centavos y como cadena ("200" = 2 USD; "2.00" se rechaza).
   const centavos = Math.round(tope * 100);
   if (!(centavos >= 1)) throw new Error('Tope inválido');
+  // Con cliente, sin vault propio no hay sesión: no hay vault común de respaldo.
+  if (c.cliente && !c.vaultsPorAgente?.[fila.agente]?.length) throw new Error(`Falta Vault ${fila.agente} del cliente ${c.cliente.slug}`);
   const resources = def.repos.map(nombre => {
     const r = c.repos[nombre];
     if (!r?.url) throw new Error(`Falta ${r?.variable || nombre} para el agente ${fila.agente}`);
@@ -28,9 +30,9 @@ export function parametrosSesion(fila, c) {
     environment_id: c.environmentId,
     title: `${fila.agente} · ${fila.trabajo}`.slice(0, 120),
     budget: { type: 'limit', max_list_cost: { amount: String(centavos), currency: 'USD' } },
-    metadata: { notion_page_id: fila.id, agente: fila.agente, intento: String(fila.intentos + 1) },
-    vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,
-    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
+    metadata: { notion_page_id: fila.id, agente: fila.agente, intento: String(fila.intentos + 1),
+      ...(c.cliente ? { cliente_slug: c.cliente.slug, cliente_id: c.cliente.id } : {}) },
+    vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
   };
   if (resources.length) p.resources = resources;
   return p;
