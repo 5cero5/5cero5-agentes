@@ -107,6 +107,19 @@ for rol, Rol in ROLES.items():
     rc, out, ll = corre(script, "--cliente", "cliente-a", *extra, META_TOKEN="EAA_a")
     caso(f"{rol}: correr otra vez con --cliente cliente-a no crea otro vault", rc == 0 and not any(x["op"] == "vault.create" for x in ll), out)
 
+# CRM: HL_TOKEN_CRM solo hace falta la primera vez o para cambiar el token
+rc, out, ll = corre("crear_agente_crm.py", "--actualizar-agente", HL_TOKEN_CRM="")
+caso("crm: --actualizar-agente sin HL_TOKEN_CRM sube el prompt y no toca la credencial del vault",
+     rc == 0 and any(x["op"] == "agent.update" for x in ll) and not any(x["op"].startswith("cred.") for x in ll), out)
+rc, out, ll = corre("crear_agente_crm.py", "--actualizar-agente", HL_TOKEN_CRM="pit-nuevo")
+upd = [x for x in ll if x["op"] == "cred.update"]
+caso("crm: con HL_TOKEN_CRM reemplaza el token de la credencial existente",
+     rc == 0 and len(upd) == 1 and upd[0]["auth"]["secret_value"] == "pit-nuevo" and not any(x["op"] == "cred.create" for x in ll), out)
+rc, out, ll = corre("crear_agente_crm.py", "--cliente", "cliente-nuevo", HL_TOKEN_CRM="")
+caso("crm: cliente sin credencial y sin HL_TOKEN_CRM se detiene antes de tocar nada", rc != 0 and "HL_TOKEN_CRM" in out and not ll, out)
+rc, out, ll = corre("crear_agente_crm.py", "--actualizar-agente", HL_TOKEN_CRM="abc")
+caso("crm: un HL_TOKEN_CRM que no es pit- se rechaza antes de tocar nada", rc != 0 and "pit-" in out and not ll, out)
+
 rc, out, ll = corre("crear_agente_landing.py", "--cliente", "cliente-a", "--actualizar-agente")
 caso("--actualizar-agente con otro cliente se rechaza sin tocar nada", rc != 0 and "común" in out and not ll, out)
 rc, out, ll = corre("crear_agente_landing.py", "--cliente", "Cliente_A")
