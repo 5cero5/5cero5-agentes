@@ -5,6 +5,8 @@ Lo que se impone aquí, para todas las herramientas:
   - Solo cambia archivos bajo el prefijo que se le da (una carpeta). Nada fuera de ella.
   - Solo crea ramas agente/*. No toca main, no fusiona y no cierra PRs.
   - GITHUB_TOKEN solo viaja en el encabezado hacia la API de GitHub (lo pone el harness; dura una hora).
+  - Solo escribe en el repo que se le da, y solo si el token es EXCLUSIVO de ese repo (el harness lo saca limitado al repo
+    del cliente). Un brief que pida otro repo no cambia a dónde se escribe: la herramienta se niega antes de escribir.
 Variables: GITHUB_TOKEN; GITHUB_API_BASE solo para pruebas.
 """
 from __future__ import annotations
@@ -13,6 +15,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -44,6 +47,18 @@ def gh(method: str, path: str, body: dict | None = None, ua: str = "5cero5-agent
         die(f"GitHub respondió {e.code} a {method} {path.split('?')[0]}: {e.read()[:300].decode('utf-8', 'ignore')}")
 
 
+REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def repo_exclusivo(repo: str, ua: str = "5cero5-agente") -> None:
+    """El token de la sesión tiene que ver exactamente un repo, y ese repo es el que se pide. Si no, no se escribe nada."""
+    if not REPO.match(repo or ""):
+        die(f"--repo inválido: {repo!r} (debe ser org/repo)")
+    vistos = [r.get("full_name", "") for r in gh("GET", "/installation/repositories?per_page=100", None, ua).get("repositories", [])]
+    if [v.lower() for v in vistos] != [repo.lower()]:
+        die(f"El token de la sesión no es exclusivo de {repo} (ve: {', '.join(vistos) or 'ninguno'}). No se escribe nada.")
+
+
 def blob_sha(b: bytes) -> str:
     """El sha que GitHub le da a un archivo (blob). Sirve para comprobar sin bajar el archivo."""
     return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
@@ -56,6 +71,7 @@ def sube_carpeta(*, repo: str, pref: str, locales: dict[str, bytes], mensaje, ra
     mensaje y cuerpo pueden ser texto o funciones (nueva, n_cambios) -> texto, para decir si la carpeta es nueva."""
     if not pref.endswith("/") or pref.startswith("/") or ".." in pref.split("/"):
         die(f"Prefijo inválido: {pref!r}")
+    repo_exclusivo(repo, ua)
     g = lambda m, p, b=None: gh(m, p, b, ua)
     base = g("GET", f"/repos/{repo}/git/ref/heads/main")["object"]["sha"]
     tree_base = g("GET", f"/repos/{repo}/git/commits/{base}")["tree"]["sha"]

@@ -15,6 +15,8 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/locations/loc":
+            return self.send({"location": {"id": "loc"}}) if self.headers.get("Authorization") == "Bearer pit-x" else self.send({"msg": "no"}, 401)
         if p == "/emails/builder":
             return self.send({"builders": [{"id": k, "name": v["name"], "previewUrl": f"http://127.0.0.1:{self.server.server_port}/preview/{k}"} for k, v in T.items()]})
         if p.startswith("/preview/"):

@@ -6,7 +6,7 @@
 import { agenteDe } from './agentes.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
-const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const REPO = /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const sinGuiones = id => String(id || '').replace(/-/g, '').toLowerCase();
 
 // Lo que cada agente necesita de la ficha. El error nombra el campo tal como está en Notion.

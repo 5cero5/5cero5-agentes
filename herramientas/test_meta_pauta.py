@@ -21,6 +21,7 @@ class M:
         self.posts, self.gets, self.auth = [], [], set()
         self.objs, self.n, self.campanas_existentes = {}, 100, []
         self.forzar_status = None
+        self.cuentas_token = [CTA]  # cuentas que ve el token (usuario del sistema del cliente)
 
 
 S = M()
@@ -46,6 +47,7 @@ class H(BaseHTTPRequestHandler):
         if not self.ok(): return
         p = u.path
         if p == f"/{CTA}": return self.send(S.cuenta)
+        if p == "/me/adaccounts": return self.send({"data": [{"id": x} for x in S.cuentas_token]})
         if p == f"/{PAG}": return self.send({"id": PAG, "name": "5cero5"})
         if p == f"/{CTA}/campaigns": return self.send({"data": S.campanas_existentes})
         partes = p.strip("/").split("/")
@@ -165,6 +167,14 @@ for nombre, cambio, espera in malos:
 limpia(); rc, out = corre("plan", "--archivo", str(plan(objetivo="clientes_potenciales")), extra=("--pixel", "998877"))
 caso("plan: leads con pixel pasa", rc == 0, out)
 caso("plan: no llama a Meta", not S.posts and not S.gets, str(S.gets))
+
+# destino permitido: el token del cliente ve una sola cuenta; otra --cuenta o un token que ve más de una no escribe nada
+OTRA = "act_7654321"
+limpia(); rc, out = corre("cuenta", extra=("--cuenta", OTRA))
+caso("cuenta: --cuenta de otro cliente se rechaza antes de leerla", rc != 0 and "no es exclusivo" in out and not any(g[0] == f"/{OTRA}" for g in S.gets), out)
+limpia(); corre("plan", "--archivo", str(plan())); S.cuentas_token = [CTA, OTRA]
+rc, out = corre("crear", "--nombre", "2026-10_mty_agencia-vs-505")
+caso("crear: token que ve otra cuenta además de la suya no crea nada", rc != 0 and "no es exclusivo" in out and not S.posts, out)
 
 # crear
 limpia(); corre("plan", "--archivo", str(plan()))

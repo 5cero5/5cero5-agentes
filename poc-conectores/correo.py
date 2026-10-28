@@ -11,7 +11,7 @@
 Lo mismo que corre una persona lo puede correr un agente (Claude Code o Managed Agents) con HL_TOKEN en su
 vault. Subir una plantilla no le escribe a nadie: el correo solo sale cuando Al o Bonzo activan el workflow.
 
-Variables: HL_TOKEN (integración privada, con permiso de Email Builder: leer y escribir), HL_LOCATION_ID,
+Variables: HL_TOKEN (integración privada, con permiso de Email Builder: leer y escribir), --location o HL_LOCATION_ID,
 MARCA_REPO (carpeta del repo de marca). Opcional: HL_API_BASE (pruebas).
 """
 from __future__ import annotations
@@ -35,6 +35,9 @@ VERSION = "2021-07-28"
 def die(m: str) -> None:
     print(f"\n✗ {m}")
     sys.exit(1)
+
+
+LOCATION = ""  # --location (o HL_LOCATION_ID): la subcuenta del cliente; la pone main()
 
 
 def need(v: str) -> str:
@@ -88,10 +91,18 @@ def huellas(html: str) -> list[str]:
 
 
 def busca(nombre: str) -> dict | None:
-    loc = need("HL_LOCATION_ID")
+    loc = LOCATION
     d = hl("GET", "/emails/builder", params={"locationId": loc, "search": nombre, "limit": 100})
     lista = d.get("builders") or d.get("templates") or []
     return next((t for t in lista if (t.get("name") or t.get("title")) == nombre), None)
+
+
+def location_propia(loc: str) -> None:
+    """Antes de escribir: el token (integración privada de UNA subcuenta) tiene que poder leer esa subcuenta. Un token de
+    otra subcuenta responde 401/403 y no se sube nada. Un brief que pida otra subcuenta no cambia a dónde se escribe."""
+    d = hl("GET", f"/locations/{loc}")
+    if str((d.get("location") or d).get("id", "")) != loc:
+        die(f"HighLevel no confirmó la subcuenta {loc}. No se sube nada.")
 
 
 def cmd_armar(a) -> None:
@@ -111,10 +122,11 @@ def cmd_verificar(a) -> None:
 
 def cmd_subir(a) -> None:
     html = Path(a.html).read_text(encoding="utf-8")
+    loc = LOCATION
+    location_propia(loc)  # antes de todo: con un token de otra subcuenta no se sube nada
     print("▸ Verificando antes de subir")
     if not verifica(html, repo())["aprobada"]:
         die("El Verificador rechazó el correo. No se sube nada.")
-    loc = need("HL_LOCATION_ID")
     t = busca(a.nombre)
     if t:
         tid = t.get("id")
@@ -165,12 +177,17 @@ def cmd_comprobar(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--location", default=os.environ.get("HL_LOCATION_ID", ""), help="Location ID de la subcuenta del cliente")
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("armar"); p.add_argument("--copia", required=True); p.set_defaults(f=cmd_armar)
     p = sp.add_parser("verificar"); p.add_argument("--html", required=True); p.set_defaults(f=cmd_verificar)
     p = sp.add_parser("subir"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_subir)
     p = sp.add_parser("comprobar"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_comprobar)
     a = ap.parse_args()
+    global LOCATION
+    LOCATION = a.location.strip()
+    if a.cmd in ("subir", "comprobar") and not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", LOCATION):
+        die("Falta --location (o HL_LOCATION_ID) válido.")
     a.f(a)
 
 
