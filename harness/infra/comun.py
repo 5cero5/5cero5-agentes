@@ -6,11 +6,15 @@
   hacia el host de esa credencial.
 - Estado local por agente en infra/estado-<agente>.json y del entorno en infra/estado-entorno.json
   (ids de la cuenta, no secretos; no se versionan).
+- Por cliente (--cliente <slug>, por defecto 5cero5): un vault por cliente y agente, con metadata
+  {cliente: <slug>, rol: <agente>}, que es lo que el harness exige con RUTEO_CLIENTES=1. El agente es uno para todos
+  los clientes: solo se crea o actualiza con el cliente 5cero5. El estado de otro cliente va en estado-<slug>-<agente>.json.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +56,45 @@ def need(v: str) -> str:
     return x
 
 
+CLIENTE_BASE = "5cero5"  # el cliente 0: su estado y su vault son los de siempre (estado-<agente>.json)
+SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+def arg_cliente(ap) -> None:
+    ap.add_argument("--cliente", default=CLIENTE_BASE,
+                    help="slug del cliente (el de su ficha en Notion). Crea su vault con metadata cliente/rol; el agente es común")
+
+
+def cliente(a) -> str:
+    """Slug validado. Con otro cliente no se toca el agente común: --actualizar-agente solo va con el cliente base."""
+    if not SLUG.match(a.cliente or ""):
+        sys.exit(f"✗ --cliente inválido: {a.cliente!r} (minúsculas, números y guiones, como el Slug de la ficha).")
+    if a.cliente != CLIENTE_BASE and getattr(a, "actualizar_agente", False):
+        sys.exit(f"✗ El agente es común a todos los clientes: actualízalo sin --cliente (o con --cliente {CLIENTE_BASE}).")
+    return a.cliente
+
+
+def clave_de(slug: str, rol: str) -> str:
+    return rol if slug == CLIENTE_BASE else f"{slug}-{rol}"
+
+
+def meta_de(slug: str, rol: str, script: str) -> dict:
+    return {"cliente": slug, "rol": rol, "origen": f"harness/infra/{script}"}
+
+
+def agente_comun(slug: str, rol: str, agente: dict) -> dict | None:
+    """El agente solo se crea o actualiza con el cliente base; con otro cliente, None (solo vault y credenciales)."""
+    return agente if slug == CLIENTE_BASE else None
+
+
+def imprime_ficha(slug: str, campos: dict) -> None:
+    """Lo que va en la ficha del cliente en Notion (base Clientes). Son ids, no secretos."""
+    print(f"\nPara la ficha de {slug} en Notion (base Clientes; no son secretos):")
+    for k, v in campos.items():
+        if v:
+            print(f"  {k}: {v}")
+
+
 def carga(nombre: str) -> dict:
     f = AQUI / f"estado-{nombre}.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
@@ -88,8 +131,9 @@ def entorno(b, hosts_extra: list[str] | None = None) -> str:
     return e["environment_id"]
 
 
-def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: dict, actualizar: bool, meta: dict) -> dict:
-    """Vault + credenciales + agente, idempotente. credenciales: [{key, secret_name, value, host, label}]."""
+def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: dict | None, actualizar: bool, meta: dict) -> dict:
+    """Vault + credenciales + agente, idempotente. credenciales: [{key, secret_name, value, host, label}].
+    agente=None: solo vault y credenciales (otro cliente; el agente común no se toca)."""
     estado = carga(clave)
     if "vault_id" not in estado:
         estado["vault_id"] = b.vaults.create(display_name=vault_nombre, metadata=meta).id
@@ -110,6 +154,8 @@ def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: 
         estado[cr["key"]] = c.id
         guarda(clave, estado)
         print(f"▸ Credencial {cr['secret_name']} creada (solo hacia {cr['host']}, en encabezados): {c.id}")
+    if agente is None:
+        return estado
     if "agent_id" not in estado:
         ag = b.agents.create(name=agente["name"], description=agente["description"], model=agente["model"],
                              system=agente["system"], metadata=meta, tools=HERRAMIENTAS)

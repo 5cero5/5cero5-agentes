@@ -88,6 +88,8 @@ contra lo suyo; una sesión de otro cliente o con otro vault sale Rechazada. Sec
 ## Alta de agentes (`infra/`)
 `crear_agente_crm.py`, `crear_agente_cmo.py`, `crear_agente_landing.py`, `crear_agente_creativo.py` y `crear_agente_pauta.py` crean el vault, la credencial y el agente en Managed Agents, y reaplican la red del entorno común (`infra/comun.py`, lista HOSTS). Se corren desde la Terminal de Al con los secretos en variables (instrucciones en cada script); los ids quedan en `infra/estado-*.json`, que no se versiona. Los prompts viven en `agentes/*.md`. El entorno común lleva `httpx` y `playwright` (pip); el Chromium del Verificador de landing lo baja cada sesión del agente Landing desde los hosts de Playwright que están en HOSTS.
 
+Por cliente: cada script acepta `--cliente <slug>` (por defecto `5cero5`). Crea el vault `<slug> · <Agente>` con metadata `{cliente: <slug>, rol: <agente>}` (lo que exige el ruteo) y sus credenciales, guarda los ids en `estado-<slug>-<agente>.json` e imprime lo que va en la ficha del cliente (Vault, Credencial GitHub, ids de Meta). El agente es común: con otro cliente no se crea ni se actualiza (`--actualizar-agente` solo con `5cero5`). Para Pauta, `META_TOKEN` es el del usuario del sistema de ese cliente y debe ver una sola cuenta publicitaria. Prueba sin red: `python3 infra/test_infra.py`.
+
 ## Pruebas
 `npm ci && npm test` (77 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
 
