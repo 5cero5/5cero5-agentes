@@ -62,6 +62,19 @@ Una sesión arma una campaña de Meta con un conjunto y un anuncio por pieza ya 
 
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
+## Ruteo por cliente (`lib/clientes.mjs`, interruptor RUTEO_CLIENTES)
+Apagado por defecto: sin `RUTEO_CLIENTES=1` todo sale de las variables globales, como antes. Encendido, cada fila resuelve su cliente
+así: fila → Campaña ligada (una) → Ficha de cliente (una) → página de la base Clientes (NOTION_CLIENTES_ID). Falla cerrado (Estado = Error,
+motivo en Error, sin sesión): sin campaña o sin cliente ("sin cliente…"), cliente no Activo, campo que el agente necesita vacío (el error lo
+nombra) o vault que no es del cliente. El vault se comprueba con su metadata: `{cliente: <Slug>, rol: <agente en minúsculas>}`.
+La sesión recibe solo lo del cliente: su vault (sin vault común de respaldo), sus repos montados con token de la GitHub App de 1 hora
+limitado a cada repo, y en el mensaje su Location ID, sus ids de Meta, el dominio de su Sitio de landings y el comando con
+`--repo`/`--cuenta`/`--location`. Topes: Tope de sesión (USD) de la ficha (nunca arriba de TOPE_MAX_USD), Tope diario de pauta (MXN) y
+Máx. sesiones por día por cliente; vacíos, valen los globales. Al cerrar (webhook o barrido) se resuelve el cliente desde la fila y se comprueba
+contra lo suyo; una sesión de otro cliente o con otro vault sale Rechazada. Secretos del harness por cliente, como variables de Netlify:
+`HL_TOKEN_<SLUG>` (lectura de plantillas de su subcuenta; sin él, las filas de CRM salen Rechazada) y, opcional, `META_TOKEN_<SLUG>`
+(si falta, META_TOKEN). `<SLUG>` en mayúsculas y guiones como `_`. Con el ruteo apagado, el CRM toma el Location de `HL_LOCATION_ID`.
+
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
