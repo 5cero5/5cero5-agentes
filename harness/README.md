@@ -35,6 +35,8 @@ El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe c
 
 Al cerrar la sesión del CMO, el harness comprueba en Notion cada fila que el CMO dice que escribió (regla 8): que exista, esté en Propuesta, sin Aprobó, con un agente de pieza y ligada a la campaña. Si todo cuadra, Verificador = Aprobada; si no, Rechazada con el detalle en el informe. La fila del CMO siempre queda en Para revisar.
 
+Además revisa la **huella del bot** (aislamiento entre clientes): el token de Notion del CMO ve las bases de todos los clientes, así que el harness busca en Aprobaciones y Campañas todo lo que el bot creó o editó desde el Inició de la fila. Si tocó algo más que las filas que reportó (una fila sin reportar, una fila o campaña que ya existía, de este u otro cliente), Verificador = Rechazada con el detalle. El bot es `NOTION_BOT_CMO` (id de usuario de la integración del CMO); sin esa variable se toma del autor de las filas reportadas. Falla cerrado sin Inició, si Notion no responde o con más de 100 páginas editadas. Límite: si una persona edita la página después del bot, esa edición del bot ya no se ve.
+
 ### Landing → PR en 5cero5-landings
 Las landings viven en el repo `5cero5/5cero5-landings` (sitio marketing.5cero5.com), una carpeta por landing. El agente Landing crea o cambia **una** carpeta con `herramientas/pr_landing.py` (nueva, revisar, abrir) y abre un PR a `main` desde una rama `agente/…`. El deploy preview de Netlify es el borrador; publicar es aprobar y fusionar el PR en GitHub, solo Al o Bonzo.
 
