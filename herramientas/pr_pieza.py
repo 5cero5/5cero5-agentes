@@ -15,8 +15,10 @@ HIGGSFIELD_API_BASE (solo pruebas).
 
 Lo que se impone:
   - La copia la escribe la herramienta en los SLOT; el agente no edita el HTML a mano.
-  - Foto: solo si la pieza se creó con --foto (el brief lo pide), una generación por pieza y dos por sesión. Cada
-    generación que termina se cobra del saldo de Higgsfield.
+  - Foto: solo si la pieza se creó con --foto (el brief lo pide), una generación por pieza y dos por sesión como máximo
+    (FOTOS_POR_SESION la puede bajar, nunca subir). Cada generación que termina se cobra del saldo de Higgsfield.
+  - Fuentes, titular y resaltado salen del repo de marca: las fuentes que deben cargar son las de tokens.json con archivo
+    (si la marca no trae archivos de fuente, no se exige ninguna) y la última línea va en .marca solo si la plantilla lo define.
   - 'abrir' se niega si la pieza no pasó 'revisar' en esta corrida o cambió después; sube solo piezas/<campaña>/<pieza>/
     con una lista fija de archivos; solo ramas agente/*; nunca main, nunca fusiona.
 """
@@ -44,7 +46,10 @@ FORMATOS = ("post-4x5", "post-1x1", "historia-9x16")
 REPO = os.environ.get("GH_PIEZAS_REPO", "5cero5/5cero5-piezas")
 HF_API = os.environ.get("HIGGSFIELD_API_BASE", "https://api.higgsfield.ai")
 HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "/higgsfield-ai/soul/v2/standard")
-FOTOS_POR_SESION = 2
+FOTOS_MAX = 2  # tope duro: ninguna variable lo sube
+FOTOS_POR_SESION = max(0, min(FOTOS_MAX, int(os.environ.get("FOTOS_POR_SESION", "").strip() or FOTOS_MAX)
+                                 if os.environ.get("FOTOS_POR_SESION", "").strip().isdigit() or not os.environ.get("FOTOS_POR_SESION", "").strip()
+                                 else 0))  # un valor raro no sube el tope: lo deja en 0
 EXT_FOTO = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 CLAVES_COPIA = ("kicker", "titular", "subtitulo", "nota")
 # Lo único que viaja al PR (más la foto, si la lleva).
@@ -97,7 +102,21 @@ def huella(d: Path) -> str:
     return h.hexdigest()
 
 
-H1_PX = re.compile(r"(h1\s*\{[^}]*?font:\s*400\s+)(\d+)(px)")
+H1_PX = re.compile(r"(h1\s*\{[^}]*?font:\s*(?:\d{3}\s+)?)(\d+)(px)")
+MARCA_CSS = re.compile(r"h1\s+\.marca\s*\{")
+
+
+def fuentes_requeridas(tokens: dict) -> list[str]:
+    """"Familia peso" de cada fuente de tokens.json que trae archivo en el repo de marca (las que la plantilla carga con
+    @font-face). Una marca sin archivos de fuente (licencia sin aclarar) no exige ninguna: usa las del sistema."""
+    out = []
+    for rol in ("titular", "texto"):
+        t = (tokens.get("tipografia") or {}).get(rol) or {}
+        archivos = t.get("archivos") or ([t["archivo"]] if t.get("archivo") else [])
+        if t.get("familia") and archivos:
+            out += [f"{t['familia']} {p}" for p in (t.get("pesos") or [t.get("peso", 400)])]
+    return out
+
 AJUSTE_MIN = 0.70   # el titular puede bajar hasta 70 % del tamaño de la plantilla (reglas: se baja el tamaño, no se cambia la fuente)
 
 
@@ -209,7 +228,8 @@ def cmd_foto(a) -> None:
         die(f"Lo que bajó no es una foto utilizable ({tipo}, {len(datos)} bytes).")
     destino = d / "fotos" / f"fondo.{EXT_FOTO[tipo]}"
     destino.write_bytes(datos)
-    meta["higgsfield"].update(imagen_host=urlparse(url).netloc, sha1=hashlib.sha1(datos).hexdigest(), bytes=len(datos))
+    meta["higgsfield"].update(imagen_host=urlparse(url).netloc, sha1=hashlib.sha1(datos).hexdigest(), bytes=len(datos),
+                              blob_sha=blob_sha(datos))  # el harness lo compara con fotos/ del PR al cerrar
     escribe_json(d / "pieza.json", meta)
     h = (d / "plantillas" / "pieza.html").read_text(encoding="utf-8")
     h2 = re.sub(r'(<img class="foto" id="foto" src=")\.\./fotos/[\w.-]+(")', rf"\g<1>../fotos/{destino.name}\g<2>", h)
@@ -233,9 +253,10 @@ def cmd_llenar(a) -> None:
         if not str(c[k]).strip():
             die(f"copia.json: '{k}' está vacío.")
     esc = lambda t: html.escape(str(t).strip(), quote=False)
-    h1 = "<br>".join(esc(x) for x in lineas[:-1]) + ("<br>" if len(lineas) > 1 else "") + f'<span class="marca">{esc(lineas[-1])}</span>'
     p = d / "plantillas" / "pieza.html"
     h = p.read_text(encoding="utf-8")
+    ultima = f'<span class="marca">{esc(lineas[-1])}</span>' if MARCA_CSS.search(h) else esc(lineas[-1])
+    h1 = "<br>".join(esc(x) for x in lineas[:-1]) + ("<br>" if len(lineas) > 1 else "") + ultima
     meta = lee_json(d / "pieza.json")
     original = Path(a.marca) / meta["plantilla"]
     if original.exists():  # cada llenado empieza con el titular al tamaño de la plantilla
@@ -250,7 +271,7 @@ def cmd_llenar(a) -> None:
 
 
 # ------------------------------------------------------------------ revisar
-def renderiza(d: Path, ancho: int, alto: int) -> tuple[bytes, list[str]]:
+def renderiza(d: Path, ancho: int, alto: int, requeridas: list[str]) -> tuple[bytes, list[str]]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -264,8 +285,8 @@ def renderiza(d: Path, ancho: int, alto: int) -> tuple[bytes, list[str]]:
             pg.wait_for_selector('body[data-listo="1"]', timeout=30000)
             datos = pg.evaluate("({f: document.body.dataset.fuentes, l: document.body.dataset.logo, o: document.body.dataset.foto, e: document.body.dataset.encimado})")
             fuentes = datos["f"] or ""
-            if not all(x in fuentes for x in ("Anton", "IBM Plex Sans 400", "IBM Plex Sans 700")):
-                die(f"Las fuentes de marca no cargaron: {fuentes}")
+            if not all(x in fuentes for x in requeridas):
+                die(f"Las fuentes de marca no cargaron: faltan {[x for x in requeridas if x not in fuentes]} (cargaron {fuentes})")
             if datos["l"] != "ok":
                 die("El logo no cargó.")
             if datos["o"] not in (None, "ok"):
@@ -283,12 +304,15 @@ def cmd_revisar(a) -> None:
     (d / ".revisado").unlink(missing_ok=True)  # una revisión fallida nunca deja aprobada la anterior
     meta = lee_json(d / "pieza.json")
     marca = Path(a.marca)
-    f = lee_json(marca / "tokens.json")["formatos"][meta["formato"]]
+    tokens = lee_json(marca / "tokens.json")
+    f = tokens["formatos"][meta["formato"]]
+    requeridas = fuentes_requeridas(tokens)
     if meta.get("foto") and not foto_actual(d):
         die("La pieza lleva foto y aún no hay foto: corre 'foto' primero.")
     copia = lee_json(d / "copia.json")
     html_txt = (d / "plantillas" / "pieza.html").read_text(encoding="utf-8")
-    if 'class="marca"></span>' in html_txt or "<h1></h1>" in html_txt:
+    sub = re.search(r'<p class="sub">(.*?)</p>', html_txt, flags=re.S)
+    if not str(copia.get("subtitulo", "")).strip() or not sub or sub.group(1).strip() != html.escape(str(copia["subtitulo"]).strip(), quote=False):
         die("La plantilla no tiene la copia: corre 'llenar' primero.")
     # Si el titular se encima, se baja su tamaño (como dice la plantilla) hasta 70 % del original; nada más se mueve.
     plantilla_html = d / "plantillas" / "pieza.html"
@@ -296,7 +320,7 @@ def cmd_revisar(a) -> None:
     minimo = int(tam_h1((marca / meta["plantilla"]).read_text(encoding="utf-8")) * AJUSTE_MIN) if (marca / meta["plantilla"]).exists() else int(inicial * AJUSTE_MIN)
     px = inicial
     while True:
-        png, encimado = renderiza(d, f["ancho"], f["alto"])
+        png, encimado = renderiza(d, f["ancho"], f["alto"], requeridas)
         if not encimado:
             break
         if not all("titular" in e for e in encimado) or px <= minimo:

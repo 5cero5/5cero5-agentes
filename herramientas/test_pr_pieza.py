@@ -10,6 +10,16 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 MARCA = Path(os.environ.get("MARCA_REPO", HERE.parent.parent / "5cero5-marca")).resolve()
+# Lo que la prueba espera sale del repo de marca que se le pase (5cero5 u otro cliente), no de valores fijos.
+TOKENS_M = json.loads((MARCA / "tokens.json").read_text(encoding="utf-8"))
+BLOQ_M = json.loads((MARCA / "verificador" / "bloqueos.json").read_text(encoding="utf-8")) if (MARCA / "verificador" / "bloqueos.json").exists() else {}
+PLANT_M = (MARCA / TOKENS_M["formatos"]["post-4x5"]["plantilla"]).read_text(encoding="utf-8")
+T_H1 = int(re.search(r"h1\s*\{[^}]*?font:\s*(?:\d{3}\s+)?(\d+)px", PLANT_M).group(1))
+ARCH_FUENTES = [Path(a).name for r in ("titular", "texto") for t in [TOKENS_M["tipografia"].get(r) or {}]
+                for a in (t.get("archivos") or ([t["archivo"]] if t.get("archivo") else []))]
+CON_PROMESAS = bool(BLOQ_M.get("promesas"))          # 5cero5 sí; un cliente sin voz definida, no
+CON_MARCA_CSS = bool(re.search(r"h1\s+\.marca\s*\{", PLANT_M))
+AJUSTA_4_LINEAS = "'Anton'" in PLANT_M             # solo en la plantilla de 5cero5 un titular de 4 líneas toca el subtítulo
 blob_sha = lambda b: hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
 REPO = "5cero5/5cero5-piezas"
 
@@ -150,7 +160,8 @@ def main():
     c, o = corre("nueva", "--campana", "poc", "--pieza", "post-a", "--formato", "post-4x5")
     d1 = dir_("poc", "post-a")
     check("nueva arma la pieza con la plantilla, fuentes, logo y pieza.json", c == 0 and (d1 / "plantillas/pieza.html").exists()
-          and (d1 / "fonts/Anton-Regular.ttf").exists() and json.loads((d1 / "pieza.json").read_text())["foto"] is False, o)
+          and (d1 / "fonts").is_dir() and all((d1 / "fonts" / f).exists() for f in ARCH_FUENTES)
+          and json.loads((d1 / "pieza.json").read_text())["foto"] is False, o)
     c, o = corre("nueva", "--campana", "poc", "--pieza", "post-a", "--formato", "post-4x5")
     check("nueva no pisa una pieza que ya existe", c != 0 and "Ya existe" in o, o)
     c, o = corre("abrir", "--campana", "poc", "--pieza", "post-a", "--titulo", "x")
@@ -163,18 +174,27 @@ def main():
     copia("poc", "post-a", {**BIEN, "subtitulo": "Garantizamos resultados para tu negocio."})
     corre("llenar", "--campana", "poc", "--pieza", "post-a")
     c, o = corre("revisar", "--campana", "poc", "--pieza", "post-a")
-    check("revisar rechaza una promesa (Verificador de marca)", c != 0 and "sin_promesas" in o and not (d1 / ".revisado").exists(), o)
+    if CON_PROMESAS:
+        check("revisar rechaza una promesa (Verificador de marca)", c != 0 and "sin_promesas" in o and not (d1 / ".revisado").exists(), o)
+    else:  # sin voz definida, el Verificador no bloquea por texto: lo avisa
+        check("sin reglas de voz, una promesa no bloquea pero sale el aviso", c == 0 and "voz_sin_definir" in o, o)
     copia("poc", "post-a", {**BIEN, "titular": ["Ocho", "proveedores", "para vender,", "no."]})
     corre("llenar", "--campana", "poc", "--pieza", "post-a")
     c, o = corre("revisar", "--campana", "poc", "--pieza", "post-a")
     px = json.loads((d1 / "pieza.json").read_text()).get("titular_px", 0)
-    check("un titular de 4 líneas se ajusta bajando su tamaño (no más de 30 %)", c == 0 and "Titular ajustado de 172" in o and 120 <= px < 172, o)
+    if AJUSTA_4_LINEAS:
+        check("un titular de 4 líneas se ajusta bajando su tamaño (no más de 30 %)", c == 0 and f"Titular ajustado de {T_H1}" in o and int(T_H1 * 0.7) <= px < T_H1, o)
+    else:
+        check("un titular de 4 líneas que cabe no se ajusta", c == 0 and "Titular ajustado" not in o and px in (0, T_H1), o)
+    h_4 = (d1 / "plantillas/pieza.html").read_text()
+    check("la última línea va en .marca solo si la plantilla lo define", ('class="marca"' in h_4) == CON_MARCA_CSS, "")
     corre("llenar", "--campana", "poc", "--pieza", "post-a")
-    check("llenar regresa el titular al tamaño de la plantilla", "font: 400 172px" in (d1 / "plantillas/pieza.html").read_text(), "")
-    copia("poc", "post-a", {**BIEN, "subtitulo": "Un solo equipo profesional coordina diariamente todas tus citas, pedidos, visitas y cobranzas."})
+    check("llenar regresa el titular al tamaño de la plantilla",
+          int(re.search(r"h1\s*\{[^}]*?font:\s*(?:\d{3}\s+)?(\d+)px", (d1 / "plantillas/pieza.html").read_text()).group(1)) == T_H1, "")
+    copia("poc", "post-a", {**BIEN, "subtitulo": "Un solo equipo profesional coordina diariamente todas tus citas, pedidos, visitas y cobranzas." * (1 if AJUSTA_4_LINEAS else 8)})
     corre("llenar", "--campana", "poc", "--pieza", "post-a")
     c, o = corre("revisar", "--campana", "poc", "--pieza", "post-a")
-    check("revisar detiene un subtítulo que se encima (eso no se ajusta solo)", c != 0 and "subtitulo/flecha" in o and not (d1 / ".revisado").exists(), o)
+    check("revisar detiene un subtítulo que se encima (eso no se ajusta solo)", c != 0 and re.search(r"subtitulo/\w+", o) and not (d1 / ".revisado").exists(), o)
     copia("poc", "post-a", BIEN)
     corre("llenar", "--campana", "poc", "--pieza", "post-a")
     c, o = corre("revisar", "--campana", "poc", "--pieza", "post-a")
@@ -219,7 +239,7 @@ def main():
     check("la imagen se baja SIN la llave (otro host)", HF["auth_imagen"] == [None], str(HF["auth_imagen"]))
     check("foto guarda fondo.jpg, prompt.txt y el request en pieza.json", (d2 / "fotos/fondo.jpg").read_bytes() == IMAGEN
           and (d2 / "prompt.txt").read_text().strip() == PROMPT and meta["higgsfield"]["request_id"] == "req-1"
-          and meta["higgsfield"]["estado"] == "completed", json.dumps(meta))
+          and meta["higgsfield"]["estado"] == "completed" and meta["higgsfield"].get("blob_sha") == blob_sha(IMAGEN), json.dumps(meta))
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})
@@ -240,6 +260,13 @@ def main():
     corre("nueva", "--campana", "poc", "--pieza", "post-c", "--formato", "post-1x1", "--foto")
     c, o = corre("foto", "--campana", "poc", "--pieza", "post-c", "--prompt", PROMPT)
     check("máximo dos fotos por sesión", c != 0 and "máximo 2" in o and len(HF["posts"]) == 2, o)
+    topes = {}
+    for v in ("", "1", "2", "5", "abc"):
+        r = subprocess.run([sys.executable, "-c", "import pr_pieza; print(pr_pieza.FOTOS_POR_SESION)"], cwd=HERE,
+                           env={**os.environ, "FOTOS_POR_SESION": v}, capture_output=True, text=True)
+        topes[v] = r.stdout.strip()
+    check("FOTOS_POR_SESION baja el tope pero nunca lo sube (vacío 2, 1→1, 5→2, raro→0)",
+          topes == {"": "2", "1": "1", "2": "2", "5": "2", "abc": "0"}, json.dumps(topes))
 
     # Post 1:1 sin foto
     corre("nueva", "--campana", "poc", "--pieza", "cuadro", "--formato", "post-1x1")
