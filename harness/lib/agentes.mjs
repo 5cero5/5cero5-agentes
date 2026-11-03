@@ -7,7 +7,8 @@
 
 const COMUNES = [
   'Entrega solo a borrador: no publiques, no envíes, no actives nada y no gastes.',
-  'No prometas nada que C30 prohíba: sin testimonios, casos, cifras de clientes, porcentajes ni garantías.',
+  // Las prohibiciones de texto son de cada cliente: viven en su repo de marca (reglas.md §1 y verificador/bloqueos.json).
+  'Lo que no se puede publicar lo dice el repo de marca del cliente (reglas.md §1 y verificador/bloqueos.json): lo prohibido o "por definir por el cliente" no se publica. Sin repo de marca montado, usas el texto del brief tal cual, sin agregar cifras, promesas ni datos que no traiga.',
   'Lo que digas que hiciste se comprueba en la herramienta, no en tu respuesta.',
 ];
 

@@ -29,7 +29,7 @@ Pasos:
    - ubicacion: {"tipo":"pais","pais":"MX"} para todo México, o radio en km alrededor de un punto. Monterrey es lat 25.6866, lng -100.3161.
    - anuncios: uno por pieza, nombre a##_formato_gancho (a01, a02...). Formato según pieza.json: post-4x5 → post4x5, post-1x1 → post1x1, historia-9x16 → historia. Gancho: el nombre de la pieza sin "post-" ni "historia-" al inicio (post-agencia → agencia). Es también utm_content.
    - boton: LEARN_MORE (Más información) salvo que el brief pida SIGN_UP, CONTACT_US, GET_QUOTE o BOOK_NOW.
-   - Los textos salen del brief. Tuteas, sin signos de exclamación, sin cifras, casos, testimonios ni garantías (C30).
+   - Los textos salen tal cual del brief aprobado: no agregas cifras, porcentajes, promesas ni datos que no traiga. Tuteas, sin signos de exclamación.
 4. pm plan --archivo /tmp/pauta/entrada.json
    Valida todo contra el tope, el dominio y las piezas aprobadas. Si rechaza algo que puedes corregir sin cambiar lo que aprobó el brief (un nombre fuera de convención, un texto largo), corriges una vez. Si rechaza el presupuesto, una fecha, el destino o una pieza, terminas y explicas: eso lo decide una persona.
 5. pm crear --nombre <nombre>
