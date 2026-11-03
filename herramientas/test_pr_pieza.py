@@ -93,11 +93,17 @@ class HGit(Base):
         self.send({}, 404)
 
 
+V2_ASPECTOS = {"9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2"}
+
+
 class HHiggs(Base):
     def do_POST(self):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         HF["posts"].append((self.path, body))
+        # Como el Soul v2 real (3 nov 2026): una proporción fuera de su lista es 400 y no se cobra.
+        if "aspect_ratio" in body and body["aspect_ratio"] not in V2_ASPECTOS:
+            return self.send({"detail": f"aspect_ratio must be one of {sorted(V2_ASPECTOS)}"}, 400)
         self.send({"status": "queued", "request_id": "req-1", "status_url": f"{API_HF}/requests/req-1/status"})
 
     def do_GET(self):
@@ -247,6 +253,21 @@ def main():
           ASPECTO_HIST in ASPECTOS and meta["higgsfield"].get("aspect_ratio") == ASPECTO_HIST
           and aspecto_de(".foto { width: 1000px; height: 1000px; }") == "1:1" and aspecto_de(".foto { width: 900px; height: 1600px; }") == "9:16"
           and aspecto_de("<p>sin marco</p>") == "4:3", f"{ASPECTO_HIST} {meta.get('higgsfield')}")
+    check("los marcos de foto se mapean a la proporción v2 más cercana (21:9 → 16:9, 4:5 → 3:4)",
+          ASPECTO_HIST == "16:9" and aspecto_de(".foto { width: 904px; height: 330px; }") == "16:9"
+          and aspecto_de(".foto { width: 800px; height: 1000px; }") == "3:4" and set(ASPECTOS) == V2_ASPECTOS, ASPECTO_HIST)
+    r = subprocess.run([sys.executable, "-c", "import pr_pieza as p; p.hf('POST', p.HF_API + p.HF_ENDPOINT, {'prompt': 'x', 'aspect_ratio': '21:9'})"],
+                       cwd=HERE, env=ENV, capture_output=True, text=True)
+    HF["posts"].pop()  # esta llamada directa solo reproduce el error; no cuenta como foto de la sesión
+    check("reproduce el 400 de Soul v2 con 21:9 (Higgsfield simulado)", r.returncode != 0 and "respondió 400" in (r.stdout + r.stderr)
+          and "aspect_ratio must be one of" in (r.stdout + r.stderr), r.stdout + r.stderr)
+    corre("nueva", "--campana", "poc", "--pieza", "historia-z", "--formato", "historia-9x16", "--foto")
+    cont = TRABAJO / ".fotos_de_la_sesion"; antes = cont.read_text() if cont.exists() else ""
+    n0 = len(HF["posts"])
+    c, o = corre("foto", "--campana", "poc", "--pieza", "historia-z", "--prompt", PROMPT, env={**ENV, "HF_ASPECTOS": "21:9"})
+    check("sin proporción válida se detiene SIN llamar a Higgsfield ni contar la foto", c != 0 and "No hay una proporción válida" in o
+          and len(HF["posts"]) == n0 and (cont.read_text() if cont.exists() else "") == antes, o)
+    shutil.rmtree(dir_("poc", "historia-z"))
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})
