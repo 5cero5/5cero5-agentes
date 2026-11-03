@@ -518,7 +518,8 @@ test('medidas del PNG desde su cabecera', () => {
 test('comprobación de la pieza: pasa con su carpeta completa, informe aprobado del mismo PNG y medidas del formato', async () => {
   const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: respC, mainAntes: 'm1', fetchImpl: ghPiezas().fetch });
   assert.equal(r.ok, true, r.informe); assert.match(r.informe, /PR #8/); assert.match(r.informe, /v0\.12\.0: aprobada, 1 aviso/);
-  const conFoto = ghPiezas({ meta: { ...ghPiezas().meta, foto: true }, fotos: [{ name: 'fondo.jpg', type: 'file' }] });
+  const HF = { request_id: 'r1', estado: 'completed', blob_sha: 'f1' };
+  const conFoto = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
   conFoto.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' });
   const r2 = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', fetchImpl: conFoto.fetch });
   assert.equal(r2.ok, true, r2.informe); assert.match(r2.informe, /con foto de Higgsfield/);
@@ -532,6 +533,10 @@ test('comprobación de la pieza: falla por informe, PNG, formato, foto, archivos
     [{}, { ...respC, formato: 'post-1x1' }, /formato: el agente dice post-1x1/],
     [{}, { ...respC, foto: true }, /foto: el agente dice true/],
     [{ meta: { ...base.meta, foto: true } }, { ...respC, foto: true }, /faltan la foto o prompt\.txt/],
+    [{ meta: { ...base.meta, foto: true }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }], carpeta: [...base.carpeta, { name: 'prompt.txt', type: 'file', sha: 'p' }] },
+      { ...respC, foto: true }, /no registra una generación de Higgsfield terminada/],
+    [{ meta: { ...base.meta, foto: true, higgsfield: { request_id: 'r1', estado: 'completed', blob_sha: 'f1' } }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'otra' }],
+       carpeta: [...base.carpeta, { name: 'prompt.txt', type: 'file', sha: 'p' }] }, { ...respC, foto: true }, /no es la que registró pr_pieza\.py/],
     [{ carpeta: [...base.carpeta, { name: 'script.js', type: 'file', sha: 'x' }] }, respC, /no van en una pieza: script\.js/],
     [{ carpeta: base.carpeta.filter(e => e.name !== 'informe.json') }, respC, /faltan en la carpeta: informe\.json/],
     [{ archivos: [{ filename: 'piezas/poc/post-a/pieza.png' }, { filename: 'piezas/otra/x/pieza.png' }] }, respC, /fuera de piezas\/poc\/post-a\//],
