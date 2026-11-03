@@ -223,6 +223,13 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   if (r.foto !== undefined && Boolean(r.foto) !== Boolean(meta.foto)) problemas.push(`foto: el agente dice ${Boolean(r.foto)}, pieza.json ${Boolean(meta.foto)}`);
   if (meta.foto && !(nombres.includes('prompt.txt') && nombres.some(n => n.startsWith('fotos/')))) problemas.push('lleva foto y faltan la foto o prompt.txt');
   if (!meta.foto && (nombres.includes('prompt.txt') || nombres.some(n => n.startsWith('fotos/')))) problemas.push('no lleva foto pero trae foto o prompt.txt');
+  // La foto del PR debe ser la que bajó pr_pieza.py de una generación terminada (pieza.json → higgsfield): no otra subida a mano.
+  if (meta.foto) {
+    const hf = meta.higgsfield || {};
+    const foto = fotos.find(e => /^fondo\./.test(e.name));
+    if (!hf.request_id || hf.estado !== 'completed') problemas.push('lleva foto pero pieza.json no registra una generación de Higgsfield terminada');
+    else if (!foto || !hf.blob_sha || foto.sha !== hf.blob_sha) problemas.push('la foto del PR no es la que registró pr_pieza.py (blob distinto)');
+  }
   if (MEDIDAS[formato] && shaPng) {
     try {
       const blob = await gh(fetchImpl, 'GET', `/repos/${repo}/git/blobs/${shaPng}`, token);

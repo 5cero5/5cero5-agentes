@@ -76,7 +76,7 @@ export const AGENTES = {
     reglas: [
       'Usa solo /workspace/agentes/herramientas/pr_pieza.py (nueva, foto, llenar, revisar, abrir) con la marca copiada en /tmp/marca. Nunca fusionas y nunca llamas a GitHub ni a Higgsfield por tu cuenta.',
       'Una sesión = una pieza = un PR en piezas/<campaña>/<pieza>/. La copia sale del brief; no inventas cifras, casos ni promesas.',
-      'Foto solo si el brief dice "Foto: sí". Una por pieza; si falla, no se repite.',
+      'Foto solo si el brief dice "Foto: sí". Una por pieza y máximo 2 por fila (pr_pieza.py lo impone); si falla, no se repite.',
     ],
     respuesta: {
       ejemplo: '{"pr_url":"https://github.com/...","pr_numero":1,"rama":"agente/...","commit":"...","campana":"...","pieza":"...","formato":"post-4x5","foto":false}',
