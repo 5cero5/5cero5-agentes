@@ -138,7 +138,7 @@ test('vault: cada agente usa el suyo; sin vault propio, el común', () => {
 });
 test('router: CRM no recibe las reglas de Creativo', () => {
   const m = parametrosSesion(fila(), c).initial_events[0].content[0].text;
-  assert.doesNotMatch(m, /pr_pieza\.py/); assert.match(m, /correo\.py/); assert.match(m, /C30/);
+  assert.doesNotMatch(m, /pr_pieza\.py/); assert.match(m, /correo\.py/); assert.match(m, /reglas\.md §1/); assert.doesNotMatch(m, /C30/);
 });
 test('router: agente fuera del catálogo o sin id no se despacha', () => {
   assert.throws(() => parametrosSesion(fila({ agente: 'Pauta' }), c), /Agente sin configurar: Pauta/);

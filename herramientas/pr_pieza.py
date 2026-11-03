@@ -52,8 +52,11 @@ FOTOS_POR_SESION = max(0, min(FOTOS_MAX, int(os.environ.get("FOTOS_POR_SESION", 
                                  if os.environ.get("FOTOS_POR_SESION", "").strip().isdigit() or not os.environ.get("FOTOS_POR_SESION", "").strip()
                                  else 0))  # un valor raro no sube el tope: lo deja en 0
 EXT_FOTO = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
-# Proporciones que acepta Higgsfield Soul (openapi de docs.higgsfield.ai, soul/standard; sin él manda 4:3).
-ASPECTOS = ("1:1", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "16:9", "9:16", "21:9")
+# Proporciones que acepta Higgsfield Soul v2 (soul/v2/standard). Con otra responde 400 (pasó con 21:9 el 3 nov 2026).
+ASPECTOS = ("9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2")
+# HF_ASPECTOS (opcional, separadas por coma) solo puede achicar la lista, nunca agregar una que v2 no acepte.
+ASPECTOS_USO = tuple(x for x in ASPECTOS if not os.environ.get("HF_ASPECTOS", "").strip()
+                     or x in {y.strip() for y in os.environ["HF_ASPECTOS"].split(",")})
 CLAVES_COPIA = ("kicker", "titular", "subtitulo", "nota")
 # Lo único que viaja al PR (más la foto, si la lleva).
 SUBE = ("pieza.png", "pieza.html", "copia.json", "pieza.json", "informe.json")
@@ -178,14 +181,17 @@ def hf(method: str, url: str, body: dict | None = None) -> dict:
         die(f"Higgsfield respondió {e.code} a {method} {urlparse(url).path}: {e.read()[:300].decode('utf-8', 'ignore')}")
 
 
-def aspecto_de(html_txt: str) -> str:
-    """La proporción de Higgsfield más cercana al marco .foto de la plantilla (ancho/alto en px del CSS), para que la foto
-    llegue con la forma de su marco y object-fit: cover recorte lo mínimo. Sin marco legible: 4:3, la de Higgsfield."""
+def aspecto_de(html_txt: str, permitidos: tuple = ASPECTOS) -> str | None:
+    """La proporción permitida más cercana al marco .foto de la plantilla (ancho/alto en px del CSS). La foto llega con una
+    forma parecida a su marco y object-fit: cover recorta el resto (21:9 → 16:9, 4:5 → 3:4). Sin marco legible: 4:3.
+    None si no hay ninguna permitida: entonces no se llama a Higgsfield."""
+    if not permitidos:
+        return None
     m = re.search(r"\.foto\s*\{[^}]*?width:\s*(\d+)px;[^}]*?height:\s*(\d+)px", html_txt)
     if not m or not int(m.group(2)):
-        return "4:3"
+        return "4:3" if "4:3" in permitidos else permitidos[0]
     r = math.log(int(m.group(1)) / int(m.group(2)))
-    return min(ASPECTOS, key=lambda x: abs(math.log(int(x.split(':')[0]) / int(x.split(':')[1])) - r))
+    return min(permitidos, key=lambda x: abs(math.log(int(x.split(':')[0]) / int(x.split(':')[1])) - r))
 
 
 def cmd_foto(a) -> None:
@@ -207,9 +213,12 @@ def cmd_foto(a) -> None:
         die("El prompt pide un cliente, caso o testimonio (reglas.md §1 y §6).")
     if not (re.search(r"sin texto|no text", p) and re.search(r"sin logos|no logos", p)):
         die('El prompt debe pedir "sin texto" y "sin logos" (reglas.md §6).')
+    # La proporción se elige y se valida ANTES de contar y de llamar: con una que Soul v2 no acepta responde 400.
+    aspecto = aspecto_de((d / "plantillas" / "pieza.html").read_text(encoding="utf-8"), ASPECTOS_USO)
+    if aspecto not in ASPECTOS:
+        die(f"No hay una proporción válida para Higgsfield (permitidas: {', '.join(ASPECTOS_USO) or 'ninguna'}). No se pidió la foto.")
     # Se cuenta ANTES de pedir: si algo se cae a medias, no hay segunda generación por error.
     contador.write_text(str(usadas + 1))
-    aspecto = aspecto_de((d / "plantillas" / "pieza.html").read_text(encoding="utf-8"))
     r = hf("POST", HF_API + HF_ENDPOINT, {"prompt": prompt, "aspect_ratio": aspecto})
     rid, status_url = r.get("request_id"), r.get("status_url")
     if not rid or not status_url:
