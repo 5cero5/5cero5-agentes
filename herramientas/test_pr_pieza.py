@@ -18,6 +18,9 @@ T_H1 = int(re.search(r"h1\s*\{[^}]*?font:\s*(?:\d{3}\s+)?(\d+)px", PLANT_M).grou
 ARCH_FUENTES = [Path(a).name for r in ("titular", "texto") for t in [TOKENS_M["tipografia"].get(r) or {}]
                 for a in (t.get("archivos") or ([t["archivo"]] if t.get("archivo") else []))]
 CON_PROMESAS = bool(BLOQ_M.get("promesas"))          # 5cero5 sí; un cliente sin voz definida, no
+sys.path.insert(0, str(HERE))
+from pr_pieza import ASPECTOS, aspecto_de  # noqa: E402
+ASPECTO_HIST = aspecto_de((MARCA / TOKENS_M["formatos"]["historia-9x16"]["plantilla_con_foto"]).read_text(encoding="utf-8"))
 CON_MARCA_CSS = bool(re.search(r"h1\s+\.marca\s*\{", PLANT_M))
 AJUSTA_4_LINEAS = "'Anton'" in PLANT_M             # solo en la plantilla de 5cero5 un titular de 4 líneas toca el subtítulo
 blob_sha = lambda b: hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
@@ -235,11 +238,15 @@ def main():
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     meta = json.loads((d2 / "pieza.json").read_text())
     check("foto: una sola solicitud a Higgsfield con la llave en el encabezado", c == 0 and len(HF["posts"]) == 1
-          and HF["posts"][0] == ("/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT}), o)
+          and HF["posts"][0] == ("/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}), o)
     check("la imagen se baja SIN la llave (otro host)", HF["auth_imagen"] == [None], str(HF["auth_imagen"]))
     check("foto guarda fondo.jpg, prompt.txt y el request en pieza.json", (d2 / "fotos/fondo.jpg").read_bytes() == IMAGEN
           and (d2 / "prompt.txt").read_text().strip() == PROMPT and meta["higgsfield"]["request_id"] == "req-1"
           and meta["higgsfield"]["estado"] == "completed" and meta["higgsfield"].get("blob_sha") == blob_sha(IMAGEN), json.dumps(meta))
+    check("aspect_ratio sale del marco .foto y es un valor que acepta Higgsfield",
+          ASPECTO_HIST in ASPECTOS and meta["higgsfield"].get("aspect_ratio") == ASPECTO_HIST
+          and aspecto_de(".foto { width: 1000px; height: 1000px; }") == "1:1" and aspecto_de(".foto { width: 900px; height: 1600px; }") == "9:16"
+          and aspecto_de("<p>sin marco</p>") == "4:3", f"{ASPECTO_HIST} {meta.get('higgsfield')}")
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})

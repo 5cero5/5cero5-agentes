@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import html
 import json
 import os
@@ -51,6 +52,8 @@ FOTOS_POR_SESION = max(0, min(FOTOS_MAX, int(os.environ.get("FOTOS_POR_SESION", 
                                  if os.environ.get("FOTOS_POR_SESION", "").strip().isdigit() or not os.environ.get("FOTOS_POR_SESION", "").strip()
                                  else 0))  # un valor raro no sube el tope: lo deja en 0
 EXT_FOTO = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+# Proporciones que acepta Higgsfield Soul (openapi de docs.higgsfield.ai, soul/standard; sin él manda 4:3).
+ASPECTOS = ("1:1", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "16:9", "9:16", "21:9")
 CLAVES_COPIA = ("kicker", "titular", "subtitulo", "nota")
 # Lo único que viaja al PR (más la foto, si la lleva).
 SUBE = ("pieza.png", "pieza.html", "copia.json", "pieza.json", "informe.json")
@@ -175,6 +178,16 @@ def hf(method: str, url: str, body: dict | None = None) -> dict:
         die(f"Higgsfield respondió {e.code} a {method} {urlparse(url).path}: {e.read()[:300].decode('utf-8', 'ignore')}")
 
 
+def aspecto_de(html_txt: str) -> str:
+    """La proporción de Higgsfield más cercana al marco .foto de la plantilla (ancho/alto en px del CSS), para que la foto
+    llegue con la forma de su marco y object-fit: cover recorte lo mínimo. Sin marco legible: 4:3, la de Higgsfield."""
+    m = re.search(r"\.foto\s*\{[^}]*?width:\s*(\d+)px;[^}]*?height:\s*(\d+)px", html_txt)
+    if not m or not int(m.group(2)):
+        return "4:3"
+    r = math.log(int(m.group(1)) / int(m.group(2)))
+    return min(ASPECTOS, key=lambda x: abs(math.log(int(x.split(':')[0]) / int(x.split(':')[1])) - r))
+
+
 def cmd_foto(a) -> None:
     d = pieza_dir(a)
     meta = lee_json(d / "pieza.json")
@@ -196,11 +209,12 @@ def cmd_foto(a) -> None:
         die('El prompt debe pedir "sin texto" y "sin logos" (reglas.md §6).')
     # Se cuenta ANTES de pedir: si algo se cae a medias, no hay segunda generación por error.
     contador.write_text(str(usadas + 1))
-    r = hf("POST", HF_API + HF_ENDPOINT, {"prompt": prompt})
+    aspecto = aspecto_de((d / "plantillas" / "pieza.html").read_text(encoding="utf-8"))
+    r = hf("POST", HF_API + HF_ENDPOINT, {"prompt": prompt, "aspect_ratio": aspecto})
     rid, status_url = r.get("request_id"), r.get("status_url")
     if not rid or not status_url:
         die(f"Higgsfield no regresó request_id y status_url: {json.dumps(r)[:200]}")
-    meta["higgsfield"] = {"request_id": rid, "endpoint": HF_ENDPOINT, "estado": r.get("status", "queued")}
+    meta["higgsfield"] = {"request_id": rid, "endpoint": HF_ENDPOINT, "aspect_ratio": aspecto, "estado": r.get("status", "queued")}
     escribe_json(d / "pieza.json", meta)
     (d / "prompt.txt").write_text(prompt + "\n", encoding="utf-8")
     estado = r
