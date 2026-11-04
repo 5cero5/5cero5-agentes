@@ -97,7 +97,7 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
   } else if (fila.agente === 'CRM' && c.ruteoClientes) {
     // Con el ruteo, el trabajo del CRM se comprueba en la subcuenta del cliente: la plantilla tiene que estar ahí.
     const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
-      : await compruebaPlantilla({ c: cc, respuesta: ultimoJson(resultado), fetchImpl });
+      : await compruebaPlantilla({ c: cc, respuesta: ultimoJson(resultado), brief: fila.brief, fetchImpl });
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);

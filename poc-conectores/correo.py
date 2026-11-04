@@ -5,8 +5,11 @@
   correo verificar --html w1-entrevista.html      Verificador de correos del repo (bloquea si algo rompe la marca)
   correo subir    --html w1-entrevista.html --nombre "W1 · Entrevista de diagnóstico"
                                                verifica otra vez y crea o actualiza la plantilla en HighLevel
-  correo comprobar --nombre "W1 · Entrevista de diagnóstico" --html w1-entrevista.html
-                                               lee la plantilla en HighLevel y confirma que trae lo aprobado
+  correo comprobar --nombre "W1 · Entrevista de diagnóstico"
+                                               confirma que la plantilla existe por nombre en la subcuenta (--location)
+
+El contenido guardado (botón, destino y frases) ya no se baja aquí: lo compara el harness al cerrar la sesión, fuera del
+sandbox, contra el brief aprobado (harness/lib/highlevel.mjs). Así la sesión no necesita salir al host del previewUrl.
 
 Lo mismo que corre una persona lo puede correr un agente (Claude Code o Managed Agents) con HL_TOKEN en su
 vault. Subir una plantilla no le escribe a nadie: el correo solo sale cuando Al o Bonzo activan el workflow.
@@ -17,7 +20,6 @@ MARCA_REPO (carpeta del repo de marca). Opcional: HL_API_BASE (pruebas).
 from __future__ import annotations
 
 import argparse
-import html as htmlmod
 import json
 import os
 import re
@@ -80,17 +82,6 @@ def verifica(html: str, r: Path) -> dict:
     return res
 
 
-def huellas(html: str) -> list[str]:
-    """Lo que debe sobrevivir en HighLevel: el link del botón y cada frase visible del cuerpo."""
-    sin = re.sub(r"<!--.*?-->|<style.*?</style>|<head.*?</head>", "", html, flags=re.S)
-    out = re.findall(r'class="boton" href="([^"]+)"', sin)
-    for p in re.findall(r"<p[^>]*>(.*?)</p>", sin, flags=re.S):
-        t = htmlmod.unescape(re.sub(r"<[^>]+>", "", p)).strip()
-        if t:
-            out.append(t)
-    return [htmlmod.unescape(x) for x in out]
-
-
 def busca(nombre: str) -> dict | None:
     loc = LOCATION
     d = hl("GET", "/emails/builder", params={"locationId": loc, "search": nombre, "limit": 100})
@@ -145,36 +136,22 @@ def cmd_subir(a) -> None:
     hl("POST", "/emails/builder/data", json={"locationId": loc, "templateId": tid, "updatedBy": "agente-5cero5",
                                             "editorType": "html", "html": html})
     print(f"✓ Subida como plantilla {tid}. Comprobando lo que guardó HighLevel…")
-    a.html_ref = html
-    comprueba(a.nombre, html)
+    comprueba(a.nombre)
 
 
-def comprueba(nombre: str, html: str, intentos=5, pausa=4) -> None:
-    motivo = "HighLevel no regresó la plantilla al buscarla por nombre"
+def comprueba(nombre: str, intentos=int(os.environ.get("HL_INTENTOS", "5")), pausa=float(os.environ.get("HL_PAUSA_S", "4"))) -> None:
+    """La plantilla existe con ese nombre en la subcuenta (LOCATION). Reintenta: HighLevel tarda en listarla."""
     for _ in range(intentos):
         t = busca(nombre)
-        url = t and (t.get("previewUrl") or t.get("preview_url"))
-        if t and not url:
-            motivo = "la plantilla existe pero HighLevel no regresó su previewUrl"
-        if url:
-            try:
-                guardado = htmlmod.unescape(httpx.get(url, timeout=30).text)
-            except httpx.HTTPError as e:
-                # En Managed Agents suele ser la red del entorno: el host del previewUrl debe estar permitido.
-                guardado = ""
-                motivo = f"no pude descargar el previewUrl ({httpx.URL(url).host}): {type(e).__name__}"
-            faltan = [h for h in huellas(html) if h not in guardado]
-            if guardado and not faltan:
-                print(f"✓ HighLevel tiene la plantilla «{nombre}» con el botón y todas las frases aprobadas.")
-                return
-            if guardado:
-                die(f"La plantilla en HighLevel no trae: {faltan[:4]}")
+        if t and t.get("id"):
+            print(f"✓ HighLevel tiene la plantilla «{nombre}» ({t['id']}) en la subcuenta {LOCATION}. El contenido lo compara el harness al cerrar.")
+            return
         time.sleep(pausa)
-    die(f"No pude leer la plantilla guardada en HighLevel: {motivo}. Revísala a mano en Marketing > Emails > Templates.")
+    die(f"HighLevel no regresó la plantilla «{nombre}» en la subcuenta {LOCATION}. Revísala a mano en Marketing > Emails > Templates.")
 
 
 def cmd_comprobar(a) -> None:
-    comprueba(a.nombre, Path(a.html).read_text(encoding="utf-8"))
+    comprueba(a.nombre)
 
 
 def main() -> None:
@@ -184,7 +161,7 @@ def main() -> None:
     p = sp.add_parser("armar"); p.add_argument("--copia", required=True); p.set_defaults(f=cmd_armar)
     p = sp.add_parser("verificar"); p.add_argument("--html", required=True); p.set_defaults(f=cmd_verificar)
     p = sp.add_parser("subir"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_subir)
-    p = sp.add_parser("comprobar"); p.add_argument("--html", required=True); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_comprobar)
+    p = sp.add_parser("comprobar"); p.add_argument("--html", help="ya no se usa: el contenido lo compara el harness"); p.add_argument("--nombre", required=True); p.set_defaults(f=cmd_comprobar)
     a = ap.parse_args()
     global LOCATION, ESTRICTO
     ESTRICTO = bool(a.location)

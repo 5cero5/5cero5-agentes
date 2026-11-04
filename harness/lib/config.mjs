@@ -78,7 +78,9 @@ export function cfg(env = process.env) {
     ruteoClientes: env.RUTEO_CLIENTES === '1',
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
     // Location ID de HighLevel para el mensaje del CRM con el ruteo apagado (con el ruteo sale de la ficha).
-    hl: { location: env.HL_LOCATION_ID || '', api: env.HL_API_BASE || 'https://services.leadconnectorhq.com' },
+    hl: { location: env.HL_LOCATION_ID || '', api: env.HL_API_BASE || 'https://services.leadconnectorhq.com',
+      // Hosts permitidos para bajar el previewUrl de una plantilla en el harness (vacío: lib/highlevel.mjs → HOSTS_PREVIEW).
+      hostsPreview: (env.HL_PREVIEW_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean) },
     // Secretos del harness por cliente, como variables de Netlify: <PREFIJO>_<SLUG> (slug en mayúsculas, guiones → _).
     // HL_TOKEN_<SLUG> lee plantillas al cerrar el CRM; META_TOKEN_<SLUG> lee y pausa en Meta (si falta, META_TOKEN).
     secretoCliente: (prefijo, slug) => env[`${prefijo}_${String(slug || '').toUpperCase().replace(/-/g, '_')}`] || '',
