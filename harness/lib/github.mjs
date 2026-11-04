@@ -199,7 +199,10 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
         if (!String(fc.archivo || '').startsWith('fotos/') || x.sha !== fc.blob_sha) problemas.push(`la foto del cliente no es ${fc.archivo} del repo de marca ${rm}`);
       } catch (e) { problemas.push(`no se pudo comprobar la foto del cliente en el repo de marca (${e.status || e.message})`); }
     }
-    if (ronda?.ronda_pr) problemas.push(...await compruebaRonda({ repo: d.repo, pref, pr, numero, ronda, token, fetchImpl }));
+    if (ronda?.ronda_pr) {
+      const x = await compruebaRonda({ repo: d.repo, pref, pr, numero, ronda, metaAhora: p.meta, token, fetchImpl });
+      problemas.push(...x.problemas); extra += x.resumen;
+    }
   }
   if (mainAntes) {
     try {
@@ -212,31 +215,49 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   return { ok: problemas.length === 0, informe };
 }
 
-// Ronda de cambios (metadata de la sesión: ronda_pr, ronda_head, ronda_foto, ronda_pieza): mismo PR, commit nuevo encima de
-// la punta que había al despachar, solo la carpeta de la pieza, y con Foto en la ronda = Igual, el mismo blob de la foto.
-async function compruebaRonda({ repo, pref, pr, numero, ronda, token, fetchImpl }) {
+// Ronda de cambios (metadata de la sesión: ronda_pr, ronda_head, ronda_foto, ronda_pieza, ronda_n, ronda_de, ronda_original):
+// mismo PR, commit nuevo encima de la punta que había al despachar, solo la carpeta de la pieza, con Foto en la ronda = Igual
+// el mismo blob de la foto y ninguna llamada a Higgsfield. Devuelve { problemas, resumen } y el resumen va siempre al informe:
+// "Ronda N de <original>: mismo PR, commit a → b, foto igual (blob_sha x) / editada / nueva, llamadas a Higgsfield: N".
+const corto = x => (x ? String(x).slice(0, 7) : 'ninguno');
+// Peticiones de Higgsfield que registra pieza.json (la actual y las anteriores que reemplazó pr_pieza.py).
+const peticiones = meta => new Set([meta?.higgsfield, ...(meta?.fotos_anteriores || [])].map(h => h?.request_id).filter(Boolean));
+async function compruebaRonda({ repo, pref, pr, numero, ronda, metaAhora, token, fetchImpl }) {
   const problemas = [];
+  const nombre = ronda.ronda_original || ronda.ronda_de || 'la pieza original';
+  let resumen = ` Ronda ${ronda.ronda_n || '?'} de ${nombre}: ${numero === Number(ronda.ronda_pr) ? 'mismo PR' : `PR #${numero}, no el #${ronda.ronda_pr}`}, ` +
+    `commit ${corto(ronda.ronda_head)} → ${corto(pr.head?.sha)}`;
   if (numero !== Number(ronda.ronda_pr)) problemas.push(`ronda: reporta el PR #${numero} y la ronda es del #${ronda.ronda_pr}`);
   if (pref !== `piezas/${ronda.ronda_pieza}/`) problemas.push(`ronda: la carpeta ${pref} no es la de la pieza (piezas/${ronda.ronda_pieza}/)`);
   const head = pr.head?.sha;
-  if (!head || head === ronda.ronda_head) return [...problemas, 'ronda: no hay commit nuevo en la rama del PR'];
+  if (!head || head === ronda.ronda_head) return { problemas: [...problemas, 'ronda: no hay commit nuevo en la rama del PR'], resumen: `${resumen}.` };
   try {
     const cmp = await gh(fetchImpl, 'GET', `/repos/${repo}/compare/${ronda.ronda_head}...${head}`, token);
     if (cmp.status !== 'ahead' || cmp.behind_by) problemas.push(`ronda: el commit nuevo no sale de la punta anterior (${String(ronda.ronda_head).slice(0, 7)})`);
     const fuera = (cmp.files || []).map(f => f.filename).filter(n => !n.startsWith(pref));
     if (fuera.length) problemas.push(`ronda: cambia archivos fuera de ${pref}: ${fuera.slice(0, 3).join(', ')}`);
   } catch (e) { problemas.push(`ronda: no se pudo comparar con la punta anterior (${e.status || e.message})`); }
-  if (ronda.ronda_foto === 'Igual') {
-    const foto = async ref => {
-      try { return ((await gh(fetchImpl, 'GET', `/repos/${repo}/contents/${pref}fotos?ref=${ref}`, token)) || []).find(e => /^fondo\./.test(e.name))?.sha || null; }
-      catch (e) { if (e.status === 404) return null; throw e; }
-    };
-    try {
-      const [antes, ahora] = [await foto(ronda.ronda_head), await foto(head)];
-      if (antes !== ahora) problemas.push(`ronda: Foto en la ronda = Igual y la foto cambió (blob ${String(antes).slice(0, 7)} → ${String(ahora).slice(0, 7)})`);
-    } catch (e) { problemas.push(`ronda: no se pudo comparar la foto (${e.status || e.message})`); }
-  }
-  return problemas;
+  const foto = async ref => {
+    try { return ((await gh(fetchImpl, 'GET', `/repos/${repo}/contents/${pref}fotos?ref=${ref}`, token)) || []).find(e => /^fondo\./.test(e.name))?.sha || null; }
+    catch (e) { if (e.status === 404) return null; throw e; }
+  };
+  try {
+    const [antes, ahora] = [await foto(ronda.ronda_head), await foto(head)];
+    if (!antes && !ahora) resumen += ', sin foto';
+    else if (antes === ahora) resumen += `, foto igual (blob_sha ${corto(ahora)})`;
+    else resumen += `, foto ${{ Editar: 'editada', Nueva: 'nueva' }[ronda.ronda_foto] || 'cambiada'} (blob_sha ${corto(antes)} → ${corto(ahora)})`;
+    if (ronda.ronda_foto === 'Igual' && antes !== ahora) problemas.push(`ronda: Foto en la ronda = Igual y la foto cambió (blob ${corto(antes)} → ${corto(ahora)})`);
+    if (ronda.ronda_foto !== 'Igual' && antes === ahora && antes) problemas.push(`ronda: Foto en la ronda = ${ronda.ronda_foto} y la foto no cambió`);
+  } catch (e) { problemas.push(`ronda: no se pudo comparar la foto (${e.status || e.message})`); resumen += ', foto sin comparar'; }
+  // Llamadas a Higgsfield en la ronda: peticiones nuevas en pieza.json contra la punta anterior.
+  try {
+    const x = await gh(fetchImpl, 'GET', `/repos/${repo}/contents/${pref}pieza.json?ref=${ronda.ronda_head}`, token);
+    const antes = peticiones(JSON.parse(Buffer.from(String(x.content || ''), 'base64').toString('utf8')));
+    const nuevas = [...peticiones(metaAhora)].filter(id => !antes.has(id)).length;
+    resumen += `, llamadas a Higgsfield: ${nuevas}`;
+    if (ronda.ronda_foto === 'Igual' && nuevas) problemas.push(`ronda: Foto en la ronda = Igual y hubo ${nuevas} llamada(s) a Higgsfield`);
+  } catch (e) { resumen += ', llamadas a Higgsfield: sin comprobar'; problemas.push(`ronda: no se pudo leer pieza.json de la punta anterior (${e.status || e.message})`); }
+  return { problemas, resumen: `${resumen}.` };
 }
 
 // Tamaño de cada formato (tokens.json del repo de marca). El PNG del PR debe medir esto.
@@ -303,5 +324,9 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   const avisos = Array.isArray(inf.avisos) ? inf.avisos.length : 0;
   const deFoto = meta.foto_cliente ? ` con foto del cliente (${meta.foto_cliente.id})` : meta.foto ? ' con foto de Higgsfield' : '';
   const resumen = ` Pieza ${formato}${deFoto}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
-  return { problemas, resumen, meta };
+  // Retención: pr_pieza.py borra la petición en Higgsfield al bajar la foto; si no pudo, se avisa (no rechaza: se borra sola en 1 h).
+  const borrado = meta.higgsfield?.borrado;
+  const aviso = borrado && borrado.ok === false
+    ? ` Aviso: no se pudo borrar la petición ${meta.higgsfield.request_id} en Higgsfield (${String(borrado.error || '').slice(0, 80)}); se borra sola en 1 hora.` : '';
+  return { problemas, resumen: resumen + aviso, meta };
 }

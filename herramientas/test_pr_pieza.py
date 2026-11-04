@@ -42,7 +42,8 @@ class GH:
 
 
 G = GH()
-HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed", "puts": [], "imagen": None}
+HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed", "puts": [], "imagen": None,
+      "expira": [], "deletes": [], "delete_code": 200}
 IMAGEN = None
 
 
@@ -121,6 +122,8 @@ class HHiggs(Base):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         HF["posts"].append((self.path, body))
+        if self.path != "/files/generate-upload-url":
+            HF["expira"].append(self.headers.get("Hf-Expires-After"))
         if self.path == "/files/generate-upload-url":  # URL firmada: otro host, sin la llave
             return self.send({"upload_url": f"{URL_IMG}/subir/x", "public_url": "https://cdn.prueba/x.jpg", "content_type": body["content_type"],
                               "upload_headers": {"Content-Type": body["content_type"], "x-amz-tagging": "retention=temporary"}})
@@ -128,6 +131,12 @@ class HHiggs(Base):
         if "aspect_ratio" in body and body["aspect_ratio"] not in V2_ASPECTOS:
             return self.send({"detail": f"aspect_ratio must be one of {sorted(V2_ASPECTOS)}"}, 400)
         self.send({"status": "queued", "request_id": "req-1", "status_url": f"{API_HF}/requests/req-1/status"})
+
+    def do_DELETE(self):
+        if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
+        HF["deletes"].append(self.path)
+        if HF["delete_code"] != 200: return self.send({"detail": "Deletion temporarily unavailable"}, HF["delete_code"])
+        self.send({"request_id": self.path.rsplit("/", 1)[-1], "status": "deleted"})
 
     def do_GET(self):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
@@ -273,6 +282,9 @@ def main():
     check("foto: una sola solicitud a Higgsfield con la llave en el encabezado", c == 0 and len(HF["posts"]) == 1
           and HF["posts"][0] == ("/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}), o)
     check("la imagen se baja SIN la llave (otro host)", HF["auth_imagen"] == [None], str(HF["auth_imagen"]))
+    check("retención: la generación va con Hf-Expires-After: 3600 y, bajada la imagen, se borra con DELETE /requests/{id}",
+          HF["expira"] == ["3600"] and HF["deletes"] == ["/requests/req-1"] and meta["higgsfield"].get("borrado") == {"ok": True, "estado": "deleted"},
+          f"{HF['expira']} {HF['deletes']} {meta['higgsfield'].get('borrado')}")
     check("foto guarda fondo.jpg, prompt.txt y el request en pieza.json", (d2 / "fotos/fondo.jpg").read_bytes() == IMAGEN
           and (d2 / "prompt.txt").read_text().strip() == PROMPT and meta["higgsfield"]["request_id"] == "req-1"
           and meta["higgsfield"]["estado"] == "completed" and meta["higgsfield"].get("blob_sha") == blob_sha(IMAGEN), json.dumps(meta))
@@ -373,8 +385,12 @@ def fotos_del_cliente_y_rondas():
     corre2("nueva", "--campana", "poc", "--pieza", "foto-ref", "--formato", "post-4x5", "--foto")
     c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-ref", "--referencia", "equipo", "--prompt", PROMPT)
     check("una foto con personas no se manda como referencia a la IA", c != 0 and "personas" in o and len(HF["posts"]) == n0 and not HF["puts"], o)
-    HF["status_gets"] = 0; HF["final"] = "completed"
+    HF["status_gets"] = 0; HF["final"] = "completed"; HF["delete_code"] = 503
     c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-ref", "--referencia", "mostrador", "--prompt", PROMPT)
+    HF["delete_code"] = 200
+    borr = json.loads((trabajo / "poc/foto-ref/pieza.json").read_text())["higgsfield"].get("borrado") or {}
+    check("si el DELETE en Higgsfield falla, la pieza sigue y el fallo queda en pieza.json", c == 0 and borr.get("ok") is False
+          and "503" in borr.get("error", "") and "No se pudo borrar" in o, o + json.dumps(borr))
     edic = [b for p, b in HF["posts"][n0:] if p == "/alibaba/qwen-image-3/edit"]
     check("referencia:<id>: sube la foto sin la llave y la manda al modelo de edición en image_urls",
           c == 0 and edic == [{"prompt": PROMPT, "image_urls": ["https://cdn.prueba/x.jpg"]}] and HF["puts"] == [(None, len(IMAGEN))]
@@ -393,6 +409,8 @@ def fotos_del_cliente_y_rondas():
     c, o = corre2("revisar", "--campana", "poc", "--pieza", "foto-ref")
     c2, o2 = corre2("abrir", "--campana", "poc", "--pieza", "foto-ref", "--titulo", "Post con foto de referencia")
     check("revisar y abrir la pieza con foto de referencia y sin nota", c == 0 and c2 == 0, o + o2)
+    inf_ref = json.loads((trabajo / "poc/foto-ref/informe.json").read_text())
+    check("el informe registra el borrado fallido en Higgsfield", (inf_ref.get("higgsfield_borrado") or {}).get("ok") is False, json.dumps(inf_ref.get("higgsfield_borrado")))
     n_pr = len(G.prs); rama = G.prs[-1]["head"]; head0 = G.refs["refs/heads/" + rama]
 
     arbol = lambda c: {e["path"]: e["sha"] for e in G.trees[G.commits[c]["tree"]]}

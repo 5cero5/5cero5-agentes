@@ -24,7 +24,7 @@ function pageDe(f) {
     Inició: { date: f.inicio ? { start: f.inicio } : null }, 'Campaña ligada': { relation: (f.campanaLigada || []).map(id => ({ id })) },
     Sensible: { checkbox: f.sensible === true }, 'Ronda de': { relation: (f.rondaDe || []).map(id => ({ id })) },
     'Cambios pedidos': { rich_text: f.cambiosPedidos ? [{ plain_text: f.cambiosPedidos }] : [] },
-    'Foto en la ronda': { select: f.fotoRonda ? { name: f.fotoRonda } : null },
+    'Foto en la ronda': { select: f.fotoRonda ? { name: f.fotoRonda } : null }, Ronda: { number: f.ronda ?? null },
     'Resultado del agente': { rich_text: f.resultado ? [{ plain_text: f.resultado }] : [] } } };
 }
 // Cliente de las filas y campañas de prueba: campaña 'kc' → ficha 'fc' (base Clientes) con Aprobadores Al y Bonzo.
@@ -618,7 +618,7 @@ function ghPiezas(o = {}) {
     if (u.pathname === '/repos/5cero5/5cero5-marca/contents/fotos/fotos.json') return st.fotosMarca ? ok(b64({ fotos: st.fotosMarca })) : { ok: false, status: 404, text: async () => '{}' };
     if (u.pathname.startsWith('/repos/5cero5/5cero5-marca/contents/fotos/')) return ok({ sha: st.shaMarca || 'fm1' });
     if (u.pathname === `${R}/contents/${pref}/informe.json`) return ok(b64(st.informe));
-    if (u.pathname === `${R}/contents/${pref}/pieza.json`) return ok(b64(st.meta));
+    if (u.pathname === `${R}/contents/${pref}/pieza.json`) return ok(b64(u.searchParams.get('ref') === 'old111' && st.metaAntes ? st.metaAntes : st.meta));
     if (u.pathname === `${R}/git/blobs/pngsha`) return ok({ content: st.png.toString('base64'), encoding: 'base64' });
     return { ok: false, status: 404, text: async () => '{"message":"Not Found"}' };
   };
@@ -880,6 +880,7 @@ test('meta: campaña retomada de un intento anterior pasa con aviso si los anunc
 
 // ---- Creativo: fotos del cliente (repo:/referencia:) y rondas de cambios sobre el mismo PR ----
 const FOTOS_MARCA = [
+  { id: 'solo-directo', archivo: 'vitrina.jpg', autorizo: 'Dueña, 2 nov 2026', fecha: '2026-11-02', uso: ['directo'], personas: false },
   { id: 'mostrador', archivo: 'mostrador.jpg', autorizo: 'Dueña, 2 nov 2026', fecha: '2026-11-02', uso: ['directo', 'referencia_ia'], personas: false },
   { id: 'equipo', archivo: 'equipo.jpg', autorizo: 'Dueña, 2 nov 2026', fecha: '2026-11-02', uso: ['directo', 'referencia_ia'], personas: true },
 ];
@@ -911,18 +912,25 @@ test('ronda Igual: se despacha sobre el mismo PR, con el brief original, los cam
   await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
   assert.equal(cl.calls.create.length, 1); const p = cl.calls.create[0]; const m = p.initial_events[0].content[0].text;
   assert.deepEqual([p.metadata.ronda_pr, p.metadata.ronda_head, p.metadata.ronda_foto, p.metadata.ronda_pieza], ['8', 'abc1234', 'Igual', 'poc/post-a']);
-  assert.match(m, /RONDA 1 .*#8/); assert.match(m, /revisar-pr --campana poc --pieza post-a --pr 8 --foto-ronda Igual/);
+  assert.deepEqual([p.metadata.ronda_n, p.metadata.ronda_de, p.metadata.ronda_original], ['2', 'orig', 'Post 4:5 · agencia vs 5cero5']);
+  assert.match(m, /RONDA 2 .*#8/); assert.match(m, /revisar-pr --campana poc --pieza post-a --pr 8 --foto-ronda Igual/);
   assert.match(m, /Cambios pedidos \(solo esto cambia\):\nCambia el kicker/); assert.match(m, /Brief original de la pieza:\npost del diagnóstico/);
   assert.doesNotMatch(m, /--prompt\./);
 });
 test('ronda Igual al cerrar: mismo PR y commit nuevo pasa; si la foto cambió o no hay commit nuevo, Rechazada', async () => {
-  const meta = { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Igual', ronda_pieza: 'poc/post-a' };
+  const meta = { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Igual', ronda_pieza: 'poc/post-a', ronda_n: '2', ronda_de: 'orig', ronda_original: 'Post 4:5 · agencia' };
   const HF = { request_id: 'r1', estado: 'completed', blob_sha: 'f1' };
   const conFoto = o => { const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }], ...o });
     g.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' }); return g; };
   const bien = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
     fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] }).fetch });
   assert.equal(bien.ok, true, bien.informe);
+  assert.match(bien.informe, /Ronda 2 de Post 4:5 · agencia: mismo PR, commit old111 → abc1234, foto igual \(blob_sha f1\), llamadas a Higgsfield: 0\./);
+  // Igual con una petición nueva en pieza.json: hubo llamada a Higgsfield → Rechazada aunque la foto sea la misma.
+  const conLlamada = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
+    fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }],
+      metaAntes: { ...ghPiezas().meta, foto: true, higgsfield: { request_id: 'r0', estado: 'completed', blob_sha: 'f1' } } }).fetch });
+  assert.equal(conLlamada.ok, false); assert.match(conLlamada.informe, /llamadas a Higgsfield: 1/); assert.match(conLlamada.informe, /Igual y hubo 1 llamada/);
   const cambio = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
     fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f0' }] }).fetch });
   assert.equal(cambio.ok, false); assert.match(cambio.informe, /Igual y la foto cambió/);
@@ -934,17 +942,21 @@ test('ronda Igual al cerrar: mismo PR y commit nuevo pasa; si la foto cambió o 
     fetchImpl: ghPiezas({ compare: { status: 'diverged', behind_by: 1, files: [{ filename: 'piezas/otra/x/pieza.png' }] } }).fetch });
   assert.match(fuera.informe, /no sale de la punta anterior/); assert.match(fuera.informe, /fuera de piezas\/poc\/post-a\//);
 });
-test('ronda Editar: se despacha pidiendo --prompt y al cerrar acepta la foto nueva', async () => {
+test('ronda Editar sobre una foto generada por Higgsfield: se despacha pidiendo --prompt y al cerrar acepta la foto nueva', async () => {
   const f = [original(), ronda({ fotoRonda: 'Editar', cambiosPedidos: 'Aclara el fondo de la foto' })]; const cl = conVault(mockClient());
-  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
+  const deIA = { ...ghPiezas().meta, foto: true, higgsfield: { request_id: 'r1', estado: 'completed', blob_sha: 'f1' } };
+  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas({ meta: deIA }).fetch });
   const m = cl.calls.create[0].initial_events[0].content[0].text;
   assert.match(m, /--foto-ronda Editar" con --cambios .* y --prompt/); assert.equal(cl.calls.create[0].metadata.ronda_foto, 'Editar');
   const HF = { request_id: 'r2', estado: 'completed', blob_sha: 'f2' };
-  const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f2' }], fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
+  const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF, fotos_anteriores: [{ request_id: 'r1', blob_sha: 'f1' }] },
+    metaAntes: { ...ghPiezas().meta, foto: true, higgsfield: { request_id: 'r1', estado: 'completed', blob_sha: 'f1' } },
+    fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f2' }], fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
   g.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' });
   const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1',
-    ronda: { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Editar', ronda_pieza: 'poc/post-a' }, fetchImpl: g.fetch });
+    ronda: { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Editar', ronda_pieza: 'poc/post-a', ronda_n: '1', ronda_de: 'orig' }, fetchImpl: g.fetch });
   assert.equal(r.ok, true, r.informe);
+  assert.match(r.informe, /Ronda 1 de orig: mismo PR, commit old111 → abc1234, foto editada \(blob_sha f1 → f2\), llamadas a Higgsfield: 1\./);
 });
 test('ronda con el PR ya fusionado → Error, sin sesión', async () => {
   const f = [original(), ronda()]; const cl = conVault(mockClient()); const n = mockNotion(f);
@@ -961,16 +973,38 @@ test('ronda de otro cliente (la original es de otra ficha) → Error, sin sesió
   assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r1', 'ronda_otro_cliente']]);
   assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /otro cliente: la pieza original es de otro-cliente/);
 });
-test('ronda arriba de Rondas incluidas: sin aprobador sensible → Error; con Al en APROBADORES_SENSIBLES se despacha', async () => {
-  const f = [original(), ronda({ id: 'r0', estado: 'Para revisar', sesion: 's0' }), ronda({ id: 'r00', estado: 'Para revisar', sesion: 's00' }), ronda()];
-  const cl = conVault(mockClient()); const n = mockNotion(f);
-  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });  // 3 rondas, la ficha incluye 2
-  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r1', 'ronda_fuera_de_limite']]);
-  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda 3 .* incluye 2: la tiene que aprobar alguien de APROBADORES_SENSIBLES/);
-  f[3].estado = 'Aprobado';
-  const cl2 = conVault(mockClient());
-  await despacha({ client: cl2, notion: mockNotion(f), c: { ...cC, aprobadoresSensibles: [AL] }, fetchImpl: ghPiezas().fetch });
-  assert.equal(cl2.calls.create.length, 1); assert.match(cl2.calls.create[0].initial_events[0].content[0].text, /RONDA 3/);
+// Convención: la pieza original es la ronda 1; la primera fila de cambios, la 2. Rondas incluidas = rondas de cambios sin costo.
+const cadena = k => {  // original ← r2 ← r3 … ← r<k>; solo la última está en Aprobado
+  const f = [original()];
+  for (let i = 2; i <= k; i++) f.push(ronda({ id: `r${i}`, rondaDe: [i === 2 ? 'orig' : `r${i - 1}`], ...(i < k ? { estado: 'Para revisar', sesion: `s${i}` } : {}) }));
+  return f;
+};
+test('ronda: el número sale de la cadena de "Ronda de" (original = 1): cadena de 3 rondas → ronda 3', async () => {
+  const f = cadena(3); const cl = conVault(mockClient());
+  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 1); const p = cl.calls.create[0];
+  assert.equal(p.metadata.ronda_n, '3'); assert.equal(p.metadata.ronda_de, 'orig'); assert.match(p.initial_events[0].content[0].text, /RONDA 3 .*#8/);
+});
+test('ronda: si la propiedad Ronda no coincide con la cadena → Error, sin sesión', async () => {
+  const f = cadena(3); f[2].ronda = 2; const cl = conVault(mockClient()); const n = mockNotion(f);
+  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r3', 'ronda_no_coincide']]);
+  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda dice 2 y la cadena de "Ronda de" da 3/);
+  const g = cadena(3); g[2].ronda = 3; const cl2 = conVault(mockClient());
+  await despacha({ client: cl2, notion: mockNotion(g), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl2.calls.create.length, 1);
+});
+test('ronda 4 con Rondas incluidas = 2: sin aprobador sensible → Error; con Al en APROBADORES_SENSIBLES se despacha', async () => {
+  const f = cadena(4); const cl = conVault(mockClient()); const n = mockNotion(f);
+  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r4', 'ronda_fuera_de_limite']]);
+  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda 4 .* incluye 2 ronda\(s\) de cambios \(hasta la 3\)/);
+  const g = cadena(4); const cl2 = conVault(mockClient());
+  await despacha({ client: cl2, notion: mockNotion(g), c: { ...cC, aprobadoresSensibles: [AL] }, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl2.calls.create.length, 1); assert.equal(cl2.calls.create[0].metadata.ronda_n, '4');
+  const h = cadena(3); const cl3 = conVault(mockClient());  // la 3 todavía está incluida
+  await despacha({ client: cl3, notion: mockNotion(h), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl3.calls.create.length, 1);
 });
 test('cierre con foto del cliente: el blob del PR tiene que ser el de fotos/ del repo de marca', async () => {
   const fc = { id: 'mostrador', archivo: 'fotos/mostrador.jpg', uso: 'directo', blob_sha: 'fm1' };
@@ -980,6 +1014,36 @@ test('cierre con foto del cliente: el blob del PR tiene que ser el de fotos/ del
   assert.equal(bien.ok, true, bien.informe); assert.match(bien.informe, /con foto del cliente \(mostrador\)/);
   const otra = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', fetchImpl: g({ shaMarca: 'otro' }).fetch });
   assert.equal(otra.ok, false); assert.match(otra.informe, /no es fotos\/mostrador\.jpg del repo de marca/);
+});
+
+test('ronda Editar sobre una foto del cliente: sin uso referencia_ia o con personas → Error; con referencia_ia y sin personas, pasa', async () => {
+  const conFotoCliente = id => ({ ...ghPiezas().meta, foto: true, higgsfield: null, foto_cliente: { id, archivo: `fotos/${id}.jpg`, uso: 'directo', blob_sha: 'fm1' } });
+  for (const [id, re] of [['solo-directo', /su uso no permite referencia_ia/], ['equipo', /tiene personas/]]) {
+    const f = [original(), ronda({ fotoRonda: 'Editar' })]; const cl = conVault(mockClient()); const n = mockNotion(f);
+    const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas({ meta: conFotoCliente(id), fotosMarca: FOTOS_MARCA }).fetch });
+    assert.equal(cl.calls.create.length, 0, id); assert.deepEqual(r.omitidas, [['r1', 'foto']]);
+    assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, re);
+  }
+  const f = [original(), ronda({ fotoRonda: 'Editar' })]; const cl = conVault(mockClient());
+  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas({ meta: conFotoCliente('mostrador'), fotosMarca: FOTOS_MARCA }).fetch });
+  assert.equal(cl.calls.create.length, 1);
+  // Igual y Nueva no mandan la foto actual a la IA: no se revisa su uso.
+  const g = [original(), ronda({ fotoRonda: 'Igual' })]; const cl2 = conVault(mockClient());
+  await despacha({ client: cl2, notion: mockNotion(g), c: cC, fetchImpl: ghPiezas({ meta: conFotoCliente('equipo'), fotosMarca: FOTOS_MARCA }).fetch });
+  assert.equal(cl2.calls.create.length, 1);
+});
+test('ronda Editar sobre una pieza sin foto → Error', async () => {
+  const f = [original(), ronda({ fotoRonda: 'Editar' })]; const cl = conVault(mockClient()); const n = mockNotion(f);
+  await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 0); assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /la pieza no lleva foto/);
+});
+
+test('cierre: si pr_pieza.py no pudo borrar la petición en Higgsfield, el informe lo avisa sin rechazar', async () => {
+  const HF = { request_id: 'r9', estado: 'completed', blob_sha: 'f1', borrado: { ok: false, error: 'HTTP 503: Deletion temporarily unavailable' } };
+  const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
+  g.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' });
+  const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', fetchImpl: g.fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /no se pudo borrar la petición r9 en Higgsfield \(HTTP 503/);
 });
 
 // ---- CRM: el harness baja el previewUrl de la plantilla y lo compara con el brief (fuera de la sesión) ----
