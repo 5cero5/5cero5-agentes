@@ -3,7 +3,8 @@ de la sesión y una sola operación de escritura, subir UNA carpeta a una rama a
 
 Lo que se impone aquí, para todas las herramientas:
   - Solo cambia archivos bajo el prefijo que se le da (una carpeta). Nada fuera de ella.
-  - Solo crea ramas agente/*. No toca main, no fusiona y no cierra PRs.
+  - Solo crea ramas agente/*. No toca main, no fusiona y no cierra PRs. Una ronda de cambios (commit_en_rama) agrega un
+    commit a la rama agente/* de un PR abierto, sin forzar, y no abre otro PR.
   - GITHUB_TOKEN solo viaja en el encabezado hacia la API de GitHub (lo pone el harness; dura una hora).
   - Con exclusivo=True (las herramientas lo piden cuando reciben --repo, es decir con el ruteo por cliente): solo escribe
     si el token es EXCLUSIVO de ese repo. Un brief que pida otro repo no cambia a dónde se escribe: se niega antes de escribir.
@@ -65,20 +66,19 @@ def blob_sha(b: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
 
 
-def sube_carpeta(*, repo: str, pref: str, locales: dict[str, bytes], mensaje, rama_base: str, cuerpo,
-                 ua: str = "5cero5-agente", exclusivo: bool = False) -> dict:
-    """Sube los archivos de una carpeta (rutas relativas a pref) contra main: crea, cambia o borra solo dentro de pref.
-    Abre una rama agente/<rama_base>-<fecha> y un PR a main. Devuelve {pr_url, pr_numero, rama, commit, archivos, nueva}.
-    mensaje y cuerpo pueden ser texto o funciones (nueva, n_cambios) -> texto, para decir si la carpeta es nueva."""
+def valida_pref(pref: str) -> None:
     if not pref.endswith("/") or pref.startswith("/") or ".." in pref.split("/"):
         die(f"Prefijo inválido: {pref!r}")
-    if exclusivo:
-        repo_exclusivo(repo, ua)
-    g = lambda m, p, b=None: gh(m, p, b, ua)
-    base = g("GET", f"/repos/{repo}/git/ref/heads/main")["object"]["sha"]
-    tree_base = g("GET", f"/repos/{repo}/git/commits/{base}")["tree"]["sha"]
-    remoto = {e["path"][len(pref):]: e["sha"] for e in g("GET", f"/repos/{repo}/git/trees/{tree_base}?recursive=1").get("tree", [])
-              if e.get("type") == "blob" and e["path"].startswith(pref)}
+
+
+def remoto_en(g, repo: str, tree: str, pref: str) -> dict[str, str]:
+    """Archivos bajo pref en un árbol de git: {ruta relativa: sha del blob}."""
+    return {e["path"][len(pref):]: e["sha"] for e in g("GET", f"/repos/{repo}/git/trees/{tree}?recursive=1").get("tree", [])
+            if e.get("type") == "blob" and e["path"].startswith(pref)}
+
+
+def cambios_contra(g, repo: str, pref: str, locales: dict[str, bytes], remoto: dict[str, str]) -> list[dict]:
+    """Entradas de árbol para dejar pref igual a locales: sube los blobs que cambian y borra lo que sobra. Nada fuera de pref."""
     cambios = []
     for k, b in locales.items():
         if remoto.get(k) == blob_sha(b):
@@ -88,10 +88,59 @@ def sube_carpeta(*, repo: str, pref: str, locales: dict[str, bytes], mensaje, ra
     for k in remoto:
         if k not in locales:
             cambios.append({"path": pref + k, "mode": "100644", "type": "blob", "sha": None})
-    if not cambios:
-        die("No hay cambios contra main en esa carpeta.")
     if any(not c["path"].startswith(pref) or ".." in c["path"].split("/") for c in cambios):
         die("Un cambio cae fuera de la carpeta.")  # no debería pasar nunca
+    return cambios
+
+
+def lee_carpeta(*, repo: str, ref: str, pref: str, ua: str = "5cero5-agente") -> dict[str, bytes]:
+    """Los archivos de pref en el commit ref (por ejemplo, la punta de la rama de un PR): {ruta relativa: bytes}."""
+    valida_pref(pref)
+    g = lambda m, p, b=None: gh(m, p, b, ua)
+    tree = g("GET", f"/repos/{repo}/git/commits/{ref}")["tree"]["sha"]
+    return {k: base64.b64decode(g("GET", f"/repos/{repo}/git/blobs/{sha}").get("content", ""))
+            for k, sha in remoto_en(g, repo, tree, pref).items()}
+
+
+def commit_en_rama(*, repo: str, pref: str, locales: dict[str, bytes], rama: str, head: str, mensaje: str,
+                   ua: str = "5cero5-agente", exclusivo: bool = False) -> dict:
+    """Ronda de cambios: UN commit nuevo encima de head en la rama agente/* que ya tiene su PR abierto, solo dentro de pref.
+    No abre PR, no toca main y no fuerza: si la rama ya no apunta a head (alguien más empujó), no escribe nada.
+    Devuelve {rama, commit, archivos}."""
+    valida_pref(pref)
+    if not rama.startswith("agente/"):
+        die(f"Solo se escribe en ramas agente/* (la del PR es {rama!r}).")
+    if exclusivo:
+        repo_exclusivo(repo, ua)
+    g = lambda m, p, b=None: gh(m, p, b, ua)
+    actual = g("GET", f"/repos/{repo}/git/ref/heads/{rama}")["object"]["sha"]
+    if actual != head:
+        die(f"La rama {rama} se movió durante la ronda ({head[:7]} → {actual[:7]}). No se escribe nada.")
+    tree_head = g("GET", f"/repos/{repo}/git/commits/{head}")["tree"]["sha"]
+    cambios = cambios_contra(g, repo, pref, locales, remoto_en(g, repo, tree_head, pref))
+    if not cambios:
+        die("La ronda no cambia nada en la pieza.")
+    arbol = g("POST", f"/repos/{repo}/git/trees", {"base_tree": tree_head, "tree": cambios})["sha"]
+    commit = g("POST", f"/repos/{repo}/git/commits", {"message": mensaje, "tree": arbol, "parents": [head]})["sha"]
+    g("PATCH", f"/repos/{repo}/git/refs/heads/{rama}", {"sha": commit, "force": False})
+    return {"rama": rama, "commit": commit, "archivos": [c["path"] for c in cambios]}
+
+
+def sube_carpeta(*, repo: str, pref: str, locales: dict[str, bytes], mensaje, rama_base: str, cuerpo,
+                 ua: str = "5cero5-agente", exclusivo: bool = False) -> dict:
+    """Sube los archivos de una carpeta (rutas relativas a pref) contra main: crea, cambia o borra solo dentro de pref.
+    Abre una rama agente/<rama_base>-<fecha> y un PR a main. Devuelve {pr_url, pr_numero, rama, commit, archivos, nueva}.
+    mensaje y cuerpo pueden ser texto o funciones (nueva, n_cambios) -> texto, para decir si la carpeta es nueva."""
+    valida_pref(pref)
+    if exclusivo:
+        repo_exclusivo(repo, ua)
+    g = lambda m, p, b=None: gh(m, p, b, ua)
+    base = g("GET", f"/repos/{repo}/git/ref/heads/main")["object"]["sha"]
+    tree_base = g("GET", f"/repos/{repo}/git/commits/{base}")["tree"]["sha"]
+    remoto = remoto_en(g, repo, tree_base, pref)
+    cambios = cambios_contra(g, repo, pref, locales, remoto)
+    if not cambios:
+        die("No hay cambios contra main en esa carpeta.")
     nueva = not remoto
     if callable(mensaje):
         mensaje = mensaje(nueva, len(cambios))

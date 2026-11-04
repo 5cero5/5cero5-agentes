@@ -42,7 +42,7 @@ class GH:
 
 
 G = GH()
-HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed"}
+HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed", "puts": [], "imagen": None}
 IMAGEN = None
 
 
@@ -65,7 +65,19 @@ class HGit(Base):
         if not self.ok(): return
         p = self.path.split("?")[0]
         pre = f"/repos/{REPO}/git/"
-        if p == pre + "ref/heads/main": return self.send({"object": {"sha": G.refs["refs/heads/main"]}})
+        if m := re.fullmatch(re.escape(pre) + r"ref/heads/(.+)", p):
+            return self.send({"object": {"sha": G.refs["refs/heads/" + m.group(1)]}}) if "refs/heads/" + m.group(1) in G.refs else self.send({}, 404)
+        if m := re.fullmatch(re.escape(pre) + r"blobs/(\w+)", p): return self.send({"content": base64.b64encode(G.blobs[m.group(1)]).decode()})
+        if m := re.fullmatch(rf"/repos/{re.escape(REPO)}/pulls/(\d+)(/files)?", p):
+            pr = G.prs[int(m.group(1)) - 1]; head = G.refs["refs/heads/" + pr["head"]]
+            if m.group(2):  # lo que cambia la rama contra main
+                arbol = lambda c: {e["path"]: e["sha"] for e in G.trees[G.commits[c]["tree"]]}
+                h, b = arbol(head), arbol(G.refs["refs/heads/main"])
+                return self.send([{"filename": k} for k in h if b.get(k) != h[k]])
+            return self.send({"number": int(m.group(1)), "state": pr.get("state", "open"), "merged": pr.get("merged", False),
+                              "merged_at": "2026-11-04T00:00:00Z" if pr.get("merged") else None, "base": {"ref": "main"},
+                              "head": {"ref": pr["head"], "sha": head, "repo": {"full_name": REPO}},
+                              "html_url": f"https://github.com/{REPO}/pull/{m.group(1)}"})
         if m := re.fullmatch(re.escape(pre) + r"commits/(\w+)", p): return self.send({"sha": m.group(1), "tree": {"sha": G.commits[m.group(1)]["tree"]}})
         if m := re.fullmatch(re.escape(pre) + r"trees/(\w+)", p): return self.send({"sha": m.group(1), "tree": G.trees[m.group(1)]})
         self.send({}, 404)
@@ -92,6 +104,14 @@ class HGit(Base):
             n = len(G.prs) + 1; G.prs.append(body); return self.send({"number": n, "html_url": f"https://github.com/{REPO}/pull/{n}"}, 201)
         self.send({}, 404)
 
+    def do_PATCH(self):
+        G.llamadas.append(("PATCH", self.path))
+        if not self.ok(): return
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        m = re.fullmatch(rf"/repos/{re.escape(REPO)}/git/refs/heads/(.+)", self.path)
+        if not m or body.get("force"): return self.send({}, 422)
+        G.refs["refs/heads/" + m.group(1)] = body["sha"]; self.send({"object": {"sha": body["sha"]}})
+
 
 V2_ASPECTOS = {"9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2"}
 
@@ -101,6 +121,9 @@ class HHiggs(Base):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
         HF["posts"].append((self.path, body))
+        if self.path == "/files/generate-upload-url":  # URL firmada: otro host, sin la llave
+            return self.send({"upload_url": f"{URL_IMG}/subir/x", "public_url": "https://cdn.prueba/x.jpg", "content_type": body["content_type"],
+                              "upload_headers": {"Content-Type": body["content_type"], "x-amz-tagging": "retention=temporary"}})
         # Como el Soul v2 real (3 nov 2026): una proporción fuera de su lista es 400 y no se cobra.
         if "aspect_ratio" in body and body["aspect_ratio"] not in V2_ASPECTOS:
             return self.send({"detail": f"aspect_ratio must be one of {sorted(V2_ASPECTOS)}"}, 400)
@@ -116,7 +139,11 @@ class HHiggs(Base):
 class HImagen(Base):
     def do_GET(self):
         HF["auth_imagen"].append(self.headers.get("Authorization"))
-        self.send(IMAGEN, tipo="image/jpeg")
+        self.send(HF["imagen"] or IMAGEN, tipo="image/jpeg")
+
+    def do_PUT(self):
+        HF["puts"].append((self.headers.get("Authorization"), len(self.rfile.read(int(self.headers.get("Content-Length", 0))))))
+        self.send({})
 
 
 def servidor(h):
@@ -303,8 +330,99 @@ def main():
     c, o = corre("revisar", "--campana", "poc", "--pieza", "cuadro")
     check("revisar aprueba el post 1:1", c == 0 and json.loads((dir_("poc", "cuadro") / "informe.json").read_text())["formato"] == "post-1x1", o)
 
+    fotos_del_cliente_y_rondas()
     print(f"\n{sum(res)}/{len(res)} comprobaciones correctas.")
     sys.exit(0 if all(res) else 1)
+
+
+
+def imagen(semilla):
+    from PIL import Image, ImageDraw
+    random.seed(semilla)
+    im = Image.new("RGB", (1400, 700), (60, 90, 120)); d = ImageDraw.Draw(im)
+    for _ in range(500):
+        x, y, r = random.randint(0, 1400), random.randint(0, 700), random.randint(10, 80)
+        d.ellipse([x, y, x + r, y + r], fill=(random.randint(40, 230), random.randint(40, 200), random.randint(30, 180)))
+    b = io.BytesIO(); im.save(b, "JPEG", quality=90); return b.getvalue()
+
+
+def fotos_del_cliente_y_rondas():
+    """Fotos del repo de marca (repo: y referencia:), nota opcional y rondas sobre el mismo PR (Igual, Editar, fusionado)."""
+    trabajo = TMP / "creativo2"  # sesión aparte: su propio tope de fotos
+    tool = lambda *a, env=None: subprocess.run([sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(trabajo), "--marca", str(MARCA_COPIA)] + list(a),
+                                               capture_output=True, text=True, env=env or ENV, timeout=300)
+    def corre2(*a):
+        r = tool(*a); return r.returncode, r.stdout + r.stderr
+    fdir = MARCA_COPIA / "fotos"; fdir.mkdir(exist_ok=True)
+    (fdir / "mostrador.jpg").write_bytes(IMAGEN); (fdir / "equipo.jpg").write_bytes(imagen(7))
+    (fdir / "fotos.json").write_text(json.dumps({"fotos": [
+        {"id": "mostrador", "archivo": "mostrador.jpg", "descripcion": "Mostrador de la sucursal centro con luz de mañana",
+         "autorizo": "Dueña, 2 nov 2026", "fecha": "2026-11-02", "uso": ["directo", "referencia_ia"], "personas": False},
+        {"id": "equipo", "archivo": "equipo.jpg", "descripcion": "Equipo de la sucursal", "autorizo": "Dueña, 2 nov 2026",
+         "fecha": "2026-11-02", "uso": ["directo", "referencia_ia"], "personas": True}]}, ensure_ascii=False))
+    d3 = trabajo / "poc" / "foto-repo"
+    corre2("nueva", "--campana", "poc", "--pieza", "foto-repo", "--formato", "post-4x5", "--foto")
+    n0 = len(HF["posts"])
+    c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-repo", "--repo-id", "vitrina-de-otro-cliente")
+    check("repo:<id> de otro cliente (no está en fotos.json de esta marca) falla sin llamar a nadie", c != 0 and "no está en fotos/fotos.json" in o and len(HF["posts"]) == n0, o)
+    c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-repo", "--repo-id", "mostrador")
+    meta = json.loads((d3 / "pieza.json").read_text())
+    check("repo:<id> válido: la foto del cliente va tal cual, sin Higgsfield", c == 0 and (d3 / "fotos/fondo.jpg").read_bytes() == IMAGEN
+          and meta["foto_cliente"]["blob_sha"] == blob_sha(IMAGEN) and len(HF["posts"]) == n0
+          and "Foto de la marca: Mostrador" in (d3 / "plantillas/pieza.html").read_text(), o + json.dumps(meta))
+    corre2("nueva", "--campana", "poc", "--pieza", "foto-ref", "--formato", "post-4x5", "--foto")
+    c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-ref", "--referencia", "equipo", "--prompt", PROMPT)
+    check("una foto con personas no se manda como referencia a la IA", c != 0 and "personas" in o and len(HF["posts"]) == n0 and not HF["puts"], o)
+    HF["status_gets"] = 0; HF["final"] = "completed"
+    c, o = corre2("foto", "--campana", "poc", "--pieza", "foto-ref", "--referencia", "mostrador", "--prompt", PROMPT)
+    edic = [b for p, b in HF["posts"][n0:] if p == "/alibaba/qwen-image-3/edit"]
+    check("referencia:<id>: sube la foto sin la llave y la manda al modelo de edición en image_urls",
+          c == 0 and edic == [{"prompt": PROMPT, "image_urls": ["https://cdn.prueba/x.jpg"]}] and HF["puts"] == [(None, len(IMAGEN))]
+          and json.loads((trabajo / "poc/foto-ref/pieza.json").read_text())["higgsfield"]["referencia"] == "mostrador", o + str(HF["posts"][n0:]))
+
+    copia_ = lambda pz, dd: (trabajo / "poc" / pz / "copia.json").write_text(json.dumps(dd, ensure_ascii=False))
+    copia_("foto-repo", BIEN)
+    corre2("llenar", "--campana", "poc", "--pieza", "foto-repo")
+    c, o = corre2("revisar", "--campana", "poc", "--pieza", "foto-repo")
+    # La marca decide si acepta fotos reales: la de 5cero5 solo acepta fotos generadas (el alt debe decirlo) y la bloquea.
+    solo_ia = "foto_no_es_cliente" in o and c != 0
+    check("repo:<id>: el Verificador de la marca decide (alt verdadero, no dice que es de IA)", c == 0 or solo_ia, o)
+    copia_("foto-ref", {**BIEN, "nota": ""})
+    c, o = corre2("llenar", "--campana", "poc", "--pieza", "foto-ref")
+    check("la nota es opcional en llenar", c == 0, o)
+    c, o = corre2("revisar", "--campana", "poc", "--pieza", "foto-ref")
+    c2, o2 = corre2("abrir", "--campana", "poc", "--pieza", "foto-ref", "--titulo", "Post con foto de referencia")
+    check("revisar y abrir la pieza con foto de referencia y sin nota", c == 0 and c2 == 0, o + o2)
+    n_pr = len(G.prs); rama = G.prs[-1]["head"]; head0 = G.refs["refs/heads/" + rama]
+
+    arbol = lambda c: {e["path"]: e["sha"] for e in G.trees[G.commits[c]["tree"]]}
+    cambios = trabajo / "cambios.json"; cambios.write_text(json.dumps({"kicker": "Ahora con cita en línea"}, ensure_ascii=False))
+    n1 = len(HF["posts"])
+    c, o = corre2("revisar-pr", "--campana", "poc", "--pieza", "foto-ref", "--pr", str(n_pr), "--foto-ronda", "Igual", "--cambios", str(cambios))
+    out = json.loads(o.strip().splitlines()[-1]) if c == 0 else {}
+    head1 = G.refs["refs/heads/" + rama]
+    pref = "piezas/poc/foto-ref/"
+    check("ronda Igual: un commit nuevo en la MISMA rama del PR, sin PR nuevo y sin Higgsfield",
+          c == 0 and out.get("pr_numero") == n_pr and head1 != head0 and G.commits[head1]["parents"] == [head0]
+          and len(G.prs) == n_pr and len(HF["posts"]) == n1, o)
+    check("ronda Igual: misma foto (blob_sha) y la copia cambia solo en lo pedido",
+          arbol(head1)[pref + "fotos/fondo.jpg"] == arbol(head0)[pref + "fotos/fondo.jpg"]
+          and json.loads(G.blobs[arbol(head1)[pref + "copia.json"]]) == {**BIEN, "nota": "", "kicker": "Ahora con cita en línea"}
+          and all(k.startswith(pref) for k in out.get("archivos", [])), json.dumps(out))
+    HF["imagen_antes"] = G.blobs[arbol(head1)[pref + "fotos/fondo.jpg"]]
+    HF["status_gets"] = 0; HF["imagen"] = imagen(11); HF["puts"].clear()
+    c, o = corre2("revisar-pr", "--campana", "poc", "--pieza", "foto-ref", "--pr", str(n_pr), "--foto-ronda", "Editar",
+                  "--prompt", "Aclara el fondo y quita el objeto de la izquierda")
+    head2 = G.refs["refs/heads/" + rama]
+    edic = [b for p, b in HF["posts"][n1:] if p == "/alibaba/qwen-image-3/edit"]
+    check("ronda Editar: edita la foto actual con el modelo de edición y hace commit en la misma rama",
+          c == 0 and len(edic) == 1 and edic[0]["image_urls"] == ["https://cdn.prueba/x.jpg"] and "quita el objeto" in edic[0]["prompt"]
+          and HF["puts"] == [(None, len(HF["imagen_antes"]))] and G.commits[head2]["parents"] == [head1] and len(G.prs) == n_pr
+          and arbol(head2)[pref + "fotos/fondo.jpg"] == blob_sha(HF["imagen"]), o)
+    HF["imagen"] = None
+    G.prs[n_pr - 1].update(state="closed", merged=True)
+    c, o = corre2("revisar-pr", "--campana", "poc", "--pieza", "foto-ref", "--pr", str(n_pr), "--foto-ronda", "Igual", "--cambios", str(cambios))
+    check("ronda sobre un PR ya fusionado: falla y no escribe nada", c != 0 and "fusionado" in o and G.refs["refs/heads/" + rama] == head2, o)
 
 
 if __name__ == "__main__":
