@@ -3,16 +3,14 @@ import { parametrosSesion } from './sessions.mjs';
 import { despachaCampanas, piezasPendientes } from './campanas.mjs';
 import { agenteDe } from './agentes.mjs';
 import { conGithub } from './github.mjs';
-import { preparaCliente, resuelveCliente } from './clientes.mjs';
+import { preparaCliente, resuelveCliente, revisaAprobacion } from './clientes.mjs';
 
 const ahora = () => new Date().toISOString();
 
-// Una fila vale para despachar solo si TODO esto se cumple.
+// Una fila vale para despachar solo si TODO esto se cumple. Quién aprobó se revisa después, con la ficha de su cliente
+// (revisaAprobacion en lib/clientes.mjs).
 export function esDespachable(fila, c) {
   if (fila.estado !== 'Aprobado') return 'estado';
-  if (!c.aprobadores.length) return 'sin_aprobadores_configurados';
-  if (!fila.aprobo.some(id => c.aprobadores.includes(id))) return 'aprobo_no_autorizado';
-  if (!c.aprobadores.includes(fila.editadoPor?.id)) return 'ultima_edicion_no_es_de_un_aprobador';
   if (!fila.brief) return 'sin_brief';
   if (fila.sesion) return 'ya_tiene_sesion';
   if (fila.intentos >= c.maxIntentos) return 'intentos_agotados';
@@ -44,6 +42,15 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     const fila = leePagina(page);
     const motivo = esDespachable(fila, c);
     if (motivo) { out.omitidas.push([fila.id, motivo]); continue; }
+    // Aprobadores por cliente (con o sin RUTEO_CLIENTES): fila → Campaña ligada → Ficha de cliente → Aprobadores.
+    // Sin cliente o sin Aprobadores, falla cerrado con el motivo en Error.
+    let aprob;
+    try { aprob = revisaAprobacion(fila, await resuelveCliente(notion, c, fila, cache), c); }
+    catch (e) { aprob = { motivo: 'cliente', error: e.message }; }
+    if (aprob) {
+      if (aprob.error) await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(aprob.error) });
+      out.omitidas.push([fila.id, aprob.motivo]); continue;
+    }
     if (agenteDe(fila.agente)?.meta) {
       // Pauta espera a que las piezas de su campaña estén en Listo (fusionadas y revisadas).
       const espera = await piezasPendientes(notion, c, fila);

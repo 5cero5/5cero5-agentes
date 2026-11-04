@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { cfg, eventoDeCierre } from '../lib/config.mjs';
 import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas, compruebaFilasCMO, compruebaHuellaCMO } from '../lib/campanas.mjs';
 import { esDespachable, despacha } from '../lib/despacho.mjs';
+import { revisaAprobacion, leeCliente } from '../lib/clientes.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
 import { barre } from '../lib/barrido.mjs';
@@ -10,9 +11,9 @@ import { AGENTES, revisaRespuesta } from '../lib/agentes.mjs';
 
 const AL = 'user-al', BONZO = 'user-bonzo', INTRUSO = 'user-x';
 // Las pruebas generales usan CRM (sin GitHub App). Las de Landing y Creativo, más abajo, configuran la app.
-const c = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_c', MA_VAULT_IDS: 'v1',
+const c = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_c', MA_VAULT_IDS: 'v1',
   GH_REPO_URL: 'https://github.com/o/r', GH_AGENTES_URL: 'https://github.com/o/a' });
-const fila = (o = {}) => ({ id: 'p1', editadoPor: { id: AL }, trabajo: 'Pieza 1', agente: 'CRM', estado: 'Aprobado', brief: 'haz algo', campana: 'C1', sesion: '', intentos: 0, tope: null, aprobo: [AL], aprobadoEl: '2026-10-02', inicio: null, ...o });
+const fila = (o = {}) => ({ id: 'p1', editadoPor: { id: AL }, trabajo: 'Pieza 1', agente: 'CRM', estado: 'Aprobado', brief: 'haz algo', campana: 'C1', sesion: '', intentos: 0, tope: null, aprobo: [AL], aprobadoEl: '2026-10-02', inicio: null, campanaLigada: ['kc'], sensible: false, ...o });
 
 function pageDe(f) {
   return { id: f.id, last_edited_by: f.editadoPor, properties: {
@@ -20,17 +21,25 @@ function pageDe(f) {
     Brief: { rich_text: f.brief ? [{ plain_text: f.brief }] : [] }, Campaña: { rich_text: [{ plain_text: f.campana }] },
     Sesión: { rich_text: f.sesion ? [{ plain_text: f.sesion }] : [] }, Intentos: { number: f.intentos },
     'Tope de la sesión (USD)': { number: f.tope }, Aprobó: { people: f.aprobo.map(id => ({ id })) },
-    Inició: { date: f.inicio ? { start: f.inicio } : null } } };
+    Inició: { date: f.inicio ? { start: f.inicio } : null }, 'Campaña ligada': { relation: (f.campanaLigada || []).map(id => ({ id })) },
+    Sensible: { checkbox: f.sensible === true } } };
 }
+// Cliente de las filas y campañas de prueba: campaña 'kc' → ficha 'fc' (base Clientes) con Aprobadores Al y Bonzo.
+const fichaPrueba = (aprobadores = [AL, BONZO]) => ({ id: 'fc', parent: { type: 'data_source_id', data_source_id: cfg({}).notionClientes },
+  properties: { Cliente: { title: [{ plain_text: 'Cliente de prueba' }] }, Slug: { rich_text: [{ plain_text: 'prueba' }] }, Estado: { select: { name: 'Activo' } },
+    Aprobadores: { people: aprobadores.map(id => ({ id })) } } });
+const PAGINAS_CLIENTE = { kc: { id: 'kc', properties: { 'Ficha de cliente': { relation: [{ id: 'fc' }] } } }, fc: fichaPrueba() };
+const conCliente = get => async id => (PAGINAS_CLIENTE[id] ?? get(id));
 function mockNotion(filas) {
   const log = [];
   return { log,
     query: async (_ds, filter) => {
       if (filter.property === 'Inició') return { results: [] };
+      if (filter.and) return { results: [{ properties: { Estado: { select: { name: 'Listo' } } } }] }; // piezas del Creativo en Listo
       if (filter.property === 'Estado') return { results: filas.filter(f => f.estado === filter.select.equals).map(pageDe) };
       if (filter.property === 'Sesión') return { results: filas.filter(f => f.sesion === filter.rich_text.equals).map(pageDe) };
     },
-    get: async id => pageDe(filas.find(f => f.id === id)),
+    get: conCliente(async id => pageDe(filas.find(f => f.id === id))),
     update: async (id, props) => { log.push([id, props]); const f = filas.find(x => x.id === id); if (props.Estado) f.estado = props.Estado.select.name; if (props.Intentos) f.intentos = props.Intentos.number; if (props.Sesión) f.sesion = props.Sesión.rich_text[0].text.content; } };
 }
 function mockClient({ status = 'idle', msg = '{"deploy_id":"d1"}', createFails = false } = {}) {
@@ -42,9 +51,51 @@ function mockClient({ status = 'idle', msg = '{"deploy_id":"d1"}', createFails =
 }
 
 test('despachable: aprobación válida', () => assert.equal(esDespachable(fila(), c), null));
-test('rechaza si aprobó alguien no autorizado', () => assert.equal(esDespachable(fila({ aprobo: [INTRUSO] }), c), 'aprobo_no_autorizado'));
-test('rechaza si la última edición no es de un aprobador (un agente no se autoaprueba)', () => assert.equal(esDespachable(fila({ editadoPor: { id: 'bot' } }), c), 'ultima_edicion_no_es_de_un_aprobador'));
-test('rechaza sin aprobadores configurados', () => assert.equal(esDespachable(fila(), cfg({})), 'sin_aprobadores_configurados'));
+// ---- Aprobadores por cliente (ficha → Aprobadores) y filas Sensibles (APROBADORES_SENSIBLES) ----
+const CLI_X = 'user-cliente-x', CLI_Y = 'user-cliente-y';
+const cliX = leeCliente(fichaPrueba([CLI_X])), cliY = leeCliente(fichaPrueba([CLI_Y]));
+const cS = cfg({ APROBADORES_SENSIBLES: `${AL},${BONZO}` });
+test('aprobación: un aprobador de la ficha del cliente pasa', () => {
+  assert.equal(revisaAprobacion(fila({ aprobo: [CLI_X], editadoPor: { id: CLI_X } }), cliX, cS), null);
+});
+test('aprobación: un aprobador de otro cliente no pasa', () => {
+  assert.equal(revisaAprobacion(fila({ aprobo: [CLI_Y], editadoPor: { id: CLI_Y } }), cliX, cS).motivo, 'aprobo_no_autorizado');
+  assert.equal(revisaAprobacion(fila({ aprobo: [CLI_X], editadoPor: { id: CLI_X } }), cliY, cS).motivo, 'aprobo_no_autorizado');
+});
+test('aprobación: la última edición de alguien fuera de la lista no pasa (un agente no se autoaprueba)', () => {
+  assert.equal(revisaAprobacion(fila({ aprobo: [CLI_X], editadoPor: { id: 'bot' } }), cliX, cS).motivo, 'ultima_edicion_no_es_de_un_aprobador');
+  assert.equal(revisaAprobacion(fila({ aprobo: [CLI_X], editadoPor: { id: AL } }), cliX, cS).motivo, 'ultima_edicion_no_es_de_un_aprobador');
+});
+test('aprobación: ficha sin Aprobadores no pasa y deja el motivo para Error (sin lista global)', () => {
+  const r = revisaAprobacion(fila(), leeCliente(fichaPrueba([])), cS);
+  assert.equal(r.motivo, 'sin_aprobadores'); assert.match(r.error, /no tiene Aprobadores/);
+});
+test('aprobación: fila Sensible aprobada por alguien fuera de APROBADORES_SENSIBLES no pasa; con Al sí', () => {
+  const r = revisaAprobacion(fila({ sensible: true, aprobo: [CLI_X], editadoPor: { id: CLI_X } }), cliX, cS);
+  assert.equal(r.motivo, 'sensible_no_autorizado'); assert.match(r.error, /APROBADORES_SENSIBLES/);
+  const cliXAl = leeCliente(fichaPrueba([CLI_X, AL]));
+  assert.equal(revisaAprobacion(fila({ sensible: true, aprobo: [CLI_X, AL], editadoPor: { id: CLI_X } }), cliXAl, cS), null);
+  assert.equal(revisaAprobacion(fila({ sensible: true }), cliXAl, cfg({})).motivo, 'sensible_sin_configurar');
+});
+test('despacha: ficha sin Aprobadores → Error con el motivo, sin sesión', async () => {
+  const f = [fila()]; const n = mockNotion(f); const cl = mockClient();
+  n.get = (orig => async id => (id === 'fc' ? fichaPrueba([]) : orig(id)))(n.get);
+  const r = await despacha({ client: cl, notion: n, c });
+  assert.equal(cl.calls.create.length, 0); assert.equal(f[0].estado, 'Error'); assert.deepEqual(r.omitidas, [['p1', 'sin_aprobadores']]);
+  assert.match(n.log[0][1].Error.rich_text[0].text.content, /no tiene Aprobadores/);
+});
+test('despacha: aprobada por alguien de otro cliente no se despacha; fila sin Campaña ligada → Error', async () => {
+  const f = [fila({ aprobo: [CLI_Y], editadoPor: { id: CLI_Y } })]; const cl = mockClient();
+  assert.deepEqual((await despacha({ client: cl, notion: mockNotion(f), c })).omitidas, [['p1', 'aprobo_no_autorizado']]);
+  assert.equal(f[0].estado, 'Aprobado');
+  const g = [fila({ campanaLigada: [] })];
+  await despacha({ client: cl, notion: mockNotion(g), c }); assert.equal(g[0].estado, 'Error'); assert.equal(cl.calls.create.length, 0);
+});
+test('despacha: fila Sensible aprobada solo por el cliente → Error; Sensible se lee de Notion', async () => {
+  const f = [fila({ sensible: true })]; const cl = mockClient();
+  await despacha({ client: cl, notion: mockNotion(f), c: { ...c, aprobadoresSensibles: [BONZO] } });
+  assert.equal(f[0].estado, 'Error'); assert.equal(cl.calls.create.length, 0);
+});
 test('rechaza sin brief, con sesión, o intentos agotados', () => {
   assert.equal(esDespachable(fila({ brief: '' }), c), 'sin_brief');
   assert.equal(esDespachable(fila({ sesion: 's' }), c), 'ya_tiene_sesion');
@@ -117,7 +168,7 @@ test('barrido: reclamada sin sesión → Error', async () => {
 });
 
 // ---- Hito 1: router por agente, tope en centavos, formato de respuesta ----
-const cCRM = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_crm',
+const cCRM = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', MA_VAULT_IDS: 'v_crm',
   GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok' });
 const filaCRM = (o = {}) => fila({ agente: 'CRM', trabajo: 'Plantilla W1', brief: 'arma W1', ...o });
 
@@ -146,7 +197,7 @@ test('router: agente fuera del catálogo o sin id no se despacha', () => {
   assert.throws(() => parametrosSesion(fila({ agente: 'constructor' }), c), /Agente sin configurar: constructor/);
 });
 test('router: falta un repo que el agente declara → no hay sesión', () => {
-  const sinAgentes = cfg({ ...{ NOTION_APROBADORES: AL, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', GH_REPO_URL: 'https://github.com/o/m' } });
+  const sinAgentes = cfg({ ...{ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CRM: 'agent_crm', GH_REPO_URL: 'https://github.com/o/m' } });
   assert.throws(() => parametrosSesion(filaCRM(), sinAgentes), /Falta GH_AGENTES_URL/);
 });
 test('despacha: agente sin configurar pasa a Error y no crea sesión', async () => {
@@ -160,9 +211,10 @@ test('tope en centavos como cadena; menos de un centavo se rechaza', () => {
   assert.throws(() => parametrosSesion(fila({ tope: 0.004 }), c), /Tope inválido/);
   assert.throws(() => parametrosSesion(fila({ tope: 0 }), c), /Tope inválido/);
 });
-test('última edición: vale de Bonzo aunque aprobó Al; no de alguien más', () => {
-  assert.equal(esDespachable(fila({ editadoPor: { id: BONZO } }), c), null);
-  assert.equal(esDespachable(fila({ editadoPor: { id: INTRUSO }, aprobo: [AL, BONZO] }), c), 'ultima_edicion_no_es_de_un_aprobador');
+test('última edición: vale de otro aprobador de la ficha aunque aprobó Al; no de alguien más', () => {
+  const cli = leeCliente(fichaPrueba());
+  assert.equal(revisaAprobacion(fila({ editadoPor: { id: BONZO } }), cli, c), null);
+  assert.equal(revisaAprobacion(fila({ editadoPor: { id: INTRUSO }, aprobo: [AL, BONZO] }), cli, c).motivo, 'ultima_edicion_no_es_de_un_aprobador');
 });
 test('formato: CRM válido, en bloque ```json, sin prefijo, sin claves y sin JSON', () => {
   const d = AGENTES.CRM;
@@ -187,7 +239,7 @@ test('webhook: solo los eventos confirmados en la consola cierran la fila', () =
 });
 
 // ---- Campañas → agente CMO ----
-const cK = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CMO: 'agent_cmo', MA_AGENT_CRM: 'agent_crm',
+const cK = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CMO: 'agent_cmo', MA_AGENT_CRM: 'agent_crm',
   MA_VAULT_CMO: 'v_notion', GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes' });
 const campana = (o = {}) => ({ id: 'k1', editadoPor: { id: AL }, nombre: 'Promo', estado: 'Aprobada', ruta: 'Cita', piezas: 3, aprobo: [AL],
   formatos: ['Correo', 'Post 4:5'], canales: ['Correo'], landing: true, objetivo: 'Llamadas', kpi: 'Llamadas agendadas', meta: 35, costoMax: 1400,
@@ -199,7 +251,7 @@ function pageCampana(k) {
     'Costo máximo por resultado (MXN)': { number: k.costoMax }, Canales: { multi_select: k.canales.map(name => ({ name })) },
     Formatos: { multi_select: k.formatos.map(name => ({ name })) }, Piezas: { number: k.piezas }, 'Lleva landing': { checkbox: k.landing },
     'Presupuesto de pauta (MXN)': { number: k.presupuesto }, Vigencia: { date: k.vigencia }, Brief: { rich_text: [{ plain_text: k.brief }] },
-    Aprobó: { people: k.aprobo.map(id => ({ id })) } } };
+    Aprobó: { people: k.aprobo.map(id => ({ id })) }, 'Ficha de cliente': { relation: [{ id: 'fc' }] } } };
 }
 function mockNotionK(campanas) {
   const log = [], creadas = [];
@@ -207,6 +259,7 @@ function mockNotionK(campanas) {
     query: async (ds, filter) => ds === cK.notionCampanas
       ? { results: campanas.filter(k => k.estado === filter.select.equals).map(pageCampana) }
       : { results: [] },
+    get: async id => { const k = campanas.find(x => x.id === id); if (k) return pageCampana(k); if (PAGINAS_CLIENTE[id]) return PAGINAS_CLIENTE[id]; throw new Error('404'); },
     create: async (ds, props) => { const id = `fila${creadas.length + 1}`; creadas.push({ ds, id, props }); return { id }; },
     update: async (id, props) => { log.push([id, props]); const k = campanas.find(x => x.id === id); if (k && props.Estado) k.estado = props.Estado.select.name; } };
 }
@@ -216,14 +269,22 @@ test('campaña: leeCampana lee lo que el CMO necesita', () => {
   assert.equal(k.ruta, 'Cita'); assert.equal(k.piezas, 3); assert.equal(k.landing, true); assert.deepEqual(k.formatos, ['Correo', 'Post 4:5']);
   assert.equal(k.costoMax, 1400); assert.equal(k.vigencia.end, '2026-11-18');
 });
-test('campaña: solo se despacha aprobada por Al o Bonzo, con su última edición, ruta y piezas', () => {
+test('campaña: solo se despacha aprobada, con ruta y piezas; Aprobó y última edición de los Aprobadores de su cliente', async () => {
   assert.equal(esCampanaDespachable(campana(), cK), null);
   assert.equal(esCampanaDespachable(campana({ estado: 'Borrador' }), cK), 'estado');
-  assert.equal(esCampanaDespachable(campana({ aprobo: [INTRUSO] }), cK), 'aprobo_no_autorizado');
-  assert.equal(esCampanaDespachable(campana({ editadoPor: { id: 'bot' } }), cK), 'ultima_edicion_no_es_de_un_aprobador');
+  for (const [k, motivo] of [[campana({ aprobo: [INTRUSO] }), 'aprobo_no_autorizado'], [campana({ editadoPor: { id: 'bot' } }), 'ultima_edicion_no_es_de_un_aprobador']]) {
+    const ks = [k]; const cl = mockClient();
+    assert.deepEqual((await despachaCampanas({ client: cl, notion: mockNotionK(ks), c: cK, cupo: 6 })).omitidas, [['k1', motivo]]);
+    assert.equal(ks[0].estado, 'Aprobada'); assert.equal(cl.calls.create.length, 0);
+  }
+  // Ficha sin Aprobadores: falla cerrado, la fila del CMO queda en Error con el motivo y no hay sesión.
+  const ks = [campana()]; const n = mockNotionK(ks); const cl = mockClient();
+  n.get = (orig => async id => (id === 'fc' ? fichaPrueba([]) : orig(id)))(n.get);
+  await despachaCampanas({ client: cl, notion: n, c: cK, cupo: 6 });
+  assert.equal(cl.calls.create.length, 0); assert.match(n.creadas[0].props.Error.rich_text[0].text.content, /no tiene Aprobadores/);
   assert.equal(esCampanaDespachable(campana({ ruta: null }), cK), 'sin_ruta');
   assert.equal(esCampanaDespachable(campana({ piezas: 0 }), cK), 'sin_piezas');
-  assert.equal(esCampanaDespachable(campana(), cfg({ NOTION_APROBADORES: AL })), 'cmo_sin_configurar');
+  assert.equal(esCampanaDespachable(campana(), cfg({})), 'cmo_sin_configurar');
 });
 test('campaña: el brief del CMO lleva los datos y solo los agentes con id', () => {
   const b = briefDeCampana(campana(), cK);
@@ -391,7 +452,7 @@ import { generateKeyPairSync, createVerify } from 'node:crypto';
 import { jwtApp, compruebaPR, preparaGithub } from '../lib/github.mjs';
 const { privateKey: PEM, publicKey: PUB } = generateKeyPairSync('rsa', { modulusLength: 2048,
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
-const cL = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_LANDING: 'agent_landing', MA_VAULT_LANDING: 'v_landing',
+const cL = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_LANDING: 'agent_landing', MA_VAULT_LANDING: 'v_landing',
   GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
   GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM.replace(/\n/g, '\\n'), MA_CRED_GITHUB_LANDING: 'vcrd_gh' });
 const filaL = (o = {}) => fila({ agente: 'Landing', trabajo: 'Landing Buen Fin', brief: 'landing de la promo', ...o });
@@ -517,7 +578,7 @@ test('cierre de Landing: comprueba el PR en GitHub y marca el Verificador; nunca
 
 // ---- Agente Creativo (PR en 5cero5-piezas con la misma GitHub App) ----
 import { medidasPng } from '../lib/github.mjs';
-const cC = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_creativo', MA_VAULT_CREATIVO: 'v_creativo',
+const cC = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_creativo', MA_VAULT_CREATIVO: 'v_creativo',
   GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
   GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM, MA_CRED_GITHUB_CREATIVO: 'vcrd_cr' });
 const filaC = (o = {}) => fila({ agente: 'Creativo', trabajo: 'Post 4:5 · agencia vs 5cero5', brief: 'post del diagnóstico. Foto: no', ...o });
@@ -634,7 +695,7 @@ test('cierre de Creativo: comprueba PR y pieza y deja la fila Para revisar; nunc
 
 // ---- Agente Pauta (campaña en Meta, siempre en pausa; piezas de 5cero5-piezas montadas solo lectura) ----
 import { compruebaCampana } from '../lib/meta.mjs';
-const cP = cfg({ NOTION_APROBADORES: `${AL},${BONZO}`, MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_PAUTA: 'agent_pauta', MA_VAULT_PAUTA: 'v_pauta',
+const cP = cfg({ MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_PAUTA: 'agent_pauta', MA_VAULT_PAUTA: 'v_pauta',
   GH_REPO_URL: 'https://github.com/5cero5/5cero5-marca', GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_REPO_READ_TOKEN: 'tok',
   GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM,
   META_AD_ACCOUNT_ID: '1234567', META_PAGE_ID: '1127307763190247', META_TOKEN: 'EAAh', META_TOPE_DIARIO_MXN: '1500' });
@@ -776,6 +837,7 @@ test('despacha Pauta: espera a que las piezas del Creativo de su campaña estén
         consultas.push(filter);
         return { results: estadosCreativo.map(e => ({ properties: { Estado: { select: { name: e } } } })) };
       },
+      get: async id => (id === 'k1' ? PAGINAS_CLIENTE.kc : PAGINAS_CLIENTE[id]),
       update: async () => {} };
     const r = await despacha({ client: cl, notion, c: cP, fetchImpl: ghPiezas().fetch });
     return { r, cl, consultas };

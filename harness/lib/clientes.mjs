@@ -1,4 +1,4 @@
-// Ruteo por cliente (RUTEO_CLIENTES=1). Cada fila de Aprobaciones pertenece a UN cliente:
+// Ruteo por cliente (RUTEO_CLIENTES=1) y aprobadores (siempre). Cada fila de Aprobaciones pertenece a UN cliente:
 //   fila → Campaña ligada (exactamente una) → Ficha de cliente (exactamente una) → página de la base Clientes.
 // La ficha solo trae ids (nunca secretos). De ahí salen repos, vaults, credenciales, ids de Meta, Location ID y topes.
 // Todo falla cerrado: si algo no cuadra, la fila pasa a Error con el motivo y no se abre sesión.
@@ -61,6 +61,7 @@ export function leeCliente(page) {
     tope: n('Tope de sesión (USD)'),
     topePauta: n('Tope diario de pauta (MXN)'),
     maxSesiones: n('Máx. sesiones por día'),
+    aprobadores: (p['Aprobadores']?.people || []).map(x => x.id),
   };
 }
 
@@ -87,6 +88,26 @@ export async function resuelveCliente(notion, c, fila, cache = new Map()) {
   if (!ligadas.length) throw falla('sin cliente: la fila no tiene Campaña ligada');
   if (ligadas.length > 1) throw falla(`sin cliente: la fila tiene ${ligadas.length} Campañas ligadas`);
   return clienteDeCampana(notion, c, ligadas[0], cache);
+}
+
+// Quién aprueba: los Aprobadores de la ficha del cliente, sin lista global de respaldo. Aprobó y la última edición tienen que
+// ser de esa lista (un agente no se autoaprueba). Una fila Sensible además necesita en Aprobó a alguien de APROBADORES_SENSIBLES.
+// x: fila o campaña ({ aprobo, editadoPor, sensible }). null si pasa; si no, { motivo } y, cuando hay que dejarlo escrito
+// en la fila (Error), { error }.
+export function revisaAprobacion(x, cli, c) {
+  const quien = cli.nombre || cli.slug || cli.id;
+  const lista = cli.aprobadores || [];
+  if (!lista.length) return { motivo: 'sin_aprobadores', error: `La ficha de ${quien} no tiene Aprobadores: nadie puede aprobar sus filas ni sus campañas` };
+  if (!(x.aprobo || []).some(id => lista.includes(id))) return { motivo: 'aprobo_no_autorizado' };
+  if (!lista.includes(x.editadoPor?.id)) return { motivo: 'ultima_edicion_no_es_de_un_aprobador' };
+  if (x.sensible) {
+    const sens = c.aprobadoresSensibles || [];
+    if (!sens.length) return { motivo: 'sensible_sin_configurar', error: 'Fila Sensible y APROBADORES_SENSIBLES vacío: no se despacha' };
+    if (!x.aprobo.some(id => sens.includes(id))) {
+      return { motivo: 'sensible_no_autorizado', error: 'Fila Sensible: tiene que aprobarla alguien de APROBADORES_SENSIBLES (Al o Bonzo)' };
+    }
+  }
+  return null;
 }
 
 // Estado y campos que necesita ese agente. Lanza ErrorCliente con el motivo.

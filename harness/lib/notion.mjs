@@ -51,5 +51,6 @@ export function leePagina(page) {
     aprobadoEl: p['Aprobado el']?.date?.start || null,
     inicio: p['Inició']?.date?.start || null,
     campanaLigada: (p['Campaña ligada']?.relation || []).map(r => r.id),
+    sensible: p['Sensible']?.checkbox === true,  // precios, promesas, temas médicos, legales o financieros
   };
 }

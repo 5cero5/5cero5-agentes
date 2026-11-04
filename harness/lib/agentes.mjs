@@ -135,6 +135,7 @@ export const AGENTES = {
     reglas: [
       'Solo propones: cada fila que escribes en Aprobaciones va en Estado "Propuesta". Nunca llenas Aprobó ni Aprobado el, no editas la campaña y no tocas otras filas.',
       'Una fila por pieza, exactamente las Piezas de la campaña. Si lleva landing, la landing cuenta como una pieza.',
+      'Marca la casilla Sensible de la fila si la pieza lleva precios, descuentos, promociones o promesas (resultados, garantías, plazos), o toca temas médicos, legales o financieros. Ante la duda, márcala.',
       'Agente por formato: Correo → CRM; Landing → Landing; Post 4:5, Post 1:1 e Historia 9:16 → Creativo. Si ese agente no está en la lista de disponibles, propón la fila igual y empieza su Brief con "SIN AGENTE TODAVÍA:".',
       'Cada Brief debe bastar para que el agente de esa pieza la haga sin preguntar: objetivo de la pieza, mensaje principal, texto base, CTA y destino, y lo que no se puede decir. Respeta /workspace/marca/reglas.md.',
     ],
