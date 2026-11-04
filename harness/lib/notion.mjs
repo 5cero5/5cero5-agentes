@@ -52,5 +52,11 @@ export function leePagina(page) {
     inicio: p['Inició']?.date?.start || null,
     campanaLigada: (p['Campaña ligada']?.relation || []).map(r => r.id),
     sensible: p['Sensible']?.checkbox === true,  // precios, promesas, temas médicos, legales o financieros
+    // Rondas del Creativo (lib/rondas.mjs): la pieza original, lo que se pide cambiar y qué pasa con la foto.
+    rondaDe: (p['Ronda de']?.relation || []).map(r => r.id),
+    cambiosPedidos: t('Cambios pedidos'),
+    ronda: p['Ronda']?.number ?? null,
+    fotoRonda: p['Foto en la ronda']?.select?.name || null,
+    resultado: t('Resultado del agente'),
   };
 }

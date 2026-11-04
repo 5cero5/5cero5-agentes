@@ -31,7 +31,10 @@ export function parametrosSesion(fila, c) {
     title: `${fila.agente} · ${fila.trabajo}`.slice(0, 120),
     budget: { type: 'limit', max_list_cost: { amount: String(centavos), currency: 'USD' } },
     metadata: { notion_page_id: fila.id, agente: fila.agente, intento: String(fila.intentos + 1),
-      ...(c.cliente ? { cliente_slug: c.cliente.slug, cliente_id: c.cliente.id } : {}) },
+      ...(c.cliente ? { cliente_slug: c.cliente.slug, cliente_id: c.cliente.id } : {}),
+      // Ronda del Creativo: con esto el cierre comprueba mismo PR, commit nuevo y, con Igual, la misma foto.
+      ...(fila.ronda ? { ronda_pr: String(fila.ronda.pr), ronda_head: fila.ronda.head, ronda_foto: fila.ronda.foto,
+        ronda_pieza: `${fila.ronda.campana}/${fila.ronda.pieza}` } : {}) },
     vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
   };
   if (resources.length) p.resources = resources;
