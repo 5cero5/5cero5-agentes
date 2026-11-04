@@ -365,6 +365,18 @@ test('huella CMO: sin NOTION_BOT_CMO toma el bot de las filas reportadas; con do
     { filas: [{ id: 'a' }, { id: 'b' }] }, sinBot);
   assert.equal(r.ok, false); assert.match(r.informe, /no se pudo identificar al bot.*NOTION_BOT_CMO/);
 });
+test('huella CMO: si el harness escribe con la misma integración que el CMO, falla cerrado y lo dice (sesn_01CNeFhC…)', async () => {
+  // Caso real: el bot aparece como autor de la fila de desglose (la crea el harness) y de la campaña en En producción.
+  const desglose = hecha({ id: 'cmo1' }), campana = hecha({ id: 'k1-uuid' }, { por: 'persona', creada: '2026-10-01T10:00:00.000Z', editadaPor: 'bot', editada: '2026-11-03T22:01:00.000Z' });
+  const r = await huella({ cmo1: desglose, a: hecha(filaPieza('a')), 'k1-uuid': campana }, { [DS.Aprobaciones]: ['cmo1', 'a'], [DS.Campanas]: ['k1-uuid'] });
+  assert.equal(r.ok, false); assert.match(r.informe, /misma integración de Notion.*NOTION_TOKEN/);
+  assert.doesNotMatch(r.informe, /el bot creó cmo1/);
+  // Con integraciones separadas, la fila del CMO y la campaña son del harness y no cuentan.
+  const ok = await huella({ cmo1: hecha({ id: 'cmo1' }, { por: 'harness' }), a: hecha(filaPieza('a')),
+    'k1-uuid': hecha({ id: 'k1-uuid' }, { por: 'persona', creada: '2026-10-01T10:00:00.000Z', editadaPor: 'harness', editada: '2026-11-03T22:01:00.000Z' }) },
+    { [DS.Aprobaciones]: ['cmo1', 'a'], [DS.Campanas]: ['k1-uuid'] });
+  assert.equal(ok.ok, true, ok.informe);
+});
 test('cierre del CMO: si una fila reportada no existe, Verificador Rechazada', async () => {
   const n = notionPiezas({ cmo1: paginaCMO(), a: filaPieza('a') });
   const cl = mockClient({ msg: '{"campana_id":"k1-uuid","filas":[{"id":"a"},{"id":"fantasma"}]}' });
