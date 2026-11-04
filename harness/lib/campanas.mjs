@@ -153,7 +153,8 @@ export async function compruebaFilasCMO(notion, filaCMO, respuesta) {
 // reportó. Pasa si lo único que tocó son las filas que reportó, creadas en esta sesión; cualquier otra página creada o
 // editada por el bot (de este u otro cliente) deja la fila Rechazada con el detalle. Notion redondea created_time y
 // last_edited_time al minuto: se compara contra el inicio redondeado. Límite: si una persona editó la página después del
-// bot, last_edited_by ya no es el bot y esa edición no se ve aquí.
+// bot, last_edited_by ya no es el bot y esa edición no se ve aquí. Requiere que el harness (NOTION_TOKEN) use otra
+// integración que el CMO: si la fila del CMO la creó el bot, falla cerrado con ese motivo.
 const alMinuto = iso => { const t = Date.parse(iso); return Number.isNaN(t) ? NaN : Math.floor(t / 60000) * 60000; };
 export async function compruebaHuellaCMO(notion, c, filaCMO, respuesta) {
   const inicio = alMinuto(filaCMO.inicio);
@@ -167,8 +168,8 @@ export async function compruebaHuellaCMO(notion, c, filaCMO, respuesta) {
     bot = [...autores][0];
   }
   const desde = { timestamp: 'last_edited_time', last_edited_time: { on_or_after: new Date(inicio).toISOString() } };
-  const problemas = [], creadas = new Set();
-  let tocadas = 0;
+  const problemas = [], creadas = new Set(), filaPropia = sinGuiones(filaCMO.id);
+  let tocadas = 0, mismaIntegracion = false;
   for (const [nombre, ds, esAprobaciones] of [['Aprobaciones', c.notionDataSource, true], ['Campañas', c.notionCampanas, false]]) {
     if (!ds) { problemas.push(`${nombre}: sin data source configurado, no se revisó`); continue; }
     let r;
@@ -180,12 +181,15 @@ export async function compruebaHuellaCMO(notion, c, filaCMO, respuesta) {
       if (!creo && !edito) continue;
       tocadas++;
       const id = sinGuiones(p.id);
+      // La fila del CMO la crea el harness al despachar: si su autor es el bot, harness y agente comparten integración.
+      if (esAprobaciones && id === filaPropia) { if (p.created_by?.id === bot) mismaIntegracion = true; continue; }
       if (creo) creadas.add(id);
       if (esAprobaciones && creo && reportadas.has(id)) continue;
       problemas.push(creo ? `${nombre}: el bot creó ${p.id} y no la reportó` : `${nombre}: el bot editó ${p.id}, que ya existía`);
     }
   }
   for (const id of reportadas) if (!creadas.has(id)) problemas.push(`reportó ${id} pero no la creó el bot en esta sesión`);
+  if (mismaIntegracion) problemas.unshift('el harness y el CMO escriben con la misma integración de Notion (la fila del CMO la creó el bot), así que no se distingue lo que hizo el harness (fila del CMO, campaña En producción) de lo que hizo el agente. Dale al harness su propia integración en NOTION_TOKEN y deja NOTION_BOT_CMO solo para la del CMO');
   const informe = `Huella del bot: ${tocadas} página(s) creadas o editadas en la sesión.` +
     (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ' Solo las filas reportadas.');
   return { ok: problemas.length === 0, informe };
