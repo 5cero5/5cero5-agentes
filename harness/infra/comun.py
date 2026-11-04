@@ -21,10 +21,10 @@ from pathlib import Path
 AQUI = Path(__file__).resolve().parent
 AGENTES = AQUI.parent / "agentes"
 
-# Red del entorno: agregar aquí el host de cada agente nuevo.
+# Red del entorno: agregar aquí el host de cada agente nuevo. firebasestorage.googleapis.com (previewUrl de las plantillas de
+# HighLevel) ya no está: el contenido de la plantilla lo baja y compara el harness en Netlify (lib/highlevel.mjs).
 HOSTS = [
     "services.leadconnectorhq.com",   # CRM: API de HighLevel
-    "firebasestorage.googleapis.com", # CRM: HTML guardado de las plantillas (correo.py comprobar)
     "api.notion.com",                 # CMO: leer campañas y proponer filas
     "api.github.com",                 # Landing y Creativo: PRs en 5cero5-landings y 5cero5-piezas (nunca fusionan)
     "graph.facebook.com",             # Pauta: Marketing API (crea en pausa; el token solo va en su vault)

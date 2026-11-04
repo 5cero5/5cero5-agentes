@@ -118,7 +118,8 @@ export const AGENTES = {
     contexto: c => (c.hl?.location
       ? [`Location ID de HighLevel (subcuenta del cliente): ${c.hl.location}. "co" en tu prompt es exactamente: ${comandoCorreo(c.hl.location, Boolean(c.cliente))}`] : []),
     reglas: [
-      'Usa /workspace/agentes/poc-conectores/correo.py con MARCA_REPO=/workspace/marca: armar, verificar, subir y comprobar.',
+      'Usa /workspace/agentes/poc-conectores/correo.py con MARCA_REPO=/workspace/marca: armar, verificar, subir y comprobar (comprobar solo confirma que la plantilla existe; el contenido lo compara el harness al cerrar).',
+      'Botón, Destino y las frases Exacto del brief van tal cual en el correo (al Destino solo se le pueden agregar UTM).',
       'Solo trabajas plantillas de correo. El nombre de cada plantilla empieza con "[agente] ".',
       'No envías correos, no activas workflows y no tocas contactos ni oportunidades.',
     ],

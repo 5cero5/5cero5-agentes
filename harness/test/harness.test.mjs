@@ -981,3 +981,70 @@ test('cierre con foto del cliente: el blob del PR tiene que ser el de fotos/ del
   const otra = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', fetchImpl: g({ shaMarca: 'otro' }).fetch });
   assert.equal(otra.ok, false); assert.match(otra.informe, /no es fotos\/mostrador\.jpg del repo de marca/);
 });
+
+// ---- CRM: el harness baja el previewUrl de la plantilla y lo compara con el brief (fuera de la sesión) ----
+import { compruebaPlantilla, bajaPreview } from '../lib/highlevel.mjs';
+const cHL = { cliente: { slug: 'cli' }, hl: { location: 'loc1', token: 'pit-1', api: 'https://services.leadconnectorhq.com', hostsPreview: [] },
+  repos: { marca: { url: 'https://github.com/5cero5/5cero5-marca', token: 'tok' } } };
+const HTML_OK = '<html><head><style>p{}</style></head><body><p>Hola {{contact.first_name}}:</p><p>Recibimos tus datos &amp; falta tu entrevista.</p>' +
+  '<a class="boton" href="https://entrevista.ejemplo.mx/e/?utm_source=email&amp;cid={{contact.id}}">Empieza la entrevista</a></body></html>';
+const BRIEF_HL = 'Correo W1.\nBotón: Empieza la entrevista\nDestino: https://entrevista.ejemplo.mx/e/?utm_source=email\nExacto: "Recibimos tus datos & falta tu entrevista."';
+function hlFalso({ html = HTML_OK, preview = 'https://firebasestorage.googleapis.com/v0/b/hl/o/t1.html', largo = null, copia = null } = {}) {
+  const st = { bajadas: [] };
+  st.fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    if (u.host === 'services.leadconnectorhq.com') return { ok: true, status: 200, text: async () => JSON.stringify({ builders: [{ id: 't1', name: '[agente] W1', previewUrl: preview }] }) };
+    if (u.host === 'api.github.com' && copia) return { ok: true, status: 200, text: async () => JSON.stringify({ content: Buffer.from(JSON.stringify(copia)).toString('base64') }) };
+    st.bajadas.push(url);
+    return { ok: true, status: 200, headers: new Map(largo ? [['content-length', String(largo)]] : []), text: async () => html };
+  };
+  return st;
+}
+const resHL = { plantilla_id: 't1', nombre: '[agente] W1', html_sha1: 'x' };
+test('CRM: plantilla correcta pasa (botón, destino con sus UTM y frase exacta, con entidades HTML)', async () => {
+  const g = hlFalso();
+  const r = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: g.fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /Contenido contra el brief: botón, destino y 1 frase/); assert.equal(g.bajadas.length, 1);
+});
+test('CRM: la copia del repo de marca (correos/<x>.json) también sirve de referencia', async () => {
+  const copia = { cta_texto: 'Empieza la entrevista', cta_url: 'https://entrevista.ejemplo.mx/e/?utm_source=email', cuerpo: ['Hola {{contact.first_name}}:'] };
+  // Sin ruteo (sin cliente) el repo de marca se lee con GH_REPO_READ_TOKEN; con cliente, con un token de la GitHub App.
+  const r = await compruebaPlantilla({ c: { ...cHL, cliente: undefined }, respuesta: resHL, brief: 'Usa /workspace/marca/correos/w1-entrevista.json', fetchImpl: hlFalso({ copia }).fetch });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /5cero5\/5cero5-marca\/correos\/w1-entrevista\.json/);
+});
+test('CRM: falta el botón, cambia el destino o falta una frase exacta → Rechazada', async () => {
+  const casos = [
+    [HTML_OK.replace('Empieza la entrevista', 'Agenda'), /falta el botón "Empieza la entrevista"/],
+    [HTML_OK.replace('entrevista.ejemplo.mx', 'otro.ejemplo.mx'), /el botón lleva a https:\/\/otro\.ejemplo\.mx/],
+    [HTML_OK.replace('utm_source=email', 'utm_source=ads'), /no a https:\/\/entrevista/],
+    [HTML_OK.replace('Recibimos tus datos', 'Ya tenemos tus datos'), /faltan frases exactas: "Recibimos tus datos & falta/],
+  ];
+  for (const [html, re] of casos) {
+    const r = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: hlFalso({ html }).fetch });
+    assert.equal(r.ok, false, `${re}`); assert.match(r.informe, re);
+  }
+  const sinMarcas = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: 'Correo de la promo, sin marcas.', fetchImpl: hlFalso().fetch });
+  assert.equal(sinMarcas.ok, false); assert.match(sinMarcas.informe, /no marca Botón ni Destino/);
+});
+test('CRM: previewUrl con host fuera de la lista o sin https → Rechazada sin bajarlo', async () => {
+  for (const [preview, re] of [['https://atacante.ejemplo.com/x.html', /fuera de la lista \(firebasestorage\.googleapis\.com\); no se bajó/],
+    ['http://firebasestorage.googleapis.com/v0/b/hl/o/t1.html', /no es https/]]) {
+    const g = hlFalso({ preview });
+    const r = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: g.fetch });
+    assert.equal(r.ok, false); assert.match(r.informe, re); assert.equal(g.bajadas.length, 0);
+  }
+  const otra = await compruebaPlantilla({ c: { ...cHL, hl: { ...cHL.hl, hostsPreview: ['storage.ejemplo.mx'] } }, respuesta: resHL, brief: BRIEF_HL,
+    fetchImpl: hlFalso({ preview: 'https://storage.ejemplo.mx/t1.html' }).fetch });
+  assert.equal(otra.ok, true, otra.informe);
+});
+test('CRM: una descarga que excede el tope de tamaño o de tiempo → Rechazada', async () => {
+  const grande = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: hlFalso({ largo: 50 * 1024 * 1024 }).fetch });
+  assert.equal(grande.ok, false); assert.match(grande.informe, /pesa más de 2097152 bytes/);
+  const sinLargo = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: hlFalso({ html: HTML_OK + 'x'.repeat(2 * 1024 * 1024) }).fetch });
+  assert.equal(sinLargo.ok, false); assert.match(sinLargo.informe, /pasó de 2097152 bytes/);
+  // Por flujo: corta al pasar el tope aunque no diga su tamaño.
+  const flujo = async () => ({ ok: true, status: 200, headers: new Map(), body: { getReader: () => { let n = 0; return { read: async () => (n++ < 40 ? { done: false, value: new Uint8Array(100000) } : { done: true }) }; } } });
+  assert.match((await bajaPreview('https://firebasestorage.googleapis.com/x', { fetchImpl: flujo })).error, /se cortó la descarga/);
+  const lento = (url, init) => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(Object.assign(new Error('abortado'), { name: 'AbortError' }))));
+  assert.match((await bajaPreview('https://firebasestorage.googleapis.com/x', { fetchImpl: lento, maxMs: 20 })).error, /no respondió en 20 ms/);
+});
