@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cfg, eventoDeCierre } from '../lib/config.mjs';
-import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas, compruebaFilasCMO } from '../lib/campanas.mjs';
+import { leeCampana, esCampanaDespachable, briefDeCampana, despachaCampanas, compruebaFilasCMO, compruebaHuellaCMO } from '../lib/campanas.mjs';
 import { esDespachable, despacha } from '../lib/despacho.mjs';
 import { parametrosSesion } from '../lib/sessions.mjs';
 import { cierraSesion } from '../lib/cierre.mjs';
@@ -266,11 +266,23 @@ const filaPieza = (id, o = {}) => ({ id, properties: {
   Estado: { select: { name: o.estado ?? 'Propuesta' } }, Agente: { select: { name: o.agente ?? 'CRM' } },
   Aprobó: { people: (o.aprobo ?? []).map(id => ({ id })) },
   'Campaña ligada': { relation: (o.campanas ?? ['k1-uuid']).map(id => ({ id })) } } });
-function notionPiezas(paginas) {
+function notionPiezas(paginas, bases = {}) {
   const log = [];
   return { log, get: async id => { if (!paginas[id]) throw new Error('404'); return paginas[id]; },
-    update: async (id, props) => { log.push([id, props]); if (paginas[id] && props.Estado) paginas[id].properties.Estado = { select: { name: props.Estado.select.name } }; } };
+    update: async (id, props) => { log.push([id, props]); if (paginas[id] && props.Estado) paginas[id].properties.Estado = { select: { name: props.Estado.select.name } }; },
+    // query por data source: solo entiende el filtro de last_edited_time on_or_after que usa la huella del bot
+    query: async (ds, filtro) => {
+      if (bases.falla) throw new Error('Notion 500');
+      const desde = Date.parse(filtro?.last_edited_time?.on_or_after || 0);
+      const res = (bases[ds] || []).map(id => paginas[id]).filter(p => Date.parse(p.last_edited_time) >= desde);
+      return { results: res, has_more: Boolean(bases.has_more) };
+    } };
 }
+// Autoría y fechas de una página (Notion redondea al minuto).
+const hecha = (p, { por = 'bot', creada = '2026-11-03T22:01:00.000Z', editadaPor = por, editada = creada } = {}) =>
+  ({ ...p, created_by: { id: por }, created_time: creada, last_edited_by: { id: editadaPor }, last_edited_time: editada });
+const INICIO = '2026-11-03T22:00:30.000Z';
+const DS = { Aprobaciones: '67d74148-a4a3-407a-80b5-596630168d4c', Campanas: '3a8ee225-0743-449d-8ff8-a5f01d0bb0be' };
 const filaCMO = { id: 'cmo1', campanaLigada: ['k1uuid'] };
 
 test('CMO: comprobación pasa si cada fila existe, está en Propuesta, sin Aprobó y ligada', async () => {
@@ -291,16 +303,67 @@ function paginaCMO() {
   return { id: 'cmo1', last_edited_by: { id: 'bot' }, properties: {
     Trabajo: { title: [{ plain_text: 'Desglose · Promo' }] }, Agente: { select: { name: 'CMO' } }, Estado: { select: { name: 'En curso' } },
     Brief: { rich_text: [{ plain_text: 'b' }] }, Sesión: { rich_text: [{ plain_text: 'sesn_1' }] }, Intentos: { number: 1 },
-    Aprobó: { people: [{ id: AL }] }, 'Campaña ligada': { relation: [{ id: 'k1-uuid' }] } } };
+    Aprobó: { people: [{ id: AL }] }, 'Campaña ligada': { relation: [{ id: 'k1-uuid' }] }, Inició: { date: { start: INICIO } } } };
 }
 test('cierre del CMO: comprueba las filas y marca el Verificador Aprobada', async () => {
-  const n = notionPiezas({ cmo1: paginaCMO(), a: filaPieza('a'), b: filaPieza('b') });
+  const n = notionPiezas({ cmo1: paginaCMO(), a: hecha(filaPieza('a')), b: hecha(filaPieza('b')) }, { [DS.Aprobaciones]: ['a', 'b'], [DS.Campanas]: [] });
   const cl = mockClient({ msg: '{"campana_id":"k1-uuid","filas":[{"id":"a","agente":"CRM","trabajo":"W"},{"id":"b","agente":"CRM","trabajo":"X"}],"sin_agente":0}' });
   cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'cmo1' } });
   assert.equal(await cierraSesion({ client: cl, notion: n, c: { ...cK, verificadorActivo: true }, sessionId: 'sesn_1' }), 'para_revisar');
   const props = n.log.at(-1)[1];
   assert.equal(props.Estado.select.name, 'Para revisar'); assert.equal(props.Verificador.select.name, 'Aprobada');
   assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Formato de la respuesta: OK\. Comprobación en Notion: 2\/2/);
+  assert.match(props['Informe del Verificador'].rich_text[0].text.content, /Huella del bot: 2 página\(s\).*Solo las filas reportadas/);
+});
+test('cierre del CMO: una fila de otro cliente que el bot creó sin reportar deja la fila Rechazada', async () => {
+  const otra = hecha(filaPieza('z', { campanas: ['campana-de-otro-cliente'] }));
+  const n = notionPiezas({ cmo1: paginaCMO(), a: hecha(filaPieza('a')), z: otra }, { [DS.Aprobaciones]: ['a', 'z'], [DS.Campanas]: [] });
+  const cl = mockClient({ msg: '{"campana_id":"k1-uuid","filas":[{"id":"a","agente":"CRM","trabajo":"W"}],"sin_agente":0}' });
+  cl.beta.sessions.retrieve = async () => ({ status: 'idle', metadata: { notion_page_id: 'cmo1' } });
+  await cierraSesion({ client: cl, notion: n, c: cK, sessionId: 'sesn_1' });
+  const props = n.log.at(-1)[1];
+  assert.equal(props.Verificador.select.name, 'Rechazada'); assert.match(props['Informe del Verificador'].rich_text[0].text.content, /el bot creó z y no la reportó/);
+});
+
+// ---- Huella del bot del CMO: todo lo que tocó en Aprobaciones y Campañas durante la sesión ----
+const cH = { notionDataSource: DS.Aprobaciones, notionCampanas: DS.Campanas, notionBotCMO: 'bot' };
+const filaH = { id: 'cmo1', campanaLigada: ['k1-uuid'], inicio: INICIO };
+const huella = (paginas, bases, resp = { filas: [{ id: 'a' }] }, c = cH, fila = filaH) => compruebaHuellaCMO(notionPiezas(paginas, bases), c, fila, resp);
+test('huella CMO: pasa si el bot solo creó las filas que reportó (y lo de otros no cuenta)', async () => {
+  const r = await huella({ a: hecha(filaPieza('a')), h: hecha(filaPieza('h'), { por: 'persona' }), k: hecha({ id: 'k' }, { por: 'harness' }) },
+    { [DS.Aprobaciones]: ['a', 'h'], [DS.Campanas]: ['k'] });
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /1 página\(s\).*Solo las filas reportadas/);
+});
+test('huella CMO: Notion redondea al minuto; una fila creada en el mismo minuto del inicio cuenta como de la sesión', async () => {
+  const r = await huella({ a: hecha(filaPieza('a'), { creada: '2026-11-03T22:00:00.000Z' }) }, { [DS.Aprobaciones]: ['a'], [DS.Campanas]: [] });
+  assert.equal(r.ok, true, r.informe);
+});
+test('huella CMO: falla si el bot creó una fila sin reportarla, editó una existente o editó una campaña', async () => {
+  const casos = [
+    [{ a: hecha(filaPieza('a')), z: hecha(filaPieza('z', { campanas: ['otro'] })) }, { [DS.Aprobaciones]: ['a', 'z'], [DS.Campanas]: [] }, /Aprobaciones: el bot creó z y no la reportó/],
+    [{ a: hecha(filaPieza('a')), v: hecha(filaPieza('v'), { por: 'persona', creada: '2026-10-01T10:00:00.000Z', editadaPor: 'bot', editada: '2026-11-03T22:05:00.000Z' }) },
+      { [DS.Aprobaciones]: ['a', 'v'], [DS.Campanas]: [] }, /Aprobaciones: el bot editó v, que ya existía/],
+    [{ a: hecha(filaPieza('a')), k2: hecha({ id: 'k2' }, { por: 'persona', creada: '2026-10-01T10:00:00.000Z', editadaPor: 'bot', editada: '2026-11-03T22:05:00.000Z' }) },
+      { [DS.Aprobaciones]: ['a'], [DS.Campanas]: ['k2'] }, /Campañas: el bot editó k2, que ya existía/],
+  ];
+  for (const [paginas, bases, re] of casos) { const r = await huella(paginas, bases); assert.equal(r.ok, false, `${re}`); assert.match(r.informe, re); }
+});
+test('huella CMO: falla si reporta una fila que no creó en esta sesión', async () => {
+  const r = await huella({ a: hecha(filaPieza('a'), { creada: '2026-10-01T10:00:00.000Z', editada: '2026-10-01T10:00:00.000Z' }) }, { [DS.Aprobaciones]: ['a'], [DS.Campanas]: [] });
+  assert.equal(r.ok, false); assert.match(r.informe, /reportó a pero no la creó el bot en esta sesión/);
+});
+test('huella CMO: falla cerrado sin Inició, con más de 100 páginas o si Notion no responde', async () => {
+  const p = { a: hecha(filaPieza('a')) }, b = { [DS.Aprobaciones]: ['a'], [DS.Campanas]: [] };
+  assert.match((await huella(p, b, undefined, cH, { ...filaH, inicio: null })).informe, /no tiene Inició/);
+  assert.match((await huella(p, { ...b, has_more: true })).informe, /más de 100 páginas/);
+  const r = await huella(p, { ...b, falla: true }); assert.equal(r.ok, false); assert.match(r.informe, /no se pudo consultar/);
+});
+test('huella CMO: sin NOTION_BOT_CMO toma el bot de las filas reportadas; con dos autores no adivina', async () => {
+  const sinBot = { ...cH, notionBotCMO: '' };
+  assert.equal((await huella({ a: hecha(filaPieza('a')) }, { [DS.Aprobaciones]: ['a'], [DS.Campanas]: [] }, { filas: [{ id: 'a' }] }, sinBot)).ok, true);
+  const r = await huella({ a: hecha(filaPieza('a')), b: hecha(filaPieza('b'), { por: 'otro-bot' }) }, { [DS.Aprobaciones]: ['a', 'b'], [DS.Campanas]: [] },
+    { filas: [{ id: 'a' }, { id: 'b' }] }, sinBot);
+  assert.equal(r.ok, false); assert.match(r.informe, /no se pudo identificar al bot.*NOTION_BOT_CMO/);
 });
 test('cierre del CMO: si una fila reportada no existe, Verificador Rechazada', async () => {
   const n = notionPiezas({ cmo1: paginaCMO(), a: filaPieza('a') });

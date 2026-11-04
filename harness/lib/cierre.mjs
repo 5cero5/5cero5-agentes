@@ -2,7 +2,7 @@
 import { P, leePagina } from './notion.mjs';
 import { ultimoMensajeAgente } from './sessions.mjs';
 import { agenteDe, revisaRespuesta, ultimoJson } from './agentes.mjs';
-import { compruebaFilasCMO } from './campanas.mjs';
+import { compruebaFilasCMO, compruebaHuellaCMO } from './campanas.mjs';
 import { compruebaPR } from './github.mjs';
 import { compruebaCampana } from './meta.mjs';
 import { compruebaPlantilla } from './highlevel.mjs';
@@ -67,8 +67,11 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
   const formato = revisaRespuesta(agenteDe(fila.agente), resultado);
   if (fila.agente === 'CMO') {
     // El trabajo del CMO son filas en Notion: el harness mismo las comprueba (regla 8).
-    const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
+    let rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
       : await compruebaFilasCMO(notion, fila, ultimoJson(resultado));
+    // Aunque la respuesta venga mal, se revisa todo lo que el bot tocó en Notion durante la sesión (aislamiento entre clientes).
+    const huella = await compruebaHuellaCMO(notion, cc, fila, formato ? {} : ultimoJson(resultado));
+    rev = { ok: rev.ok && huella.ok, informe: `${rev.informe} ${huella.informe}` };
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);

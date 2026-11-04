@@ -148,6 +148,49 @@ export async function compruebaFilasCMO(notion, filaCMO, respuesta) {
   return { ok: filas.length > 0 && problemas.length === 0, informe };
 }
 
+// Huella del bot (aislamiento entre clientes): el token de Notion del CMO ve las bases de todos los clientes, así que al
+// cerrar se revisa TODO lo que el bot creó o editó en Aprobaciones y Campañas desde que empezó la sesión, no solo lo que
+// reportó. Pasa si lo único que tocó son las filas que reportó, creadas en esta sesión; cualquier otra página creada o
+// editada por el bot (de este u otro cliente) deja la fila Rechazada con el detalle. Notion redondea created_time y
+// last_edited_time al minuto: se compara contra el inicio redondeado. Límite: si una persona editó la página después del
+// bot, last_edited_by ya no es el bot y esa edición no se ve aquí.
+const alMinuto = iso => { const t = Date.parse(iso); return Number.isNaN(t) ? NaN : Math.floor(t / 60000) * 60000; };
+export async function compruebaHuellaCMO(notion, c, filaCMO, respuesta) {
+  const inicio = alMinuto(filaCMO.inicio);
+  if (Number.isNaN(inicio)) return { ok: false, informe: 'Huella del bot: la fila del CMO no tiene Inició; no se pudo revisar qué tocó el bot.' };
+  const reportadas = new Set((Array.isArray(respuesta?.filas) ? respuesta.filas : []).map(f => sinGuiones(f.id)));
+  let bot = c.notionBotCMO || null;
+  if (!bot) {  // sin NOTION_BOT_CMO: el autor de las filas reportadas (tiene que ser uno solo)
+    const autores = new Set();
+    for (const id of reportadas) { try { const p = await notion.get(id); if (p.created_by?.id) autores.add(p.created_by.id); } catch { /* la revisa compruebaFilasCMO */ } }
+    if (autores.size !== 1) return { ok: false, informe: `Huella del bot: no se pudo identificar al bot del CMO (${autores.size} autores en las filas reportadas). Configura NOTION_BOT_CMO.` };
+    bot = [...autores][0];
+  }
+  const desde = { timestamp: 'last_edited_time', last_edited_time: { on_or_after: new Date(inicio).toISOString() } };
+  const problemas = [], creadas = new Set();
+  let tocadas = 0;
+  for (const [nombre, ds, esAprobaciones] of [['Aprobaciones', c.notionDataSource, true], ['Campañas', c.notionCampanas, false]]) {
+    if (!ds) { problemas.push(`${nombre}: sin data source configurado, no se revisó`); continue; }
+    let r;
+    try { r = await notion.query(ds, desde, 100); } catch (e) { problemas.push(`${nombre}: no se pudo consultar (${String(e.message).slice(0, 80)})`); continue; }
+    if (r.has_more) problemas.push(`${nombre}: más de 100 páginas editadas desde el inicio; revisar a mano`);
+    for (const p of r.results || []) {
+      const creo = p.created_by?.id === bot && alMinuto(p.created_time) >= inicio;
+      const edito = p.last_edited_by?.id === bot;
+      if (!creo && !edito) continue;
+      tocadas++;
+      const id = sinGuiones(p.id);
+      if (creo) creadas.add(id);
+      if (esAprobaciones && creo && reportadas.has(id)) continue;
+      problemas.push(creo ? `${nombre}: el bot creó ${p.id} y no la reportó` : `${nombre}: el bot editó ${p.id}, que ya existía`);
+    }
+  }
+  for (const id of reportadas) if (!creadas.has(id)) problemas.push(`reportó ${id} pero no la creó el bot en esta sesión`);
+  const informe = `Huella del bot: ${tocadas} página(s) creadas o editadas en la sesión.` +
+    (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ' Solo las filas reportadas.');
+  return { ok: problemas.length === 0, informe };
+}
+
 // Una fila de Pauta ligada a una campaña espera a sus piezas: no se despacha mientras alguna fila del Creativo de esa
 // campaña no esté en Listo (Rechazado no cuenta). Sin campaña ligada (fila hecha a mano), no hay nada que esperar.
 export async function piezasPendientes(notion, c, fila) {
