@@ -30,6 +30,7 @@ HOSTS = [
     "graph.facebook.com",             # Pauta: Marketing API (crea en pausa; el token solo va en su vault)
     "api.higgsfield.ai",              # Creativo: fotos con Higgsfield (solo si el brief las pide; llave solo en su vault)
     "d3u0tzju9qaucj.cloudfront.net",  # Creativo: de aquí se bajan las imágenes de Higgsfield, sin la llave (visto el 3 nov 2026)
+    "fnf-api-input-prod-20250414194641741400000002.s3.amazonaws.com",  # Creativo: URL firmada para subir una imagen a Higgsfield (Editar, referencia:), sin la llave (visto el 4 nov 2026)
     "cdn.playwright.dev",             # Landing y Creativo: navegador para render y Verificador (playwright install chromium)
     "playwright.download.prss.microsoft.com",
     "playwright.azureedge.net",
