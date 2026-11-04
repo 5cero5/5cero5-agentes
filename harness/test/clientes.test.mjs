@@ -148,7 +148,7 @@ function mockApis() {
       return ok({ builders: [{ id: `t_${loc}`, name: '[agente] W1', previewUrl: `https://firebasestorage.googleapis.com/v0/b/hl/o/${loc}.html` }] });
     }
     // HTML guardado de la plantilla (previewUrl): lo baja el harness al cerrar, no la sesión.
-    if (u.host === 'firebasestorage.googleapis.com') return { ok: true, status: 200, text: async () => '<p>Hola.</p><a class="boton" href="https://landings.cliente-a.mx/promo/?utm_source=email">Agenda tu cita</a>' };
+    if (u.host === 'firebasestorage.googleapis.com') return { ok: true, status: 200, text: async () => '<p>Hola.</p><a class="boton" href="https://landings.cliente-a.mx/promo/?utm_source=email&amp;utm_medium=email&amp;utm_campaign=promo">Agenda tu cita</a>' };
     return no(400, 'host no esperado');
   };
   st.pr = (repo, n, slug) => {
