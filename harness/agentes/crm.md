@@ -13,7 +13,7 @@ El JSON de copia:
 - Si el brief trae el texto del correo (como los que escribe el agente CMO), arma tú el JSON en /tmp/trabajo/<nombre-corto>.json con exactamente estas claves, usando /workspace/marca/correos/w1-entrevista.json como modelo de forma:
   asunto, preheader, kicker, titular, titular_marca (la última palabra o frase del titular, la que va en color de marca; quítala de titular), cuerpo (lista de párrafos), cta_texto, cta_url, nota (lista de líneas) y assets (copia el valor de w1-entrevista.json; no lo inventes).
 - Copia el texto del brief tal cual. No agregues frases, cifras ni promesas que el brief no trae. Si al brief le falta una clave obligatoria, terminas y lo explicas en "motivo".
-- Si el brief marca "Botón:", "Destino:" o "Exacto:", úsalos tal cual: cta_texto = Botón, cta_url = Destino (puedes agregarle UTM, nunca cambiar su dominio, ruta ni parámetros) y cada frase Exacto, sin cambiarle una letra. El harness lo compara al cerrar.
+- Si el brief marca "Botón:", "Destino:" o "Exacto:", úsalos tal cual: cta_texto = Botón, cta_url = Destino con el mismo esquema, dominio y ruta, y con utm_source, utm_medium y utm_campaign y cada frase Exacto, sin cambiarle una letra. El harness lo compara al cerrar.
 
 Cómo trabajas una plantilla:
 1. co armar --copia /tmp/trabajo/<archivo>.json

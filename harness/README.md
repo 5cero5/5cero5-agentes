@@ -84,7 +84,7 @@ contra lo suyo; una sesión de otro cliente o con otro vault sale Rechazada. Sec
 **Contenido de la plantilla de correo (CRM, `lib/highlevel.mjs`):** lo compara el harness al cerrar, no la sesión. Con `HL_TOKEN_<SLUG>` busca la
 plantilla, toma su `previewUrl` y lo baja solo si es https y su host está en la lista cerrada (`firebasestorage.googleapis.com`;
 `HL_PREVIEW_HOSTS`, separada por coma, la reemplaza), sin seguir redirecciones, con tope de 2 MB y 10 s. Lo compara contra el brief
-aprobado: las líneas `Botón:`, `Destino:` (el href del botón: mismo origen y ruta y los mismos parámetros; puede llevar UTM de más) y cada
+aprobado: las líneas `Botón:`, `Destino:` (el href del botón: mismo esquema, dominio y ruta; la query no se compara, pero tiene que traer utm_source, utm_medium y utm_campaign, la convención del Verificador de correos) y cada
 `Exacto: "…"`; si el brief nombra `correos/<x>.json` del repo de marca, salen de ahí (cta_texto, cta_url y los párrafos de cuerpo). Sin
 Botón o Destino, o si algo no coincide: Verificador = Rechazada con el detalle. En la sesión, `correo.py comprobar` solo confirma que la
 plantilla existe por nombre en la subcuenta; por eso `firebasestorage.googleapis.com` ya no está en la red del entorno. Solo corre con
@@ -106,7 +106,7 @@ plantilla existe por nombre en la subcuenta; por eso `firebasestorage.googleapis
 Por cliente: cada script acepta `--cliente <slug>` (por defecto `5cero5`). Crea el vault `<slug> · <Agente>` con metadata `{cliente: <slug>, rol: <agente>}` (lo que exige el ruteo) y sus credenciales, guarda los ids en `estado-<slug>-<agente>.json` e imprime lo que va en la ficha del cliente (Vault, Credencial GitHub, ids de Meta). El agente es común: con otro cliente no se crea ni se actualiza (`--actualizar-agente` solo con `5cero5`). Para Pauta, `META_TOKEN` es el del usuario del sistema de ese cliente y debe ver una sola cuenta publicitaria. Prueba sin red: `python3 infra/test_infra.py`.
 
 ## Pruebas
-`npm ci && npm test` (127 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
+`npm ci && npm test` (128 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

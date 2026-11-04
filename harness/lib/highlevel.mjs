@@ -38,13 +38,23 @@ export async function esperadoDelBrief({ brief, c, fetchImpl = fetch }) {
   return { fuente: 'el brief', boton: normal(sinComillas(linea('Bot[oó]n'))), destino: sinComillas(linea('Destino')), exactas };
 }
 
-// El href del botón cumple el destino del brief: mismo origen y ruta, y todos los parámetros del destino con el mismo valor
-// (el correo puede llevar además sus UTM).
-function cumpleDestino(href, destino) {
+// UTM que exige la convención de correos (verificar_correo.py del repo de marca: el botón lleva una llamada con UTM).
+export const UTM_OBLIGATORIOS = ['utm_source', 'utm_medium', 'utm_campaign'];
+
+// El href del botón contra el destino del brief: mismo esquema, dominio y ruta; la query no se compara (los UTM y otros
+// parámetros pueden variar). Aparte, el href tiene que traer los UTM obligatorios con valor. Devuelve los problemas.
+export function revisaDestino(href, destino) {
   let h, d;
-  try { h = new URL(desescapa(href)); d = new URL(destino); } catch { return false; }
-  if (h.origin !== d.origin || h.pathname.replace(/\/$/, '') !== d.pathname.replace(/\/$/, '')) return false;
-  return [...d.searchParams].every(([k, v]) => h.searchParams.get(k) === v);
+  try { h = new URL(desescapa(href)); } catch { return [`el botón no lleva una URL válida (${String(href).slice(0, 80)})`]; }
+  try { d = new URL(destino); } catch { return [`el Destino del brief no es una URL válida (${String(destino).slice(0, 80)})`]; }
+  const problemas = [];
+  const ruta = u => u.pathname.replace(/\/+$/, '') || '/';
+  if (h.protocol !== d.protocol || h.hostname !== d.hostname || ruta(h) !== ruta(d)) {
+    problemas.push(`el botón lleva a ${h.protocol}//${h.hostname}${h.pathname}, no a ${d.protocol}//${d.hostname}${d.pathname}`);
+  }
+  const faltan = UTM_OBLIGATORIOS.filter(k => !h.searchParams.get(k));
+  if (faltan.length) problemas.push(`al botón le faltan ${faltan.join(', ')}`);
+  return problemas;
 }
 
 // Baja el previewUrl con las validaciones previas. { html } o { error } (sin bajar si la URL no pasa).
@@ -117,10 +127,10 @@ export async function compruebaPlantilla({ c, respuesta, brief = '', fetchImpl =
         const anclas = [...bajado.html.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)].map(m => ({ href: m[1], texto: visible(m[2]) }));
         const boton = anclas.find(a => a.texto === esp.boton);
         if (!boton) problemas.push(`falta el botón "${esp.boton}"`);
-        else if (!cumpleDestino(boton.href, esp.destino)) problemas.push(`el botón lleva a ${desescapa(boton.href).slice(0, 120)}, no a ${esp.destino}`);
+        else problemas.push(...revisaDestino(boton.href, esp.destino));
         const faltan = esp.exactas.filter(f => !texto.includes(f));
         if (faltan.length) problemas.push(`faltan frases exactas: ${faltan.slice(0, 4).map(f => `"${f.slice(0, 80)}"`).join(', ')}`);
-        contenido = ` Contenido contra ${esp.fuente}: botón, destino y ${esp.exactas.length} frase(s) exacta(s).`;
+        contenido = ` Contenido contra ${esp.fuente}: botón, destino (esquema, dominio y ruta), UTM y ${esp.exactas.length} frase(s) exacta(s).`;
       }
     }
   }

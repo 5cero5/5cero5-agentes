@@ -1051,7 +1051,7 @@ import { compruebaPlantilla, bajaPreview } from '../lib/highlevel.mjs';
 const cHL = { cliente: { slug: 'cli' }, hl: { location: 'loc1', token: 'pit-1', api: 'https://services.leadconnectorhq.com', hostsPreview: [] },
   repos: { marca: { url: 'https://github.com/5cero5/5cero5-marca', token: 'tok' } } };
 const HTML_OK = '<html><head><style>p{}</style></head><body><p>Hola {{contact.first_name}}:</p><p>Recibimos tus datos &amp; falta tu entrevista.</p>' +
-  '<a class="boton" href="https://entrevista.ejemplo.mx/e/?utm_source=email&amp;cid={{contact.id}}">Empieza la entrevista</a></body></html>';
+  '<a class="boton" href="https://entrevista.ejemplo.mx/e/?utm_source=email&amp;utm_medium=email&amp;utm_campaign=2026-11_w1&amp;cid={{contact.id}}">Empieza la entrevista</a></body></html>';
 const BRIEF_HL = 'Correo W1.\nBotón: Empieza la entrevista\nDestino: https://entrevista.ejemplo.mx/e/?utm_source=email\nExacto: "Recibimos tus datos & falta tu entrevista."';
 function hlFalso({ html = HTML_OK, preview = 'https://firebasestorage.googleapis.com/v0/b/hl/o/t1.html', largo = null, copia = null } = {}) {
   const st = { bajadas: [] };
@@ -1068,7 +1068,7 @@ const resHL = { plantilla_id: 't1', nombre: '[agente] W1', html_sha1: 'x' };
 test('CRM: plantilla correcta pasa (botón, destino con sus UTM y frase exacta, con entidades HTML)', async () => {
   const g = hlFalso();
   const r = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL, fetchImpl: g.fetch });
-  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /Contenido contra el brief: botón, destino y 1 frase/); assert.equal(g.bajadas.length, 1);
+  assert.equal(r.ok, true, r.informe); assert.match(r.informe, /Contenido contra el brief: botón, destino \(esquema, dominio y ruta\), UTM y 1 frase/); assert.equal(g.bajadas.length, 1);
 });
 test('CRM: la copia del repo de marca (correos/<x>.json) también sirve de referencia', async () => {
   const copia = { cta_texto: 'Empieza la entrevista', cta_url: 'https://entrevista.ejemplo.mx/e/?utm_source=email', cuerpo: ['Hola {{contact.first_name}}:'] };
@@ -1076,11 +1076,21 @@ test('CRM: la copia del repo de marca (correos/<x>.json) también sirve de refer
   const r = await compruebaPlantilla({ c: { ...cHL, cliente: undefined }, respuesta: resHL, brief: 'Usa /workspace/marca/correos/w1-entrevista.json', fetchImpl: hlFalso({ copia }).fetch });
   assert.equal(r.ok, true, r.informe); assert.match(r.informe, /5cero5\/5cero5-marca\/correos\/w1-entrevista\.json/);
 });
-test('CRM: falta el botón, cambia el destino o falta una frase exacta → Rechazada', async () => {
+test('CRM: el destino se compara por esquema, dominio y ruta; la query no (otros UTM o parámetros pasan)', async () => {
+  for (const html of [HTML_OK.replace('utm_source=email', 'utm_source=newsletter').replace('cid=', 'x=1&amp;cid='),
+    HTML_OK.replace('/e/?', '/e?')]) {
+    const r = await compruebaPlantilla({ c: cHL, respuesta: resHL, brief: BRIEF_HL.replace('?utm_source=email', '?ref=brief'), fetchImpl: hlFalso({ html }).fetch });
+    assert.equal(r.ok, true, r.informe); assert.match(r.informe, /destino \(esquema, dominio y ruta\), UTM y 1 frase/);
+  }
+});
+test('CRM: falta el botón, cambia el destino, faltan UTM o falta una frase exacta → Rechazada', async () => {
   const casos = [
     [HTML_OK.replace('Empieza la entrevista', 'Agenda'), /falta el botón "Empieza la entrevista"/],
     [HTML_OK.replace('entrevista.ejemplo.mx', 'otro.ejemplo.mx'), /el botón lleva a https:\/\/otro\.ejemplo\.mx/],
-    [HTML_OK.replace('utm_source=email', 'utm_source=ads'), /no a https:\/\/entrevista/],
+    [HTML_OK.replace('/e/?', '/otra/?'), /lleva a https:\/\/entrevista\.ejemplo\.mx\/otra\/, no a https:\/\/entrevista\.ejemplo\.mx\/e\//],
+    [HTML_OK.replace('href="https:', 'href="http:'), /lleva a http:\/\/entrevista/],
+    [HTML_OK.replace('&amp;utm_campaign=2026-11_w1', ''), /al botón le faltan utm_campaign/],
+    [HTML_OK.replace('utm_source=email&amp;utm_medium=email&amp;', ''), /al botón le faltan utm_source, utm_medium/],
     [HTML_OK.replace('Recibimos tus datos', 'Ya tenemos tus datos'), /faltan frases exactas: "Recibimos tus datos & falta/],
   ];
   for (const [html, re] of casos) {
