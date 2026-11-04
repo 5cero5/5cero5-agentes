@@ -303,5 +303,9 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   const avisos = Array.isArray(inf.avisos) ? inf.avisos.length : 0;
   const deFoto = meta.foto_cliente ? ` con foto del cliente (${meta.foto_cliente.id})` : meta.foto ? ' con foto de Higgsfield' : '';
   const resumen = ` Pieza ${formato}${deFoto}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
-  return { problemas, resumen, meta };
+  // Retención: pr_pieza.py borra la petición en Higgsfield al bajar la foto; si no pudo, se avisa (no rechaza: se borra sola en 1 h).
+  const borrado = meta.higgsfield?.borrado;
+  const aviso = borrado && borrado.ok === false
+    ? ` Aviso: no se pudo borrar la petición ${meta.higgsfield.request_id} en Higgsfield (${String(borrado.error || '').slice(0, 80)}); se borra sola en 1 hora.` : '';
+  return { problemas, resumen: resumen + aviso, meta };
 }

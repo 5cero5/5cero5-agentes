@@ -21,6 +21,8 @@ Lo que se impone:
   - La copia la escribe la herramienta en los SLOT; el agente no edita el HTML a mano.
   - Foto: solo si la pieza se creó con --foto (el brief lo pide), una generación por pieza y dos por sesión como máximo
     (FOTOS_POR_SESION la puede bajar, nunca subir). Cada generación o edición que termina se cobra del saldo de Higgsfield.
+  - Retención en Higgsfield: cada generación o edición va con Hf-Expires-After: 3600 (el mínimo) y, bajada la imagen,
+    se borra con DELETE /requests/{id}. Si el borrado falla, la pieza sigue y queda en pieza.json e informe.json.
   - Fotos del cliente: solo las de fotos/fotos.json del repo de marca montado (el del cliente), autorizadas y con el uso
     que se pide ("directo" para --repo-id, "referencia_ia" para --referencia y además personas=false).
   - Ronda (revisar-pr): parte de la punta de la rama del PR, que tiene que estar abierto y sin fusionar; cambia solo las
@@ -60,6 +62,9 @@ HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "/higgsfield-ai/soul/v2/standard")
 # generar): pide image_urls (lista de URLs públicas), 0.040 USD por edición; no hay modelo con máscara en el catálogo.
 HF_EDICION = os.environ.get("HF_EDICION_ENDPOINT", "/alibaba/qwen-image-3/edit")
 FOTOS_RONDA = ("Igual", "Editar", "Nueva")
+# Retención en Higgsfield: cada generación o edición pide que sus datos se guarden lo mínimo que acepta la API (3600 s; menos
+# responde 422; docs.higgsfield.ai, encabezados, visto el 4 nov 2026) y, ya bajada la imagen, se borran con DELETE /requests/{id}.
+HF_RETENCION_S = "3600"
 FOTOS_MAX = 2  # tope duro: ninguna variable lo sube
 FOTOS_POR_SESION = max(0, min(FOTOS_MAX, int(os.environ.get("FOTOS_POR_SESION", "").strip() or FOTOS_MAX)
                                  if os.environ.get("FOTOS_POR_SESION", "").strip().isdigit() or not os.environ.get("FOTOS_POR_SESION", "").strip()
@@ -179,7 +184,7 @@ def cmd_nueva(a) -> None:
 
 
 # ------------------------------------------------------------------ foto (Higgsfield)
-def hf(method: str, url: str, body: dict | None = None) -> dict:
+def hf(method: str, url: str, body: dict | None = None, extra: dict | None = None) -> dict:
     key = os.environ.get("HIGGSFIELD_API_KEY", "").strip()
     if not key:
         die("Falta HIGGSFIELD_API_KEY.")
@@ -187,7 +192,7 @@ def hf(method: str, url: str, body: dict | None = None) -> dict:
         die(f"La API de Higgsfield pidió consultar otro host ({urlparse(url).netloc}): no se manda la llave ahí.")
     req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Authorization": f"Key {key}", "Accept": "application/json", "User-Agent": "5cero5-creativo",
-                                          **({"Content-Type": "application/json"} if body is not None else {})})
+                                          **({"Content-Type": "application/json"} if body is not None else {}), **(extra or {})})
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.loads(r.read() or b"{}")
@@ -281,10 +286,26 @@ def sube_a_higgsfield(datos: bytes, tipo: str) -> str:
     return publica
 
 
+def borra_en_higgsfield(rid: str) -> dict:
+    """DELETE /requests/{id}: borra en Higgsfield la entrada, la salida, el prompt y los parámetros de la petición. Si falla,
+    no tumba la pieza: el resultado queda en pieza.json → higgsfield.borrado (y de ahí en el informe del harness)."""
+    key = os.environ.get("HIGGSFIELD_API_KEY", "").strip()
+    req = urllib.request.Request(f"{HF_API}/requests/{rid}", method="DELETE",
+                                 headers={"Authorization": f"Key {key}", "Accept": "application/json", "User-Agent": "5cero5-creativo"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            estado = (json.loads(r.read() or b"{}") or {}).get("status")
+        return {"ok": True, "estado": estado or "deleted"}
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": f"HTTP {e.code}: {e.read()[:150].decode('utf-8', 'ignore')}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+
+
 def pide_a_higgsfield(d: Path, meta: dict, endpoint: str, body: dict, prompt: str, extra: dict) -> None:
     """Una solicitud (generar o editar), espera a que termine y deja la foto en fotos/. Se registra en pieza.json → higgsfield
     con el blob_sha del archivo (el harness lo compara con el PR). La anterior, si había, queda en fotos_anteriores."""
-    r = hf("POST", HF_API + endpoint, body)
+    r = hf("POST", HF_API + endpoint, body, {"Hf-Expires-After": HF_RETENCION_S})
     rid, status_url = r.get("request_id"), r.get("status_url")
     if not rid or not status_url:
         die(f"Higgsfield no regresó request_id y status_url: {json.dumps(r)[:200]}")
@@ -302,6 +323,9 @@ def pide_a_higgsfield(d: Path, meta: dict, endpoint: str, body: dict, prompt: st
     meta["higgsfield"]["estado"] = estado.get("status")
     escribe_json(d / "pieza.json", meta)
     if estado.get("status") != "completed":
+        if estado.get("status") in ("failed", "nsfw", "canceled"):  # terminada: no hay por qué dejar sus datos
+            meta["higgsfield"]["borrado"] = borra_en_higgsfield(rid)
+            escribe_json(d / "pieza.json", meta)
         die(f"La foto terminó en '{estado.get('status')}' (request {rid}). No se pide otra: termina y explícalo.")
     url = ((estado.get("images") or [{}])[0] or {}).get("url")
     prueba_local = HF_API.startswith("http://127.0.0.1")  # solo las pruebas sirven la imagen sin https
@@ -321,6 +345,11 @@ def pide_a_higgsfield(d: Path, meta: dict, endpoint: str, body: dict, prompt: st
                               blob_sha=blob_sha(datos))  # el harness lo compara con fotos/ del PR al cerrar
     meta.pop("foto_cliente", None)
     escribe_json(d / "pieza.json", meta)
+    # Ya bajada y con su blob_sha guardado: se borra en Higgsfield. Un fallo no tumba la pieza; queda registrado.
+    meta["higgsfield"]["borrado"] = borra_en_higgsfield(rid)
+    escribe_json(d / "pieza.json", meta)
+    if not meta["higgsfield"]["borrado"]["ok"]:
+        print(f"⚠ No se pudo borrar la petición {rid} en Higgsfield ({meta['higgsfield']['borrado']['error']}). Se borra sola en 1 hora.")
     print(f"✓ Foto de Higgsfield guardada ({destino.name}, {len(datos) // 1024} KB, request {rid}). Prompt en prompt.txt.")
 
 
@@ -500,6 +529,8 @@ def cmd_revisar(a) -> None:
     res["png_blob_sha"] = blob_sha(png)
     res["png_sha1"] = hashlib.sha1(png).hexdigest()
     res["formato_pedido"] = meta["formato"]
+    if meta.get("higgsfield"):
+        res["higgsfield_borrado"] = (meta["higgsfield"] or {}).get("borrado")
     escribe_json(d / "informe.json", res)
     if res.get("formato") != meta["formato"]:
         die(f"El PNG salió como {res.get('formato')}, no como {meta['formato']}.")
