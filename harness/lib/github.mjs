@@ -35,7 +35,7 @@ export function normalizaPem(pem) {
   return `-----BEGIN ${m[1]}-----\n${cuerpo.match(/.{1,64}/g).join('\n')}\n-----END ${m[1]}-----\n`;
 }
 
-async function gh(fetchImpl, method, path, token, body, tipo = 'Bearer') {
+export async function gh(fetchImpl, method, path, token, body, tipo = 'Bearer') {
   const r = await fetchImpl(API() + path, {
     method,
     headers: { Authorization: `${tipo} ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
@@ -102,6 +102,28 @@ export async function tokenLectura({ c, repo, fetchImpl = fetch }) {
   return (await tokenInstalacion({ appId: g.appId, pem: g.privateKey, installationId: g.installationId, repo, permisos: { contents: 'read' }, fetchImpl })).token;
 }
 
+// Repo de marca que se monta en la sesión (el del cliente con el ruteo; si no, GH_REPO_URL) y un token para leerlo.
+export async function marcaParaLeer({ c, fetchImpl = fetch }) {
+  const m = c.repos?.marca || {};
+  const repo = m.repo || String(m.url || '').replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/, '').replace(/\/$/, '');
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('No hay repo de marca configurado');
+  const token = m.dinamico || c.cliente ? await tokenLectura({ c, repo, fetchImpl }) : m.token;
+  if (!token) throw new Error(`No hay token para leer ${repo}`);
+  return { repo, token };
+}
+
+// fotos/fotos.json del repo de marca: [{id, archivo, descripcion, autorizo, fecha, uso: ["directo","referencia_ia"], personas}].
+export async function fotosDeLaMarca({ c, fetchImpl = fetch }) {
+  const { repo, token } = await marcaParaLeer({ c, fetchImpl });
+  let x;
+  try { x = await gh(fetchImpl, 'GET', `/repos/${repo}/contents/fotos/fotos.json`, token); }
+  catch (e) { throw new Error(`El repo de marca ${repo} no tiene fotos/fotos.json (${e.status || e.message})`); }
+  let d;
+  try { d = JSON.parse(Buffer.from(String(x.content || ''), 'base64').toString('utf8')); }
+  catch { throw new Error(`fotos/fotos.json de ${repo} no es JSON válido`); }
+  return { repo, token, fotos: Array.isArray(d) ? d : (Array.isArray(d?.fotos) ? d.fotos : []) };
+}
+
 // Agentes con GitHub (Landing, Creativo): token de escritura nuevo en su vault, token de lectura para montar su repo
 // (si lo monta) y el sha de main al empezar (para comprobar al cerrar que nadie publicó durante la sesión).
 // Con cliente, además, cada repo suyo que se monta (marca, landings, piezas) lleva un token de lectura de 1 hora de ese repo.
@@ -133,7 +155,7 @@ const PREFIJOS = {
 
 // Regla 8: el PR existe, está abierto y sin fusionar, va de agente/* a main, su commit es el que reportó el agente,
 // solo cambia su carpeta y main no cambió durante la sesión. Para piezas, además, lo que hay en la carpeta (compruebaPieza).
-export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes, fetchImpl = fetch }) {
+export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes, ronda = null, fetchImpl = fetch }) {
   let g, d, gd;
   try { ({ g, d, gd } = destinoDe(c, agente)); } catch (e) { return { ok: false, informe: `Comprobación en GitHub: ${e.message}.` }; }
   const problemas = [];
@@ -168,6 +190,16 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   if (gd.destino === 'piezas' && pref && pr.head?.sha) {
     const p = await compruebaPieza({ repo: d.repo, pref, ref: pr.head.sha, respuesta: r, token, fetchImpl });
     problemas.push(...p.problemas); extra = p.resumen;
+    // Foto del cliente (Foto: repo:<id>): el archivo del PR tiene que ser, blob por blob, el de fotos/ del repo de marca del cliente.
+    const fc = p.meta?.foto_cliente;
+    if (fc) {
+      try {
+        const { repo: rm, token: tm } = await marcaParaLeer({ c, fetchImpl });
+        const x = await gh(fetchImpl, 'GET', `/repos/${rm}/contents/${String(fc.archivo || '').replace(/^\/+/, '')}`, tm);
+        if (!String(fc.archivo || '').startsWith('fotos/') || x.sha !== fc.blob_sha) problemas.push(`la foto del cliente no es ${fc.archivo} del repo de marca ${rm}`);
+      } catch (e) { problemas.push(`no se pudo comprobar la foto del cliente en el repo de marca (${e.status || e.message})`); }
+    }
+    if (ronda?.ronda_pr) problemas.push(...await compruebaRonda({ repo: d.repo, pref, pr, numero, ronda, token, fetchImpl }));
   }
   if (mainAntes) {
     try {
@@ -178,6 +210,33 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   const informe = `Comprobación en GitHub: PR #${numero} (${pr.html_url || ''}), ${archivos.length} archivo(s) en ${pref || '?'}.${extra}` +
     (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ` Abierto, sin fusionar y solo con su carpeta. Falta ${gd.destino === 'piezas' ? 'mirar la pieza' : 'revisar el deploy preview'} y aprobarlo en GitHub.`);
   return { ok: problemas.length === 0, informe };
+}
+
+// Ronda de cambios (metadata de la sesión: ronda_pr, ronda_head, ronda_foto, ronda_pieza): mismo PR, commit nuevo encima de
+// la punta que había al despachar, solo la carpeta de la pieza, y con Foto en la ronda = Igual, el mismo blob de la foto.
+async function compruebaRonda({ repo, pref, pr, numero, ronda, token, fetchImpl }) {
+  const problemas = [];
+  if (numero !== Number(ronda.ronda_pr)) problemas.push(`ronda: reporta el PR #${numero} y la ronda es del #${ronda.ronda_pr}`);
+  if (pref !== `piezas/${ronda.ronda_pieza}/`) problemas.push(`ronda: la carpeta ${pref} no es la de la pieza (piezas/${ronda.ronda_pieza}/)`);
+  const head = pr.head?.sha;
+  if (!head || head === ronda.ronda_head) return [...problemas, 'ronda: no hay commit nuevo en la rama del PR'];
+  try {
+    const cmp = await gh(fetchImpl, 'GET', `/repos/${repo}/compare/${ronda.ronda_head}...${head}`, token);
+    if (cmp.status !== 'ahead' || cmp.behind_by) problemas.push(`ronda: el commit nuevo no sale de la punta anterior (${String(ronda.ronda_head).slice(0, 7)})`);
+    const fuera = (cmp.files || []).map(f => f.filename).filter(n => !n.startsWith(pref));
+    if (fuera.length) problemas.push(`ronda: cambia archivos fuera de ${pref}: ${fuera.slice(0, 3).join(', ')}`);
+  } catch (e) { problemas.push(`ronda: no se pudo comparar con la punta anterior (${e.status || e.message})`); }
+  if (ronda.ronda_foto === 'Igual') {
+    const foto = async ref => {
+      try { return ((await gh(fetchImpl, 'GET', `/repos/${repo}/contents/${pref}fotos?ref=${ref}`, token)) || []).find(e => /^fondo\./.test(e.name))?.sha || null; }
+      catch (e) { if (e.status === 404) return null; throw e; }
+    };
+    try {
+      const [antes, ahora] = [await foto(ronda.ronda_head), await foto(head)];
+      if (antes !== ahora) problemas.push(`ronda: Foto en la ronda = Igual y la foto cambió (blob ${String(antes).slice(0, 7)} → ${String(ahora).slice(0, 7)})`);
+    } catch (e) { problemas.push(`ronda: no se pudo comparar la foto (${e.status || e.message})`); }
+  }
+  return problemas;
 }
 
 // Tamaño de cada formato (tokens.json del repo de marca). El PNG del PR debe medir esto.
@@ -224,10 +283,13 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   if (meta.foto && !(nombres.includes('prompt.txt') && nombres.some(n => n.startsWith('fotos/')))) problemas.push('lleva foto y faltan la foto o prompt.txt');
   if (!meta.foto && (nombres.includes('prompt.txt') || nombres.some(n => n.startsWith('fotos/')))) problemas.push('no lleva foto pero trae foto o prompt.txt');
   // La foto del PR debe ser la que bajó pr_pieza.py de una generación terminada (pieza.json → higgsfield): no otra subida a mano.
+  // Foto del cliente (repo:<id>): pieza.json → foto_cliente con el blob de fotos/ del repo de marca (compruebaPR lo coteja).
   if (meta.foto) {
     const hf = meta.higgsfield || {};
+    const fc = meta.foto_cliente;
     const foto = fotos.find(e => /^fondo\./.test(e.name));
-    if (!hf.request_id || hf.estado !== 'completed') problemas.push('lleva foto pero pieza.json no registra una generación de Higgsfield terminada');
+    if (fc) { if (!foto || !fc.blob_sha || foto.sha !== fc.blob_sha) problemas.push('la foto del PR no es la foto del cliente que registró pr_pieza.py (blob distinto)'); }
+    else if (!hf.request_id || hf.estado !== 'completed') problemas.push('lleva foto pero pieza.json no registra una generación de Higgsfield terminada');
     else if (!foto || !hf.blob_sha || foto.sha !== hf.blob_sha) problemas.push('la foto del PR no es la que registró pr_pieza.py (blob distinto)');
   }
   if (MEDIDAS[formato] && shaPng) {
@@ -239,6 +301,7 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
     } catch (e) { problemas.push(`no se pudo leer pieza.png (${e.status || e.message})`); }
   }
   const avisos = Array.isArray(inf.avisos) ? inf.avisos.length : 0;
-  const resumen = ` Pieza ${formato}${meta.foto ? ' con foto de Higgsfield' : ''}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
-  return { problemas, resumen };
+  const deFoto = meta.foto_cliente ? ` con foto del cliente (${meta.foto_cliente.id})` : meta.foto ? ' con foto de Higgsfield' : '';
+  const resumen = ` Pieza ${formato}${deFoto}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
+  return { problemas, resumen, meta };
 }

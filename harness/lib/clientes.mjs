@@ -62,6 +62,7 @@ export function leeCliente(page) {
     topePauta: n('Tope diario de pauta (MXN)'),
     maxSesiones: n('Máx. sesiones por día'),
     aprobadores: (p['Aprobadores']?.people || []).map(x => x.id),
+    rondasIncluidas: n('Rondas incluidas'),  // rondas de cambios por pieza; arriba, solo con APROBADORES_SENSIBLES
   };
 }
 

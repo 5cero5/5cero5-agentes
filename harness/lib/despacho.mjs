@@ -4,6 +4,7 @@ import { despachaCampanas, piezasPendientes } from './campanas.mjs';
 import { agenteDe } from './agentes.mjs';
 import { conGithub } from './github.mjs';
 import { preparaCliente, resuelveCliente, revisaAprobacion } from './clientes.mjs';
+import { compruebaFotoDelBrief, preparaRonda } from './rondas.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -11,7 +12,7 @@ const ahora = () => new Date().toISOString();
 // (revisaAprobacion en lib/clientes.mjs).
 export function esDespachable(fila, c) {
   if (fila.estado !== 'Aprobado') return 'estado';
-  if (!fila.brief) return 'sin_brief';
+  if (!fila.brief && !fila.rondaDe?.length) return 'sin_brief';  // una ronda trae Cambios pedidos; el brief es el de la original
   if (fila.sesion) return 'ya_tiene_sesion';
   if (fila.intentos >= c.maxIntentos) return 'intentos_agotados';
   return null;
@@ -44,8 +45,8 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     if (motivo) { out.omitidas.push([fila.id, motivo]); continue; }
     // Aprobadores por cliente (con o sin RUTEO_CLIENTES): fila → Campaña ligada → Ficha de cliente → Aprobadores.
     // Sin cliente o sin Aprobadores, falla cerrado con el motivo en Error.
-    let aprob;
-    try { aprob = revisaAprobacion(fila, await resuelveCliente(notion, c, fila, cache), c); }
+    let aprob, cliFila = null;
+    try { cliFila = await resuelveCliente(notion, c, fila, cache); aprob = revisaAprobacion(fila, cliFila, c); }
     catch (e) { aprob = { motivo: 'cliente', error: e.message }; }
     if (aprob) {
       if (aprob.error) await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(aprob.error) });
@@ -67,8 +68,21 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     }
     if (cupo <= 0) { out.omitidas.push([fila.id, 'tope_diario']); continue; }
     if (cli && (hoyCliente.get(cli.id) || 0) >= cc.maxSesionesPorDia) { out.omitidas.push([fila.id, 'tope_diario_cliente']); continue; }
+    // Creativo: ronda sobre el PR de la pieza original y foto del cliente pedida en el brief, contra lo de ESTE cliente.
+    let deSesion = fila;
+    if (fila.agente === 'Creativo') {
+      try {
+        if (fila.rondaDe.length) {
+          const ronda = await preparaRonda({ notion, c: cc, fila, cli: cliFila, cache, fetchImpl });
+          deSesion = { ...fila, brief: ronda.briefOriginal, ronda };
+        } else await compruebaFotoDelBrief({ brief: fila.brief, c: cc, fetchImpl });
+      } catch (e) {
+        await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(e.message) });
+        out.omitidas.push([fila.id, e.motivo || 'creativo']); continue;
+      }
+    }
     let params;
-    try { params = parametrosSesion(fila, cc); }
+    try { params = parametrosSesion(deSesion, cc); }
     catch (e) {
       await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(e.message) });
       out.omitidas.push([fila.id, 'params']); continue;
@@ -77,7 +91,7 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     // Se limpia el Error de un intento anterior para que la fila no muestre un error que ya no aplica.
     await notion.update(fila.id, { Estado: P.estado('En curso'), Intentos: P.numero(fila.intentos + 1), Inició: P.fecha(ahora()), Error: P.texto('') });
     try {
-      const s = await client.beta.sessions.create(await conGithub({ params, fila, c: cc, client, fetchImpl }));
+      const s = await client.beta.sessions.create(await conGithub({ params, fila: deSesion, c: cc, client, fetchImpl }));
       await notion.update(fila.id, { Sesión: P.texto(s.id) });
       out.creadas.push([fila.id, s.id]); cupo--;
       if (cli) hoyCliente.set(cli.id, (hoyCliente.get(cli.id) || 0) + 1);
