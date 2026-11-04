@@ -2,9 +2,11 @@
 // cerrado (la fila pasa a Error con el motivo y no hay sesión).
 //   - "Foto: repo:<id>" (la foto tal cual) o "Foto: referencia:<id>" (referencia para el modelo de edición): el id tiene que
 //     estar en fotos/fotos.json del repo de marca DE ESE CLIENTE, autorizado y con ese uso; como referencia, sin personas.
-//   - Ronda: una fila con "Ronda de" (la pieza original). Del Resultado del agente de la original salen el PR, la rama y la
-//     carpeta; el PR tiene que estar abierto y sin fusionar, y la original ser del mismo cliente. Arriba de "Rondas incluidas"
-//     de la ficha, solo despacha con Aprobó en APROBADORES_SENSIBLES.
+//   - Ronda: una fila con "Ronda de" (la pieza original o la ronda anterior). La pieza original es la ronda 1; la primera
+//     fila de cambios, la 2. El número sale de contar la cadena de "Ronda de" hasta la original (la propiedad "Ronda", si
+//     está llena, tiene que coincidir). Del Resultado del agente de la original salen el PR, la rama y la carpeta; el PR
+//     tiene que estar abierto y sin fusionar, y la original ser del mismo cliente. "Rondas incluidas" de la ficha = rondas
+//     de cambios sin costo extra: con 2, pasan la 2 y la 3; la 4 solo despacha con Aprobó en APROBADORES_SENSIBLES.
 //   - Editar en una ronda manda la foto actual a la IA: si es una foto del cliente, tiene que permitir referencia_ia y no
 //     tener personas (igual que "referencia:"). Sobre una foto generada por Higgsfield, se permite.
 import { leePagina } from './notion.mjs';
@@ -13,6 +15,7 @@ import { resuelveCliente } from './clientes.mjs';
 import { fotosDeLaMarca, gh, tokenInstalacion } from './github.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
+const MAX_CADENA = 20;  // rondas encadenadas como máximo (también corta un ciclo de "Ronda de")
 const FOTO = /Foto:\s*(repo|referencia):\s*([A-Za-z0-9][A-Za-z0-9_-]{0,60})/i;
 export const FOTOS_RONDA = ['Igual', 'Editar', 'Nueva'];
 
@@ -53,10 +56,23 @@ export async function preparaRonda({ notion, c, fila, cli, cache = new Map(), fe
   if (fila.rondaDe.length !== 1) throw new ErrorRonda(`Ronda de liga ${fila.rondaDe.length} filas: tiene que ser una, la pieza original`);
   if (!FOTOS_RONDA.includes(fila.fotoRonda)) throw new ErrorRonda('Falta Foto en la ronda (Igual, Editar o Nueva)');
   if (!fila.cambiosPedidos) throw new ErrorRonda('Falta Cambios pedidos');
-  let original;
-  try { original = leePagina(await notion.get(fila.rondaDe[0])); } catch (e) { throw new ErrorRonda(`No se pudo leer la pieza original (${e.message})`); }
-  if (original.agente !== 'Creativo') throw new ErrorRonda('La pieza original no es del Creativo');
-  if (original.rondaDe.length) throw new ErrorRonda('Ronda de tiene que apuntar a la pieza original, no a otra ronda');
+  // Se sube por la cadena de "Ronda de" hasta la pieza original (la que no tiene "Ronda de"): n = filas de la cadena.
+  let original = null, n = 1;
+  const vistas = new Set([String(fila.id)]);
+  for (let id = fila.rondaDe[0]; ; ) {
+    if (vistas.has(String(id)) || vistas.size > MAX_CADENA) throw new ErrorRonda('La cadena de "Ronda de" da vueltas o es demasiado larga');
+    vistas.add(String(id));
+    let p;
+    try { p = leePagina(await notion.get(id)); } catch (e) { throw new ErrorRonda(`No se pudo leer una fila de la cadena de rondas (${e.message})`); }
+    if (p.agente !== 'Creativo') throw new ErrorRonda('Una fila de la cadena de rondas no es del Creativo');
+    n++;
+    if (!p.rondaDe.length) { original = p; break; }
+    if (p.rondaDe.length !== 1) throw new ErrorRonda(`Una ronda de la cadena liga ${p.rondaDe.length} filas en Ronda de`);
+    id = p.rondaDe[0];
+  }
+  if (fila.ronda != null && Number(fila.ronda) !== n) {
+    throw new ErrorRonda(`La propiedad Ronda dice ${fila.ronda} y la cadena de "Ronda de" da ${n} (la pieza original es la 1)`, 'ronda_no_coincide');
+  }
   let delOriginal;
   try { delOriginal = await resuelveCliente(notion, c, original, cache); } catch (e) { throw new ErrorRonda(`La pieza original no tiene cliente (${e.message})`); }
   if (delOriginal.id !== cli.id) throw new ErrorRonda(`Ronda de otro cliente: la pieza original es de ${delOriginal.slug || delOriginal.id}`, 'ronda_otro_cliente');
@@ -92,13 +108,10 @@ export async function preparaRonda({ notion, c, fila, cli, cache = new Map(), fe
         etiqueta: `Editar la foto del cliente ${meta.foto_cliente.id}` });
     } else if (!meta.higgsfield?.request_id) throw new ErrorRonda('Foto en la ronda = Editar y pieza.json no dice de dónde salió la foto');
   }
-  // Cuántas rondas lleva la pieza (todas las filas con Ronda de = original, esta incluida).
-  let n;
-  try { n = Math.max((await notion.query(c.notionDataSource, { property: 'Ronda de', relation: { contains: original.id } }, 100)).results.length, 1); }
-  catch (e) { throw new ErrorRonda(`No se pudieron contar las rondas de la pieza (${e.message})`); }
+  // Rondas de cambios = n - 1 (la original no cuenta). Arriba de las incluidas, solo con un aprobador sensible.
   const incluidas = cli.rondasIncluidas ?? 0;
-  if (n > incluidas && !fila.aprobo.some(id => (c.aprobadoresSensibles || []).includes(id))) {
-    throw new ErrorRonda(`Ronda ${n} y la ficha de ${cli.nombre || cli.slug} incluye ${incluidas}: la tiene que aprobar alguien de APROBADORES_SENSIBLES`, 'ronda_fuera_de_limite');
+  if (n - 1 > incluidas && !fila.aprobo.some(id => (c.aprobadoresSensibles || []).includes(id))) {
+    throw new ErrorRonda(`Ronda ${n} y la ficha de ${cli.nombre || cli.slug} incluye ${incluidas} ronda(s) de cambios (hasta la ${incluidas + 1}): la tiene que aprobar alguien de APROBADORES_SENSIBLES`, 'ronda_fuera_de_limite');
   }
   return { n, incluidas, pr: numero, prUrl: pr.html_url || r.pr_url, rama: r.rama, head: pr.head.sha, campana: r.campana, pieza: r.pieza,
     foto: fila.fotoRonda, cambios: fila.cambiosPedidos, briefOriginal: original.brief, originalId: original.id, originalTrabajo: original.trabajo };

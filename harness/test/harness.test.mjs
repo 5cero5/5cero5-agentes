@@ -24,7 +24,7 @@ function pageDe(f) {
     Inició: { date: f.inicio ? { start: f.inicio } : null }, 'Campaña ligada': { relation: (f.campanaLigada || []).map(id => ({ id })) },
     Sensible: { checkbox: f.sensible === true }, 'Ronda de': { relation: (f.rondaDe || []).map(id => ({ id })) },
     'Cambios pedidos': { rich_text: f.cambiosPedidos ? [{ plain_text: f.cambiosPedidos }] : [] },
-    'Foto en la ronda': { select: f.fotoRonda ? { name: f.fotoRonda } : null },
+    'Foto en la ronda': { select: f.fotoRonda ? { name: f.fotoRonda } : null }, Ronda: { number: f.ronda ?? null },
     'Resultado del agente': { rich_text: f.resultado ? [{ plain_text: f.resultado }] : [] } } };
 }
 // Cliente de las filas y campañas de prueba: campaña 'kc' → ficha 'fc' (base Clientes) con Aprobadores Al y Bonzo.
@@ -912,8 +912,8 @@ test('ronda Igual: se despacha sobre el mismo PR, con el brief original, los cam
   await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
   assert.equal(cl.calls.create.length, 1); const p = cl.calls.create[0]; const m = p.initial_events[0].content[0].text;
   assert.deepEqual([p.metadata.ronda_pr, p.metadata.ronda_head, p.metadata.ronda_foto, p.metadata.ronda_pieza], ['8', 'abc1234', 'Igual', 'poc/post-a']);
-  assert.deepEqual([p.metadata.ronda_n, p.metadata.ronda_de, p.metadata.ronda_original], ['1', 'orig', 'Post 4:5 · agencia vs 5cero5']);
-  assert.match(m, /RONDA 1 .*#8/); assert.match(m, /revisar-pr --campana poc --pieza post-a --pr 8 --foto-ronda Igual/);
+  assert.deepEqual([p.metadata.ronda_n, p.metadata.ronda_de, p.metadata.ronda_original], ['2', 'orig', 'Post 4:5 · agencia vs 5cero5']);
+  assert.match(m, /RONDA 2 .*#8/); assert.match(m, /revisar-pr --campana poc --pieza post-a --pr 8 --foto-ronda Igual/);
   assert.match(m, /Cambios pedidos \(solo esto cambia\):\nCambia el kicker/); assert.match(m, /Brief original de la pieza:\npost del diagnóstico/);
   assert.doesNotMatch(m, /--prompt\./);
 });
@@ -973,16 +973,38 @@ test('ronda de otro cliente (la original es de otra ficha) → Error, sin sesió
   assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r1', 'ronda_otro_cliente']]);
   assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /otro cliente: la pieza original es de otro-cliente/);
 });
-test('ronda arriba de Rondas incluidas: sin aprobador sensible → Error; con Al en APROBADORES_SENSIBLES se despacha', async () => {
-  const f = [original(), ronda({ id: 'r0', estado: 'Para revisar', sesion: 's0' }), ronda({ id: 'r00', estado: 'Para revisar', sesion: 's00' }), ronda()];
-  const cl = conVault(mockClient()); const n = mockNotion(f);
-  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });  // 3 rondas, la ficha incluye 2
-  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r1', 'ronda_fuera_de_limite']]);
-  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda 3 .* incluye 2: la tiene que aprobar alguien de APROBADORES_SENSIBLES/);
-  f[3].estado = 'Aprobado';
-  const cl2 = conVault(mockClient());
-  await despacha({ client: cl2, notion: mockNotion(f), c: { ...cC, aprobadoresSensibles: [AL] }, fetchImpl: ghPiezas().fetch });
-  assert.equal(cl2.calls.create.length, 1); assert.match(cl2.calls.create[0].initial_events[0].content[0].text, /RONDA 3/);
+// Convención: la pieza original es la ronda 1; la primera fila de cambios, la 2. Rondas incluidas = rondas de cambios sin costo.
+const cadena = k => {  // original ← r2 ← r3 … ← r<k>; solo la última está en Aprobado
+  const f = [original()];
+  for (let i = 2; i <= k; i++) f.push(ronda({ id: `r${i}`, rondaDe: [i === 2 ? 'orig' : `r${i - 1}`], ...(i < k ? { estado: 'Para revisar', sesion: `s${i}` } : {}) }));
+  return f;
+};
+test('ronda: el número sale de la cadena de "Ronda de" (original = 1): cadena de 3 rondas → ronda 3', async () => {
+  const f = cadena(3); const cl = conVault(mockClient());
+  await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 1); const p = cl.calls.create[0];
+  assert.equal(p.metadata.ronda_n, '3'); assert.equal(p.metadata.ronda_de, 'orig'); assert.match(p.initial_events[0].content[0].text, /RONDA 3 .*#8/);
+});
+test('ronda: si la propiedad Ronda no coincide con la cadena → Error, sin sesión', async () => {
+  const f = cadena(3); f[2].ronda = 2; const cl = conVault(mockClient()); const n = mockNotion(f);
+  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r3', 'ronda_no_coincide']]);
+  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda dice 2 y la cadena de "Ronda de" da 3/);
+  const g = cadena(3); g[2].ronda = 3; const cl2 = conVault(mockClient());
+  await despacha({ client: cl2, notion: mockNotion(g), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl2.calls.create.length, 1);
+});
+test('ronda 4 con Rondas incluidas = 2: sin aprobador sensible → Error; con Al en APROBADORES_SENSIBLES se despacha', async () => {
+  const f = cadena(4); const cl = conVault(mockClient()); const n = mockNotion(f);
+  const r = await despacha({ client: cl, notion: n, c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl.calls.create.length, 0); assert.deepEqual(r.omitidas, [['r4', 'ronda_fuera_de_limite']]);
+  assert.match(n.log.at(-1)[1].Error.rich_text[0].text.content, /Ronda 4 .* incluye 2 ronda\(s\) de cambios \(hasta la 3\)/);
+  const g = cadena(4); const cl2 = conVault(mockClient());
+  await despacha({ client: cl2, notion: mockNotion(g), c: { ...cC, aprobadoresSensibles: [AL] }, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl2.calls.create.length, 1); assert.equal(cl2.calls.create[0].metadata.ronda_n, '4');
+  const h = cadena(3); const cl3 = conVault(mockClient());  // la 3 todavía está incluida
+  await despacha({ client: cl3, notion: mockNotion(h), c: cC, fetchImpl: ghPiezas().fetch });
+  assert.equal(cl3.calls.create.length, 1);
 });
 test('cierre con foto del cliente: el blob del PR tiene que ser el de fotos/ del repo de marca', async () => {
   const fc = { id: 'mostrador', archivo: 'fotos/mostrador.jpg', uso: 'directo', blob_sha: 'fm1' };
