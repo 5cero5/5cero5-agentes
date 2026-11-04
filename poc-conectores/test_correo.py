@@ -6,7 +6,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = Path(os.environ["MARCA_REPO"])
-T = {}; ESTADO = {"altera": False, "creados": 0, "datos": 0}
+T = {}; ESTADO = {"altera": False, "creados": 0, "datos": 0, "previews": 0}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -20,6 +20,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/emails/builder":
             return self.send({"builders": [{"id": k, "name": v["name"], "previewUrl": f"http://127.0.0.1:{self.server.server_port}/preview/{k}"} for k, v in T.items()]})
         if p.startswith("/preview/"):
+            ESTADO["previews"] += 1
             h = T[p.split("/")[-1]].get("html", "")
             if ESTADO["altera"]: h = h.replace("Empieza la entrevista", "Otro texto").replace("utm_campaign", "x")
             return self.send(None, 200, h.encode())
@@ -34,17 +35,18 @@ class H(BaseHTTPRequestHandler):
         self.send({}, 404)
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
-ENV = {**os.environ, "HL_TOKEN": "pit-x", "HL_LOCATION_ID": "loc", "HL_API_BASE": f"http://127.0.0.1:{srv.server_port}"}
+ENV = {**os.environ, "HL_INTENTOS": "2", "HL_PAUSA_S": "0", "HL_TOKEN": "pit-x", "HL_LOCATION_ID": "loc", "HL_API_BASE": f"http://127.0.0.1:{srv.server_port}"}
 tmp = Path(tempfile.mkdtemp()); shutil.copy(REPO / "correos" / "w1-entrevista.json", tmp / "w1.json")
 run = lambda *a, env=ENV: subprocess.run([sys.executable, str(HERE / "correo.py"), *a], capture_output=True, text=True, env=env)
 res = []
 def check(n, c, o=""): res.append(bool(c)); print(("✓" if c else "✗"), n, "" if c else o[-500:])
 
 o = run("armar", "--copia", str(tmp / "w1.json")); check("armar desde la copia JSON", o.returncode == 0 and (tmp / "w1.html").exists(), o.stdout + o.stderr)
-o = run("subir", "--html", str(tmp / "w1.html"), "--nombre", "W1 · Entrada"); check("subir crea la plantilla y la comprueba", o.returncode == 0 and ESTADO["creados"] == 1 and "con el botón y todas las frases" in o.stdout, o.stdout + o.stderr)
+o = run("subir", "--html", str(tmp / "w1.html"), "--nombre", "W1 · Entrada"); check("subir crea la plantilla y comprueba que existe", o.returncode == 0 and ESTADO["creados"] == 1 and "HighLevel tiene la plantilla" in o.stdout, o.stdout + o.stderr)
 o = run("subir", "--html", str(tmp / "w1.html"), "--nombre", "W1 · Entrada"); check("subir de nuevo actualiza, no duplica", o.returncode == 0 and ESTADO["creados"] == 1 and ESTADO["datos"] == 2, o.stdout)
 mala = (tmp / "w1.html").read_text().replace("Con tus respuestas preparamos tu llamada con Al.", "Te garantizamos más ventas!"); (tmp / "malo.html").write_text(mala)
 o = run("subir", "--html", str(tmp / "malo.html"), "--nombre", "W1 · Entrada"); check("no sube un correo que el Verificador rechaza", o.returncode != 0 and ESTADO["datos"] == 2, o.stdout)
-ESTADO["altera"] = True; o = run("comprobar", "--html", str(tmp / "w1.html"), "--nombre", "W1 · Entrada"); check("comprobar detecta si HighLevel cambió el contenido", o.returncode != 0 and "no trae" in o.stdout, o.stdout); ESTADO["altera"] = False
+o = run("comprobar", "--nombre", "W1 · Entrada"); check("comprobar confirma que existe y ya no baja el previewUrl (eso lo hace el harness)", o.returncode == 0 and ESTADO["previews"] == 0, o.stdout + o.stderr)
+o = run("comprobar", "--nombre", "No existe"); check("comprobar falla si la plantilla no está en la subcuenta", o.returncode != 0 and "no regresó la plantilla" in o.stdout, o.stdout)
 o = run("subir", "--html", str(tmp / "w1.html"), "--nombre", "W2", env={**ENV, "HL_TOKEN": "otro"}); check("token inválido: mensaje claro", o.returncode != 0 and "401" in o.stdout, o.stdout)
 print(f"\n{sum(res)}/{len(res)} comprobaciones correctas."); sys.exit(0 if all(res) else 1)

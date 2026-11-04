@@ -145,8 +145,10 @@ function mockApis() {
       const loc = u.searchParams.get('locationId');
       const propia = { 'Bearer pit-a': 'locA000001', 'Bearer pit-b': 'locB000002' }[auth];
       if (propia !== loc) return no(403, 'forbidden');
-      return ok({ builders: [{ id: `t_${loc}`, name: '[agente] W1' }] });
+      return ok({ builders: [{ id: `t_${loc}`, name: '[agente] W1', previewUrl: `https://firebasestorage.googleapis.com/v0/b/hl/o/${loc}.html` }] });
     }
+    // HTML guardado de la plantilla (previewUrl): lo baja el harness al cerrar, no la sesión.
+    if (u.host === 'firebasestorage.googleapis.com') return { ok: true, status: 200, text: async () => '<p>Hola.</p><a class="boton" href="https://landings.cliente-a.mx/promo/?utm_source=email">Agenda tu cita</a>' };
     return no(400, 'host no esperado');
   };
   st.pr = (repo, n, slug) => {
@@ -320,7 +322,8 @@ test('caso 10 (cupo): el máximo de sesiones por día de un cliente no frena al 
 
 // ---- Caso 11: webhook y barrido de una sesión de A ----
 test('caso 11: webhook y barrido de una sesión de A escriben solo en la fila de A y comprueban contra lo de A', async () => {
-  const fA = fila('Landing', ['camp-a']), fB = fila('Landing', ['camp-b']), cA = fila('CRM', ['camp-a']);
+  const fA = fila('Landing', ['camp-a']), fB = fila('Landing', ['camp-b']),
+    cA = fila('CRM', ['camp-a'], { brief: 'Correo de la promo.\nBotón: Agenda tu cita\nDestino: https://landings.cliente-a.mx/promo/\nExacto: "Hola."' });
   const notion = mockNotion({ filas: [fA, fB, cA], paginas: paginasBase() }); const api = mockApis(); const cl = mockClient();
   await despacha({ client: cl, notion, c, fetchImpl: api.fetch });
   api.pr('cliente-a/landings-a', 7, 'promo'); api.pr('cliente-b/landings-b', 7, 'promo');
@@ -344,6 +347,7 @@ test('caso 11: webhook y barrido de una sesión de A escriben solo en la fila de
   assert.deepEqual([...new Set(notion.log.map(([id]) => id))], [cA.id]);
   assert.equal(cA.verificador, 'Aprobada', cA.informe);
   assert.deepEqual(api.llamadas.filter(l => l.includes('leadconnectorhq')).map(l => new URL(`https://${l.split(' ')[1]}`).searchParams.get('locationId')), ['locA000001']);
+  assert.ok(api.llamadas.some(l => l.includes('firebasestorage.googleapis.com/v0/b/hl/o/locA000001.html')), 'el harness baja el previewUrl de A');
 });
 test('caso 11 (cruce): una sesión que dice ser de B o usó el vault de B, cerrada sobre la fila de A → Rechazada', async () => {
   for (const cambio of [{ metadata: { cliente_slug: 'cliente-b' } }, { vault_ids: ['vlt_b_landing'] }]) {
