@@ -101,5 +101,5 @@ export async function preparaRonda({ notion, c, fila, cli, cache = new Map(), fe
     throw new ErrorRonda(`Ronda ${n} y la ficha de ${cli.nombre || cli.slug} incluye ${incluidas}: la tiene que aprobar alguien de APROBADORES_SENSIBLES`, 'ronda_fuera_de_limite');
   }
   return { n, incluidas, pr: numero, prUrl: pr.html_url || r.pr_url, rama: r.rama, head: pr.head.sha, campana: r.campana, pieza: r.pieza,
-    foto: fila.fotoRonda, cambios: fila.cambiosPedidos, briefOriginal: original.brief };
+    foto: fila.fotoRonda, cambios: fila.cambiosPedidos, briefOriginal: original.brief, originalId: original.id, originalTrabajo: original.trabajo };
 }

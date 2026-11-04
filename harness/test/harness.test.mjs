@@ -618,7 +618,7 @@ function ghPiezas(o = {}) {
     if (u.pathname === '/repos/5cero5/5cero5-marca/contents/fotos/fotos.json') return st.fotosMarca ? ok(b64({ fotos: st.fotosMarca })) : { ok: false, status: 404, text: async () => '{}' };
     if (u.pathname.startsWith('/repos/5cero5/5cero5-marca/contents/fotos/')) return ok({ sha: st.shaMarca || 'fm1' });
     if (u.pathname === `${R}/contents/${pref}/informe.json`) return ok(b64(st.informe));
-    if (u.pathname === `${R}/contents/${pref}/pieza.json`) return ok(b64(st.meta));
+    if (u.pathname === `${R}/contents/${pref}/pieza.json`) return ok(b64(u.searchParams.get('ref') === 'old111' && st.metaAntes ? st.metaAntes : st.meta));
     if (u.pathname === `${R}/git/blobs/pngsha`) return ok({ content: st.png.toString('base64'), encoding: 'base64' });
     return { ok: false, status: 404, text: async () => '{"message":"Not Found"}' };
   };
@@ -912,18 +912,25 @@ test('ronda Igual: se despacha sobre el mismo PR, con el brief original, los cam
   await despacha({ client: cl, notion: mockNotion(f), c: cC, fetchImpl: ghPiezas().fetch });
   assert.equal(cl.calls.create.length, 1); const p = cl.calls.create[0]; const m = p.initial_events[0].content[0].text;
   assert.deepEqual([p.metadata.ronda_pr, p.metadata.ronda_head, p.metadata.ronda_foto, p.metadata.ronda_pieza], ['8', 'abc1234', 'Igual', 'poc/post-a']);
+  assert.deepEqual([p.metadata.ronda_n, p.metadata.ronda_de, p.metadata.ronda_original], ['1', 'orig', 'Post 4:5 · agencia vs 5cero5']);
   assert.match(m, /RONDA 1 .*#8/); assert.match(m, /revisar-pr --campana poc --pieza post-a --pr 8 --foto-ronda Igual/);
   assert.match(m, /Cambios pedidos \(solo esto cambia\):\nCambia el kicker/); assert.match(m, /Brief original de la pieza:\npost del diagnóstico/);
   assert.doesNotMatch(m, /--prompt\./);
 });
 test('ronda Igual al cerrar: mismo PR y commit nuevo pasa; si la foto cambió o no hay commit nuevo, Rechazada', async () => {
-  const meta = { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Igual', ronda_pieza: 'poc/post-a' };
+  const meta = { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Igual', ronda_pieza: 'poc/post-a', ronda_n: '2', ronda_de: 'orig', ronda_original: 'Post 4:5 · agencia' };
   const HF = { request_id: 'r1', estado: 'completed', blob_sha: 'f1' };
   const conFoto = o => { const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }], ...o });
     g.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' }); return g; };
   const bien = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
     fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] }).fetch });
   assert.equal(bien.ok, true, bien.informe);
+  assert.match(bien.informe, /Ronda 2 de Post 4:5 · agencia: mismo PR, commit old111 → abc1234, foto igual \(blob_sha f1\), llamadas a Higgsfield: 0\./);
+  // Igual con una petición nueva en pieza.json: hubo llamada a Higgsfield → Rechazada aunque la foto sea la misma.
+  const conLlamada = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
+    fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }],
+      metaAntes: { ...ghPiezas().meta, foto: true, higgsfield: { request_id: 'r0', estado: 'completed', blob_sha: 'f1' } } }).fetch });
+  assert.equal(conLlamada.ok, false); assert.match(conLlamada.informe, /llamadas a Higgsfield: 1/); assert.match(conLlamada.informe, /Igual y hubo 1 llamada/);
   const cambio = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1', ronda: meta,
     fetchImpl: conFoto({ fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f0' }] }).fetch });
   assert.equal(cambio.ok, false); assert.match(cambio.informe, /Igual y la foto cambió/);
@@ -942,11 +949,14 @@ test('ronda Editar sobre una foto generada por Higgsfield: se despacha pidiendo 
   const m = cl.calls.create[0].initial_events[0].content[0].text;
   assert.match(m, /--foto-ronda Editar" con --cambios .* y --prompt/); assert.equal(cl.calls.create[0].metadata.ronda_foto, 'Editar');
   const HF = { request_id: 'r2', estado: 'completed', blob_sha: 'f2' };
-  const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF }, fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f2' }], fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
+  const g = ghPiezas({ meta: { ...ghPiezas().meta, foto: true, higgsfield: HF, fotos_anteriores: [{ request_id: 'r1', blob_sha: 'f1' }] },
+    metaAntes: { ...ghPiezas().meta, foto: true, higgsfield: { request_id: 'r1', estado: 'completed', blob_sha: 'f1' } },
+    fotos: [{ name: 'fondo.jpg', type: 'file', sha: 'f2' }], fotosAntes: [{ name: 'fondo.jpg', type: 'file', sha: 'f1' }] });
   g.carpeta.push({ name: 'prompt.txt', type: 'file', sha: 'p' });
   const r = await compruebaPR({ c: cC, agente: 'Creativo', respuesta: { ...respC, foto: true }, mainAntes: 'm1',
-    ronda: { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Editar', ronda_pieza: 'poc/post-a' }, fetchImpl: g.fetch });
+    ronda: { ronda_pr: '8', ronda_head: 'old111', ronda_foto: 'Editar', ronda_pieza: 'poc/post-a', ronda_n: '1', ronda_de: 'orig' }, fetchImpl: g.fetch });
   assert.equal(r.ok, true, r.informe);
+  assert.match(r.informe, /Ronda 1 de orig: mismo PR, commit old111 → abc1234, foto editada \(blob_sha f1 → f2\), llamadas a Higgsfield: 1\./);
 });
 test('ronda con el PR ya fusionado → Error, sin sesión', async () => {
   const f = [original(), ronda()]; const cl = conVault(mockClient()); const n = mockNotion(f);
