@@ -18,7 +18,7 @@ const { privateKey: PEM } = generateKeyPairSync('rsa', { modulusLength: 2048,
 // Globales con valores reconocibles: con el ruteo encendido ninguno debe llegar a una sesión de cliente.
 const GLOBALES = ['v_comun', 'v_global_', '9999999', 'locGLOBAL', '5cero5-marca', '5cero5-landings', '5cero5-piezas', 'marketing.5cero5.com', 'vcrd_global'];
 const c = cfg({
-  RUTEO_CLIENTES: '1', NOTION_APROBADORES: AL, MA_ENVIRONMENT_ID: 'env_1',
+  RUTEO_CLIENTES: '1', MA_ENVIRONMENT_ID: 'env_1',
   MA_AGENT_PAUTA: 'agent_pauta', MA_AGENT_CREATIVO: 'agent_creativo', MA_AGENT_LANDING: 'agent_landing', MA_AGENT_CRM: 'agent_crm', MA_AGENT_CMO: 'agent_cmo',
   GH_AGENTES_URL: 'https://github.com/5cero5/5cero5-agentes', GH_AGENTES_READ_TOKEN: 'tok_agentes',
   GH_APP_ID: '123', GH_APP_INSTALLATION_ID: '456', GH_APP_PRIVATE_KEY: PEM,
@@ -57,7 +57,8 @@ function pageCliente(k, o = {}) {
     'Meta cuenta': txt(x.cuenta), 'Meta página': txt(x.pagina), 'Meta Instagram': txt(''), 'Meta Pixel': txt(''),
     ...Object.fromEntries(Object.entries(x.vaults).map(([a, v]) => [`Vault ${a}`, txt(v)])),
     'Credencial GitHub Landing': txt(x.creds.Landing), 'Credencial GitHub Creativo': txt(x.creds.Creativo),
-    'Tope de sesión (USD)': { number: x.tope }, 'Tope diario de pauta (MXN)': { number: x.topePauta }, 'Máx. sesiones por día': { number: x.max } } };
+    'Tope de sesión (USD)': { number: x.tope }, 'Tope diario de pauta (MXN)': { number: x.topePauta }, 'Máx. sesiones por día': { number: x.max },
+    Aprobadores: { people: (x.aprobadores ?? [AL]).map(id => ({ id })) } } };
 }
 const pageCampana = (id, fichas) => ({ id, properties: { 'Ficha de cliente': { relation: fichas.map(f => ({ id: f })) } } });
 
@@ -368,10 +369,10 @@ test('caso 11 (CRM sin token): sin HL_TOKEN_<SLUG> la plantilla no se da por bue
 });
 
 // ---- Interruptor ----
-test('interruptor: sin RUTEO_CLIENTES no se lee ninguna ficha ni vault (comportamiento de hoy)', async () => {
+test('interruptor: sin RUTEO_CLIENTES la ficha solo da los Aprobadores; ningún vault ni dato del cliente llega a la sesión', async () => {
   const apagado = { ...c, ruteoClientes: false };
-  const f = fila('CRM', []);
-  const notion = mockNotion({ filas: [f], paginas: {} }); const cl = mockClient();
+  const f = fila('CRM', ['camp-a']);
+  const notion = mockNotion({ filas: [f], paginas: paginasBase() }); const cl = mockClient();
   await despacha({ client: cl, notion, c: apagado, fetchImpl: mockApis().fetch });
   assert.equal(cl.creadas.length, 1); assert.deepEqual(cl.creadas[0].vault_ids, ['v_global_crm']); assert.equal(cl.vaultsLeidos.length, 0);
   assert.equal(cl.creadas[0].metadata.cliente_slug, undefined);

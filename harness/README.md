@@ -1,6 +1,6 @@
 # Harness 5cero5 (Netlify Functions)
 
-Lo que hace: lee la base Aprobaciones de Notion, y cuando Al o Bonzo aprueban una fila, abre una sesión de Managed Agents con tope de gasto. Cuando la sesión termina, escribe el resultado en Notion. No publica nada, no gasta en Meta, no marca nada como "Listo".
+Lo que hace: lee la base Aprobaciones de Notion, y cuando un aprobador del cliente aprueba una fila, abre una sesión de Managed Agents con tope de gasto. Cuando la sesión termina, escribe el resultado en Notion. No publica nada, no gasta en Meta, no marca nada como "Listo".
 
 ## Piezas
 - `disparador` (cada 15 min): filas con Estado=Aprobado válidas -> reclama (En curso, Intentos+1) -> crea sesión -> guarda id de sesión.
@@ -8,7 +8,8 @@ Lo que hace: lee la base Aprobaciones de Notion, y cuando Al o Bonzo aprueban un
 - `barrido` (cada hora, minuto 7): red de seguridad para avisos perdidos (el webhook no reenvía lo viejo) y timeouts.
 
 ## Guardrails (en código, probados)
-- Solo despacha si Aprobó y la última edición de la fila son de un id en NOTION_APROBADORES (un agente no se autoaprueba).
+- **Aprobadores por cliente** (siempre, con o sin RUTEO_CLIENTES): fila → Campaña ligada → Ficha de cliente → propiedad **Aprobadores** (persona). Solo despacha si Aprobó y la última edición de la fila están en esa lista (un agente no se autoaprueba). Sin lista global: si Bonzo debe aprobar un cliente, va en su ficha. Fila sin Campaña ligada, sin cliente o ficha sin Aprobadores: falla cerrado (Error con el motivo, sin sesión). Aprobó o última edición de alguien fuera de la lista: no se despacha y la fila se queda en Aprobado.
+- **Filas Sensibles**: casilla **Sensible** de Aprobaciones (precios, descuentos, promesas, temas médicos, legales o financieros). Además de lo anterior, Aprobó tiene que traer a alguien de `APROBADORES_SENSIBLES` (Al y Bonzo); si no, o si la variable está vacía, Error con el motivo. El CMO la marca al proponer; una persona también puede marcarla. Límite: un aprobador del cliente puede desmarcarla antes de aprobar (Notion no guarda el historial de una propiedad en la API).
 - Tope por sesión (default 2 USD, máximo 5 aunque Notion pida más). Máximo MAX_SESIONES_DIA por día. MAX_INTENTOS por fila.
 - Se reclama la fila antes de crear la sesión; nada se reintenta solo tras un error.
 - HARNESS_PAUSA=1 apaga el despacho sin tocar código.
@@ -26,12 +27,12 @@ El harness solo despacha agentes que están en el catálogo y tienen su id en un
 | CMO | MA_AGENT_CMO | marca | `campana_id`, `filas` (al menos una), `sin_agente` |
 
 ### Campañas → CMO (`lib/campanas.mjs`)
-Cuando Al o Bonzo pasan una campaña de la base Campañas a **Aprobada** (con Aprobó y la última edición suyos, Ruta y Piezas llenas), el disparador:
+Cuando una campaña de la base Campañas pasa a **Aprobada** con Aprobó y la última edición de los Aprobadores de la ficha de su cliente (Ficha de cliente → Aprobadores), Ruta y Piezas llenas, el disparador:
 1. la pasa a **En producción** antes de crear nada, para no despacharla dos veces;
 2. crea en Aprobaciones la fila "Desglose · <campaña>" con Agente = CMO, ya **En curso** y ligada a la campaña;
 3. abre la sesión del CMO con los datos de la campaña y la lista de agentes con id configurado.
 
-El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe con la integración de Notion de los agentes (un bot), así que el harness no despacha ninguna de esas filas hasta que Al o Bonzo las aprueben. Las campañas comparten el cupo diario con las filas.
+El CMO escribe una fila **Propuesta** por pieza, ligada a la campaña. Escribe con la integración de Notion de los agentes (un bot), así que el harness no despacha ninguna de esas filas hasta que un aprobador del cliente las apruebe (y Al o Bonzo, si el CMO la marcó Sensible). Las campañas comparten el cupo diario con las filas.
 
 Al cerrar la sesión del CMO, el harness comprueba en Notion cada fila que el CMO dice que escribió (regla 8): que exista, esté en Propuesta, sin Aprobó, con un agente de pieza y ligada a la campaña. Si todo cuadra, Verificador = Aprobada; si no, Rechazada con el detalle en el informe. La fila del CMO siempre queda en Para revisar.
 
@@ -65,7 +66,7 @@ Una sesión arma una campaña de Meta con un conjunto y un anuncio por pieza ya 
 Al cerrar la sesión el harness revisa solo el formato de esa respuesta y lo anota en el informe. Si el trabajo está bien lo decide el Verificador o una persona, comprobándolo en la herramienta.
 
 ## Ruteo por cliente (`lib/clientes.mjs`, interruptor RUTEO_CLIENTES)
-Apagado por defecto: sin `RUTEO_CLIENTES=1` todo sale de las variables globales, como antes. Encendido, cada fila resuelve su cliente
+Apagado por defecto: sin `RUTEO_CLIENTES=1` todo sale de las variables globales, menos quién aprueba (la ficha del cliente siempre se lee para sus Aprobadores). Encendido, cada fila resuelve su cliente
 así: fila → Campaña ligada (una) → Ficha de cliente (una) → página de la base Clientes (NOTION_CLIENTES_ID). Falla cerrado (Estado = Error,
 motivo en Error, sin sesión): sin campaña o sin cliente ("sin cliente…"), cliente no Activo, campo que el agente necesita vacío (el error lo
 nombra) o vault que no es del cliente. El vault se comprueba con su metadata: `{cliente: <Slug>, rol: <agente en minúsculas>}`.
@@ -80,7 +81,7 @@ contra lo suyo; una sesión de otro cliente o con otro vault sale Rechazada. Sec
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
-   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, NOTION_APROBADORES (ids de usuario de Notion de Al y Bonzo, separados por coma), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Landing (GitHub App): GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_PRIVATE_KEY (secreta; la llave .pem completa, sirve con saltos de línea o con \\n) y MA_CRED_GITHUB_LANDING (la imprime `crear_agente_landing.py`); opcionales GH_LANDINGS_URL y GH_LANDINGS_REPO. Creativo (misma App): MA_CRED_GITHUB_CREATIVO (la imprime `crear_agente_creativo.py`); opcional GH_PIEZAS_REPO. Pauta: MA_AGENT_PAUTA, MA_VAULT_PAUTA, META_AD_ACCOUNT_ID, META_PAGE_ID, opcionales META_IG_USER_ID y META_PIXEL_ID (los imprime `crear_agente_pauta.py`), META_TOPE_DIARIO_MXN, META_DOMINIOS (marketing.5cero5.com por omisión), GH_PIEZAS_URL; y META_TOKEN como secreta. Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
+   ANTHROPIC_API_KEY, ANTHROPIC_WEBHOOK_SIGNING_KEY, NOTION_TOKEN, APROBADORES_SENSIBLES (ids de usuario de Notion de Al y Bonzo, separados por coma; los únicos que aprueban filas Sensibles), MA_ENVIRONMENT_ID, MA_VAULT_IDS, MA_AGENT_CREATIVO, MA_AGENT_LANDING, MA_AGENT_CRM, MA_AGENT_CMO, GH_REPO_URL (repo de marca), GH_AGENTES_URL (este repo, para landing.py y correo.py), GH_REPO_READ_TOKEN (fine-grained, solo lectura, con acceso a los dos repos; si prefieres uno por repo, GH_AGENTES_READ_TOKEN). Vault por agente: MA_VAULT_CREATIVO, MA_VAULT_LANDING, MA_VAULT_CRM, MA_VAULT_CMO (cada uno solo con las credenciales de ese agente; si falta, se usa MA_VAULT_IDS). Landing (GitHub App): GH_APP_ID, GH_APP_INSTALLATION_ID, GH_APP_PRIVATE_KEY (secreta; la llave .pem completa, sirve con saltos de línea o con \\n) y MA_CRED_GITHUB_LANDING (la imprime `crear_agente_landing.py`); opcionales GH_LANDINGS_URL y GH_LANDINGS_REPO. Creativo (misma App): MA_CRED_GITHUB_CREATIVO (la imprime `crear_agente_creativo.py`); opcional GH_PIEZAS_REPO. Pauta: MA_AGENT_PAUTA, MA_VAULT_PAUTA, META_AD_ACCOUNT_ID, META_PAGE_ID, opcionales META_IG_USER_ID y META_PIXEL_ID (los imprime `crear_agente_pauta.py`), META_TOPE_DIARIO_MXN, META_DOMINIOS (marketing.5cero5.com por omisión), GH_PIEZAS_URL; y META_TOKEN como secreta. Opcionales: NOTION_CAMPANAS_ID (data source de Campañas), TOPE_DEFAULT_USD, TOPE_MAX_USD, MAX_SESIONES_DIA, MAX_INTENTOS, MAX_MINUTOS_SESION, VERIFICADOR_ACTIVO, HARNESS_PAUSA.
 3. Notion, dos integraciones: una del harness (su token es `NOTION_TOKEN`; leer, actualizar e insertar; compartida con Aprobaciones, Campañas y Clientes) y "5cero5 agentes", la del CMO (su token va solo en los vaults del CMO; leer e insertar; compartida solo con Aprobaciones y Campañas; su id de usuario es `NOTION_BOT_CMO`).
 4. Deploy a producción (las funciones programadas solo corren en deploys publicados).
 5. Claude Console > Webhooks: registrar `https://<sitio-harness>.netlify.app/api/webhook-sesion` con los eventos `session.status_idled`, `session.status_terminated` y `session.budget_reached` (los `session.thread_*` no hacen falta: se ignoran). Copiar la signing key a ANTHROPIC_WEBHOOK_SIGNING_KEY y volver a hacer deploy.
@@ -93,7 +94,7 @@ contra lo suyo; una sesión de otro cliente o con otro vault sale Rechazada. Sec
 Por cliente: cada script acepta `--cliente <slug>` (por defecto `5cero5`). Crea el vault `<slug> · <Agente>` con metadata `{cliente: <slug>, rol: <agente>}` (lo que exige el ruteo) y sus credenciales, guarda los ids en `estado-<slug>-<agente>.json` e imprime lo que va en la ficha del cliente (Vault, Credencial GitHub, ids de Meta). El agente es común: con otro cliente no se crea ni se actualiza (`--actualizar-agente` solo con `5cero5`). Para Pauta, `META_TOKEN` es el del usuario del sistema de ese cliente y debe ver una sola cuenta publicitaria. Prueba sin red: `python3 infra/test_infra.py`.
 
 ## Pruebas
-`npm ci && npm test` (77 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
+`npm ci && npm test` (107 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.

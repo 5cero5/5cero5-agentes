@@ -3,7 +3,7 @@
 // y el barrido funcionan igual que con cualquier otra fila.
 import { P } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
-import { clienteDeCampana, validaCliente, compruebaVault, cfgCliente } from './clientes.mjs';
+import { clienteDeCampana, validaCliente, compruebaVault, cfgCliente, revisaAprobacion } from './clientes.mjs';
 import { conGithub } from './github.mjs';
 
 const RUTAS = ['Cita', 'Pedido', 'Visita']; // regla 2
@@ -35,12 +35,10 @@ export function leeCampana(page) {
   };
 }
 
-// Mismas reglas que una fila: aprobada por Al o Bonzo y con la última edición suya.
+// Lo que se revisa sin el cliente. Quién aprobó se revisa después, como en las filas: Aprobó y la última edición tienen
+// que estar en los Aprobadores de la ficha del cliente de la campaña (revisaAprobacion).
 export function esCampanaDespachable(k, c) {
   if (k.estado !== 'Aprobada') return 'estado';
-  if (!c.aprobadores.length) return 'sin_aprobadores_configurados';
-  if (!k.aprobo.some(id => c.aprobadores.includes(id))) return 'aprobo_no_autorizado';
-  if (!c.aprobadores.includes(k.editadoPor?.id)) return 'ultima_edicion_no_es_de_un_aprobador';
   if (!RUTAS.includes(k.ruta)) return 'sin_ruta';
   if (!(k.piezas > 0)) return 'sin_piezas';
   if (!c.agentes.CMO) return 'cmo_sin_configurar';
@@ -73,13 +71,20 @@ export async function despachaCampanas({ client, notion, c, cupo, cache = new Ma
     const motivo = esCampanaDespachable(k, c);
     if (motivo) { out.omitidas.push([k.id, motivo]); continue; }
     if (cupo <= 0) { out.omitidas.push([k.id, 'tope_diario']); continue; }
-    // Ruteo por cliente: la campaña tiene que tener un solo cliente Activo con Vault CMO suyo y Ruta. Si no, la fila del CMO
-    // se crea ya en Error con el motivo (queda a la vista y la campaña no se vuelve a despachar).
+    // La campaña tiene que tener un solo cliente, y Aprobó y la última edición en sus Aprobadores (siempre, sin lista global).
+    // Con el ruteo, además, cliente Activo con Vault CMO suyo y Ruta. Si algo falla cerrado, la fila del CMO se crea ya en
+    // Error con el motivo (queda a la vista y la campaña no se vuelve a despachar).
     let cc = c, cli = null, errCliente = null;
-    if (c.ruteoClientes) {
-      try { cli = await clienteDeCampana(notion, c, k.id, cache); validaCliente(cli, 'CMO'); await compruebaVault(client, cli, 'CMO'); cc = cfgCliente(c, cli); }
+    try { cli = await clienteDeCampana(notion, c, k.id, cache); } catch (e) { errCliente = e.message; }
+    if (cli) {
+      const aprob = revisaAprobacion(k, cli, c);
+      if (aprob && !aprob.error) { out.omitidas.push([k.id, aprob.motivo]); continue; }
+      if (aprob) errCliente = aprob.error;
+    }
+    if (c.ruteoClientes && cli && !errCliente) {
+      try { validaCliente(cli, 'CMO'); await compruebaVault(client, cli, 'CMO'); cc = cfgCliente(c, cli); }
       catch (e) { errCliente = e.message; }
-      if (cli && !errCliente && (hoyCliente.get(cli.id) || 0) >= cc.maxSesionesPorDia) { out.omitidas.push([k.id, 'tope_diario_cliente']); continue; }
+      if (!errCliente && (hoyCliente.get(cli.id) || 0) >= cc.maxSesionesPorDia) { out.omitidas.push([k.id, 'tope_diario_cliente']); continue; }
     }
     // Se reclama ANTES de crear nada: la campaña sale de Aprobada y no se vuelve a despachar.
     await notion.update(k.id, { Estado: P.select('En producción') });
@@ -93,7 +98,7 @@ export async function despachaCampanas({ client, notion, c, cupo, cache = new Ma
       Campaña: P.texto(k.nombre),
       'Campaña ligada': P.relacion([k.id]),
       Brief: P.texto(brief),
-      Aprobó: P.personas(k.aprobo.filter(id => c.aprobadores.includes(id))),
+      Aprobó: P.personas(k.aprobo.filter(id => cli?.aprobadores.includes(id))),
       Intentos: P.numero(1),
       Inició: P.fecha(ahora()),
       'Tope de la sesión (USD)': P.numero(cc.topeDefaultUsd),
