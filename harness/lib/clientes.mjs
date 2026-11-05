@@ -40,6 +40,8 @@ export function leeCliente(page) {
     'Sitio de landings': p['Sitio de landings']?.url || '',
     'Meta cuenta': t('Meta cuenta'), 'Meta página': t('Meta página'), 'Meta Instagram': t('Meta Instagram'), 'Meta Pixel': t('Meta Pixel'),
     'Vault CMO': t('Vault CMO'), 'Vault CRM': t('Vault CRM'), 'Vault Landing': t('Vault Landing'), 'Vault Creativo': t('Vault Creativo'),
+    // Número de WhatsApp para pauta Click to WhatsApp: formato internacional, solo dígitos. Texto, teléfono o número en Notion.
+    'WhatsApp pauta': (p['WhatsApp pauta']?.phone_number ?? (typeof p['WhatsApp pauta']?.number === 'number' ? String(p['WhatsApp pauta'].number) : t('WhatsApp pauta')) ?? '').trim(),
     'Vault Pauta': t('Vault Pauta'), 'Credencial GitHub Landing': t('Credencial GitHub Landing'), 'Credencial GitHub Creativo': t('Credencial GitHub Creativo'),
   };
   return {
@@ -55,7 +57,8 @@ export function leeCliente(page) {
     repos: { marca: repoDe(crudo['Repo de marca']), landings: repoDe(crudo['Repo de landings']), piezas: repoDe(crudo['Repo de piezas']) },
     sitio: crudo['Sitio de landings'],
     dominio: hostDe(crudo['Sitio de landings']),
-    meta: { cuenta: act(crudo['Meta cuenta']), pagina: crudo['Meta página'], ig: crudo['Meta Instagram'], pixel: crudo['Meta Pixel'] },
+    meta: { cuenta: act(crudo['Meta cuenta']), pagina: crudo['Meta página'], ig: crudo['Meta Instagram'], pixel: crudo['Meta Pixel'],
+      whatsapp: crudo['WhatsApp pauta'] },
     vaults: { CMO: crudo['Vault CMO'], CRM: crudo['Vault CRM'], Landing: crudo['Vault Landing'], Creativo: crudo['Vault Creativo'], Pauta: crudo['Vault Pauta'] },
     creds: { Landing: crudo['Credencial GitHub Landing'], Creativo: crudo['Credencial GitHub Creativo'] },
     tope: n('Tope de sesión (USD)'),
@@ -125,6 +128,18 @@ export function validaCliente(cli, agente) {
   if (CAMPOS[agente].includes('Meta cuenta') && !/^act_\d{5,20}$/.test(cli.meta.cuenta)) throw falla(`Meta cuenta inválida en la ficha de ${quien}`);
 }
 
+// Pauta con "Destino: WhatsApp": el número sale de la ficha ("WhatsApp pauta"), nunca del brief. Sin el interruptor o sin
+// el número (o con un número que no sea solo dígitos), falla cerrado y el error nombra el campo. Devuelve el número.
+export const TEL_WHATSAPP = /^\d{10,15}$/;
+export function whatsappDeLaFicha(cli, c) {
+  const quien = cli.nombre || cli.slug || cli.id;
+  if (!c.pautaWhatsapp) throw falla('Destino WhatsApp con PAUTA_WHATSAPP apagado: no se despacha (lo enciende Al en el harness)');
+  const n = cli.meta?.whatsapp || '';
+  if (!n) throw falla(`Falta WhatsApp pauta en la ficha de ${quien} (agente Pauta, Destino: WhatsApp)`);
+  if (!TEL_WHATSAPP.test(n)) throw falla(`WhatsApp pauta inválido en la ficha de ${quien}: formato internacional, solo dígitos (por ejemplo 5281...)`);
+  return n;
+}
+
 // El vault de la ficha tiene que ser de ese cliente y de ese agente: metadata {cliente: <slug>, rol: <agente>} y sin archivar.
 // Así una ficha con el vault de otro cliente (copiado por error) no abre sesión.
 export async function compruebaVault(client, cli, agente) {
@@ -158,6 +173,8 @@ export function cfgCliente(c, cli) {
     },
     meta: {
       ...c.meta, cuenta: cli.meta.cuenta || undefined, pagina: cli.meta.pagina || undefined, ig: cli.meta.ig, pixel: cli.meta.pixel,
+      // Solo para comprobar al cerrar. El comando de la sesión lo lleva solo si el brief dice Destino: WhatsApp (despacho).
+      whatsappFicha: cli.meta.whatsapp || undefined, whatsapp: undefined,
       topeDiarioMxn: cli.topePauta ?? c.meta.topeDiarioMxn,
       dominios: cli.dominio ? [cli.dominio] : [],
       token: c.secretoCliente('META_TOKEN', cli.slug) || c.meta.token,

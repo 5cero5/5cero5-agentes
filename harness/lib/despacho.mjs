@@ -1,9 +1,9 @@
 import { P, leePagina } from './notion.mjs';
 import { parametrosSesion } from './sessions.mjs';
 import { despachaCampanas, piezasPendientes } from './campanas.mjs';
-import { agenteDe } from './agentes.mjs';
+import { agenteDe, destinoWhatsApp } from './agentes.mjs';
 import { conGithub } from './github.mjs';
-import { preparaCliente, resuelveCliente, revisaAprobacion } from './clientes.mjs';
+import { preparaCliente, resuelveCliente, revisaAprobacion, whatsappDeLaFicha } from './clientes.mjs';
 import { compruebaFotoDelBrief, preparaRonda } from './rondas.mjs';
 
 const ahora = () => new Date().toISOString();
@@ -64,6 +64,14 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
       catch (e) {
         await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(e.message) });
         out.omitidas.push([fila.id, 'cliente']); continue;
+      }
+    }
+    // Pauta con "Destino: WhatsApp": el número sale de la ficha (con o sin ruteo) y solo entonces va en el comando.
+    if (agenteDe(fila.agente)?.meta && destinoWhatsApp(fila.brief)) {
+      try { cc = { ...cc, meta: { ...cc.meta, whatsapp: whatsappDeLaFicha(cliFila, c) } }; }
+      catch (e) {
+        await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(e.message) });
+        out.omitidas.push([fila.id, 'whatsapp']); continue;
       }
     }
     if (cupo <= 0) { out.omitidas.push([fila.id, 'tope_diario']); continue; }

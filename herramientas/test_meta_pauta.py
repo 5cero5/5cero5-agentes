@@ -22,6 +22,7 @@ class M:
         self.objs, self.n, self.campanas_existentes = {}, 100, []
         self.forzar_status = None
         self.cuentas_token = [CTA]  # cuentas que ve el token (usuario del sistema del cliente)
+        self.wa_pagina = "+52 1 81 1234 5678"  # número de WhatsApp ligado a la página (como lo regresa Meta)
 
 
 S = M()
@@ -48,7 +49,7 @@ class H(BaseHTTPRequestHandler):
         p = u.path
         if p == f"/{CTA}": return self.send(S.cuenta)
         if p == "/me/adaccounts": return self.send({"data": [{"id": x} for x in S.cuentas_token]})
-        if p == f"/{PAG}": return self.send({"id": PAG, "name": "5cero5"})
+        if p == f"/{PAG}": return self.send({"id": PAG, "name": "5cero5", **({"whatsapp_number": S.wa_pagina} if S.wa_pagina else {})})
         if p == f"/{CTA}/campaigns": return self.send({"data": S.campanas_existentes})
         partes = p.strip("/").split("/")
         if len(partes) == 2 and partes[0] in S.objs and partes[1] in ("adsets", "ads"):
@@ -69,6 +70,8 @@ class H(BaseHTTPRequestHandler):
         o = {"id": i, "name": body.get("name"), "status": S.forzar_status or body.get("status"), "_tipo": {"campaigns": "campaign", "adsets": "adset", "ads": "ad", "adcreatives": "creative"}[tipo]}
         if tipo == "adsets":
             o["_campana"] = body["campaign_id"]; o["daily_budget"] = body["daily_budget"]
+            o["destination_type"] = body.get("destination_type")
+            if body.get("promoted_object"): o["promoted_object"] = json.loads(body["promoted_object"])
         if tipo == "ads":
             o["_campana"] = next(x["_campana"] for x in S.objs.values() if x["id"] == body["adset_id"])
         S.objs[i] = o
@@ -102,8 +105,9 @@ def plan(**kw):
     f = TMP / "plan-entrada.json"; f.write_text(json.dumps(p, ensure_ascii=False)); return f
 
 
-def corre(*args, token=TOKEN, extra=()):
-    env = {**os.environ, "META_API_BASE": BASE, "META_TOKEN": token}
+def corre(*args, token=TOKEN, extra=(), env_extra=None):
+    env = {**os.environ, "META_API_BASE": BASE, "META_TOKEN": token, **(env_extra or {})}
+    env.pop("PAUTA_WHATSAPP", None) if not env_extra or "PAUTA_WHATSAPP" not in env_extra else None
     cmd = [sys.executable, str(HERR), "--trabajo", str(TRABAJO), "--piezas", str(PIEZAS), "--cuenta", CTA, "--pagina", PAG,
            "--tope-mxn", "1500", *extra, *args]
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -256,6 +260,105 @@ corre("crear", "--nombre", "2026-10_mty_agencia-vs-505", extra=("--pixel", "9988
 conj = S.posts[1][1] if len(S.posts) > 1 else {}
 caso("crear: leads optimiza a LEAD del Pixel", S.posts and S.posts[0][1].get("objective") == "OUTCOME_LEADS"
      and json.loads(conj.get("promoted_object", "{}")) == {"pixel_id": "998877", "custom_event_type": "LEAD"}, str(conj))
+
+# destino WhatsApp (Click to WhatsApp): el número sale de la ficha (--whatsapp, lo pone el harness), nunca del brief
+NUM_A, NUM_B = "5218112345678", "5215598765432"  # ficha del cliente A (ligado a su página) y ficha del cliente B
+WA_ON = {"PAUTA_WHATSAPP": "1"}
+NOM = "2026-10_mty_agencia-vs-505"
+
+
+def plan_wa(**kw):
+    base = dict(destino="WhatsApp", objetivo="whatsapp", saludo="Hola, gracias por escribir a 5cero5.",
+                anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "Hola, quiero mi diagnóstico (a01)"},
+                          {"nombre": "a02_historia_agencia", "pieza": "historia-agencia", "mensaje": "a02: quiero más información"}])
+    base.update(kw)
+    f = plan(**base); d = json.loads(f.read_text()); d.pop("boton", None)
+    if "boton" in kw: d["boton"] = kw["boton"]
+    f.write_text(json.dumps(d, ensure_ascii=False)); return f
+
+
+def wa(*args, numero=NUM_A, env=WA_ON):
+    return corre(*args, extra=(("--whatsapp", numero) if numero else ()), env_extra=env)
+
+
+escrituras = lambda: [x for x, _ in S.posts]  # noqa: E731
+
+limpia(); rc, out = wa("plan", "--archivo", str(plan_wa()))
+caso("whatsapp: plan válido con el número de la ficha ligado a la página", rc == 0, out)
+plan_ok = json.loads((TRABAJO / NOM / "plan.json").read_text())
+caso("whatsapp: el plan guarda el número de la ficha, sin URL y con el botón de WhatsApp",
+     plan_ok["whatsapp"] == NUM_A and plan_ok["destino"] == "WhatsApp" and plan_ok["boton"] == "WHATSAPP_MESSAGE" and plan_ok["objetivo"] == "whatsapp", str(plan_ok))
+S.gets.clear(); rc, out = wa("crear", "--nombre", NOM)
+caso("whatsapp: crear termina", rc == 0 and "todo en pausa" in out, out)
+idx_pagina = next((i for i, g in enumerate(S.gets) if g[0] == f"/{PAG}" and "whatsapp_number" in g[1].get("fields", "")), None)
+caso("whatsapp: lee en Meta el número ligado a la página antes de escribir", idx_pagina is not None and S.posts, str(S.gets[:3]))
+rutas = escrituras()
+caso("whatsapp: solo escribe en la cuenta y en el orden esperado",
+     rutas == [f"/{CTA}/campaigns", f"/{CTA}/adsets"] + [f"/{CTA}/{t}" for t in ("adimages", "adcreatives", "ads")] * 2, str(rutas))
+con_status = [b for x, b in S.posts if x.rsplit("/", 1)[-1] in ("campaigns", "adsets", "ads")]
+caso("whatsapp: campaña, conjunto y anuncios en PAUSED", len(con_status) == 4 and all(b["status"] == "PAUSED" for b in con_status), str(con_status))
+camp, conj, cre = S.posts[0][1], S.posts[1][1], S.posts[3][1]
+caso("whatsapp: campaña de clientes potenciales", camp["objective"] == "OUTCOME_LEADS", str(camp))
+caso("whatsapp: conjunto a WhatsApp, optimiza a conversaciones, con página y número de la ficha",
+     conj["destination_type"] == "WHATSAPP" and conj["optimization_goal"] == "CONVERSATIONS"
+     and json.loads(conj["promoted_object"]) == {"page_id": PAG, "whatsapp_phone_number": NUM_A}, str(conj))
+t = json.loads(conj["targeting"])
+caso("whatsapp: sigue el público en México, el tope y el inicio futuro",
+     "custom_locations" in t["geo_locations"] and conj["daily_budget"] == "50000" and conj["start_time"].startswith("2099-01-05"), str(conj))
+spec = json.loads(cre["object_story_spec"]); ld = spec["link_data"]; pwm = json.loads(ld["page_welcome_message"])
+caso("whatsapp: creativo con botón WHATSAPP_MESSAGE, sin url_tags y sin URL del brief",
+     ld["call_to_action"] == {"type": "WHATSAPP_MESSAGE", "value": {"app_destination": "WHATSAPP"}} and ld["link"] == "https://api.whatsapp.com/send"
+     and "url_tags" not in cre and spec["page_id"] == PAG, str(cre))
+caso("whatsapp: mensaje prellenado con el código del anuncio",
+     pwm["text_format"]["customer_action_type"] == "autofill_message" and "a01" in pwm["text_format"]["message"]["autofill_message"]["content"]
+     and pwm["landing_screen_type"] == "welcome_message", str(pwm))
+rc, out = wa("comprobar", "--nombre", NOM)
+caso("whatsapp: comprobar lee el número en el conjunto y todo en pausa", rc == 0 and '"estado": "PAUSED"' in out, out)
+
+rechazos = [
+    ("número del brief distinto al de la ficha", dict(plan=lambda: plan_wa(whatsapp=NUM_B)), "no es idéntico"),
+    ("cliente A con el número del cliente B en el brief (no cruce)", dict(plan=lambda: plan_wa(whatsapp=NUM_B), numero=NUM_A), "un brief no puede cambiar"),
+    ("ficha sin WhatsApp pauta", dict(plan=lambda: plan_wa(), numero=""), "WhatsApp pauta"),
+    ("PAUTA_WHATSAPP apagado", dict(plan=lambda: plan_wa(), env={}), "PAUTA_WHATSAPP"),
+    ("mensaje sin su código a##", dict(plan=lambda: plan_wa(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "Hola, quiero info"}])), "código a01"),
+    ("mensaje con el código de otro anuncio", dict(plan=lambda: plan_wa(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "Hola a02"}])), "código a01"),
+    ("anuncio sin mensaje prellenado", dict(plan=lambda: plan_wa(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia"}])), "mensaje prellenado"),
+    ("anuncio con URL de destino", dict(plan=lambda: plan_wa(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "a01",
+                                                                "destino": "https://marketing.5cero5.com/x/"}])), "URL"),
+    ("mensaje con una URL", dict(plan=lambda: plan_wa(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "a01 https://otro.com"}])), "URL"),
+    ("plan con link suelto", dict(plan=lambda: plan_wa(link="https://marketing.5cero5.com/x/")), "URL"),
+    ("texto con una URL", dict(plan=lambda: plan_wa(texto="Escríbenos o entra a www.otro.com")), "URL"),
+    ("botón distinto de WhatsApp", dict(plan=lambda: plan_wa(boton="LEARN_MORE")), "WHATSAPP_MESSAGE"),
+    ("objetivo de tráfico con destino WhatsApp", dict(plan=lambda: plan_wa(objetivo="trafico")), "objetivo"),
+    ("objetivo whatsapp con destino URL", dict(plan=lambda: plan(objetivo="whatsapp")), "solo con destino WhatsApp"),
+    ("mensaje prellenado con destino URL", dict(plan=lambda: plan(anuncios=[{"nombre": "a01_post4x5_agencia", "pieza": "post-agencia", "mensaje": "a01"}])), "no es WhatsApp"),
+]
+for nombre, k, espera in rechazos:
+    limpia(); rc, out = wa("plan", "--archivo", str(k["plan"]()), numero=k.get("numero", NUM_A), env=k.get("env", WA_ON))
+    caso(f"whatsapp: plan rechaza {nombre}", rc != 0 and espera in out and not S.posts, out)
+limpia(); rc, out = wa("plan", "--archivo", str(plan_wa()), env={})
+caso("whatsapp: apagado no llama a Meta", rc != 0 and not S.gets and not S.posts, str(S.gets))
+limpia(); S.wa_pagina = ""; rc, out = wa("plan", "--archivo", str(plan_wa()))
+caso("whatsapp: plan rechaza página sin número ligado", rc != 0 and "no tiene ligado" in out and not S.posts, out)
+limpia(); rc, out = wa("plan", "--archivo", str(plan_wa(whatsapp=NUM_B)), numero=NUM_B)
+caso("whatsapp: ficha de B sobre la página de A (ligada a otro número) se rechaza", rc != 0 and "no tiene ligado" in out and NUM_B in out and not S.posts, out)
+
+# Lo mismo, pero cuando el plan ya estaba validado: crear vuelve a revisar antes de escribir.
+for nombre, prepara, k, espera in [
+    ("PAUTA_WHATSAPP apagado", None, dict(env={}), "PAUTA_WHATSAPP"),
+    ("ficha sin número", None, dict(numero=""), "WhatsApp pauta"),
+    ("ficha con otro número (B)", None, dict(numero=NUM_B), "no es idéntico"),
+    ("página que ya no tiene el número", lambda: setattr(S, "wa_pagina", ""), {}, "no tiene ligado"),
+]:
+    limpia(); wa("plan", "--archivo", str(plan_wa()))
+    if prepara: prepara()
+    rc, out = wa("crear", "--nombre", NOM, numero=k.get("numero", NUM_A), env=k.get("env", WA_ON))
+    caso(f"whatsapp: crear rechaza {nombre} sin escribir", rc != 0 and espera in out and not S.posts, out)
+
+limpia(); rc, out = corre("plan", "--archivo", str(plan()), extra=("--whatsapp", NUM_A), env_extra=WA_ON)
+caso("whatsapp: con destino URL y el interruptor prendido todo sigue como hoy", rc == 0 and not S.gets, out)
+limpia(); rc, out = corre("cuenta", extra=("--whatsapp", "+52 81 1234"))
+caso("whatsapp: --whatsapp que no es solo dígitos se rechaza", rc != 0 and "solo dígitos" in out, out)
 
 # la única salida de escritura
 spec_ = importlib.util.spec_from_file_location("mp", HERR); mp = importlib.util.module_from_spec(spec_); spec_.loader.exec_module(mp)

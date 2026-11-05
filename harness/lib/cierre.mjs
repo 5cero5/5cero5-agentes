@@ -80,7 +80,13 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     // Aunque la respuesta venga incompleta (creación a medias), si trae el id de una campaña se lee en Meta y se frena.
     const r = ultimoJson(resultado);
     const conId = /^\d+$/.test(String(r?.campana_meta_id || ''));
-    let rev = conId ? await compruebaCampana({ c: cc, respuesta: r, inicio: fila.inicio, fetchImpl })
+    // El número de WhatsApp contra el que se compara sale de la ficha también sin el ruteo (con el ruteo ya viene en cc).
+    let ccMeta = cc;
+    if (!c.ruteoClientes) {
+      try { ccMeta = { ...cc, meta: { ...cc.meta, whatsappFicha: (await resuelveCliente(notion, c, fila)).meta.whatsapp || undefined } }; }
+      catch { /* sin ficha no hay número: una campaña de WhatsApp sale Rechazada */ }
+    }
+    let rev = conId ? await compruebaCampana({ c: ccMeta, respuesta: r, inicio: fila.inicio, fetchImpl })
       : { ok: false, informe: 'Sin comprobación: la respuesta no trae el id de la campaña. Revisar a mano en el Administrador de anuncios que no haya nada encendido.' };
     if (formato && rev.ok) rev = { ...rev, ok: false };
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');

@@ -33,18 +33,18 @@ const c = cfg({
 const CLIENTES = {
   a: { id: 'cli-a', nombre: 'Cliente A', slug: 'cliente-a', estado: 'Activo', ruta: 'Cita', loc: 'locA000001',
     marca: 'cliente-a/marca-a', landings: 'cliente-a/landings-a', piezas: 'cliente-a/piezas-a', sitio: 'https://landings.cliente-a.mx',
-    cuenta: '1111111', pagina: '2111111', tope: 3, topePauta: 800, max: null,
+    cuenta: '1111111', pagina: '2111111', whatsapp: '5218111111111', tope: 3, topePauta: 800, max: null,
     vaults: { Pauta: 'vlt_a_pauta', Creativo: 'vlt_a_creativo', Landing: 'vlt_a_landing', CRM: 'vlt_a_crm', CMO: 'vlt_a_cmo' },
     creds: { Landing: 'vcrd_a_landing', Creativo: 'vcrd_a_creativo' } },
   b: { id: 'cli-b', nombre: 'Cliente B', slug: 'cliente-b', estado: 'Activo', ruta: 'Pedido', loc: 'locB000002',
     marca: 'cliente-b/marca-b', landings: 'cliente-b/landings-b', piezas: 'cliente-b/piezas-b', sitio: 'https://landings.cliente-b.mx',
-    cuenta: '2222222', pagina: '3222222', tope: null, topePauta: null, max: null,
+    cuenta: '2222222', pagina: '3222222', whatsapp: '5215522222222', tope: null, topePauta: null, max: null,
     vaults: { Pauta: 'vlt_b_pauta', Creativo: 'vlt_b_creativo', Landing: 'vlt_b_landing', CRM: 'vlt_b_crm', CMO: 'vlt_b_cmo' },
     creds: { Landing: 'vcrd_b_landing', Creativo: 'vcrd_b_creativo' } },
 };
 // Lo que identifica a cada cliente: si aparece en una sesión del otro, hay cruce.
-const HUELLA = { a: ['cliente-a', 'marca-a', 'landings-a', 'piezas-a', '1111111', '2111111', 'locA000001', 'vlt_a_', 'vcrd_a_'],
-  b: ['cliente-b', 'marca-b', 'landings-b', 'piezas-b', '2222222', '3222222', 'locB000002', 'vlt_b_', 'vcrd_b_'] };
+const HUELLA = { a: ['cliente-a', 'marca-a', 'landings-a', 'piezas-a', '1111111', '2111111', 'locA000001', 'vlt_a_', 'vcrd_a_', '5218111111111'],
+  b: ['cliente-b', 'marca-b', 'landings-b', 'piezas-b', '2222222', '3222222', 'locB000002', 'vlt_b_', 'vcrd_b_', '5215522222222'] };
 const otro = k => (k === 'a' ? 'b' : 'a');
 
 const txt = s => ({ rich_text: s ? [{ plain_text: s }] : [] });
@@ -54,7 +54,7 @@ function pageCliente(k, o = {}) {
     Cliente: { title: [{ plain_text: x.nombre }] }, Slug: txt(x.slug), Estado: { select: x.estado ? { name: x.estado } : null },
     Ruta: { select: x.ruta ? { name: x.ruta } : null }, 'HighLevel Location ID': txt(x.loc),
     'Repo de marca': txt(x.marca), 'Repo de landings': txt(x.landings), 'Repo de piezas': txt(x.piezas), 'Sitio de landings': { url: x.sitio || null },
-    'Meta cuenta': txt(x.cuenta), 'Meta página': txt(x.pagina), 'Meta Instagram': txt(''), 'Meta Pixel': txt(''),
+    'Meta cuenta': txt(x.cuenta), 'Meta página': txt(x.pagina), 'Meta Instagram': txt(''), 'Meta Pixel': txt(''), 'WhatsApp pauta': txt(x.whatsapp),
     ...Object.fromEntries(Object.entries(x.vaults).map(([a, v]) => [`Vault ${a}`, txt(v)])),
     'Credencial GitHub Landing': txt(x.creds.Landing), 'Credencial GitHub Creativo': txt(x.creds.Creativo),
     'Tope de sesión (USD)': { number: x.tope }, 'Tope diario de pauta (MXN)': { number: x.topePauta }, 'Máx. sesiones por día': { number: x.max },
@@ -384,4 +384,98 @@ test('interruptor: sin RUTEO_CLIENTES la ficha solo da los Aprobadores; ningún 
   const m = cl.creadas[0].initial_events[0].content[0].text;
   assert.match(m, /HL_LOCATION_ID=locGLOBAL python3 \/workspace\/agentes\/poc-conectores\/correo\.py/);
   assert.doesNotMatch(m, /--location|--repo|--cuenta-exclusiva/);
+});
+
+// ---- Pauta con destino WhatsApp (PAUTA_WHATSAPP): el número sale de la ficha, nunca del brief ----
+const cW = { ...c, pautaWhatsapp: true };
+const BRIEF_WA = 'Nombre en Meta: 2026-11_mty_promo.\nDestino: WhatsApp\nPresupuesto diario: 500 MXN.';
+async function despachaWA(f, paginas = paginasBase(), cfgW = cW) {
+  const notion = mockNotion({ filas: [f], paginas }); const cl = mockClient(); const api = mockApis();
+  await despacha({ client: cl, notion, c: cfgW, fetchImpl: api.fetch });
+  return { f, cl, msg: cl.creadas[0]?.initial_events[0].content[0].text || '' };
+}
+test('whatsapp: Destino WhatsApp → el comando lleva PAUTA_WHATSAPP=1 y el número de la ficha', async () => {
+  const { cl, msg } = await despachaWA(fila('Pauta', ['camp-a'], { brief: BRIEF_WA }));
+  assert.equal(cl.creadas.length, 1);
+  assert.match(msg, /PAUTA_WHATSAPP=1 python3 \/workspace\/agentes\/herramientas\/meta_pauta\.py .*--whatsapp 5218111111111/);
+  sinCruce(cl.creadas[0], 'a');
+});
+test('whatsapp: brief de A con el número de B → la sesión solo lleva el número de la ficha de A', async () => {
+  const brief = `${BRIEF_WA}\nWhatsApp: 5215522222222`;
+  const { cl, msg } = await despachaWA(fila('Pauta', ['camp-a'], { brief }));
+  assert.equal(cl.creadas.length, 1); assert.match(msg, /--whatsapp 5218111111111/); assert.doesNotMatch(msg, /--whatsapp 5215522222222/);
+});
+test('whatsapp: ficha sin "WhatsApp pauta" → no se despacha y el error nombra el campo', async () => {
+  const { f, cl } = await despachaWA(fila('Pauta', ['camp-a'], { brief: BRIEF_WA }), paginasBase({ 'cli-a': pageCliente('a', { whatsapp: '' }) }));
+  assert.equal(cl.creadas.length, 0); assert.equal(f.estado, 'Error'); assert.match(f.error, /Falta WhatsApp pauta en la ficha de Cliente A/);
+});
+test('whatsapp: "WhatsApp pauta" con formato que no es solo dígitos → no se despacha', async () => {
+  const { f, cl } = await despachaWA(fila('Pauta', ['camp-a'], { brief: BRIEF_WA }), paginasBase({ 'cli-a': pageCliente('a', { whatsapp: '+52 81 1111 1111' }) }));
+  assert.equal(cl.creadas.length, 0); assert.match(f.error, /WhatsApp pauta inválido en la ficha de Cliente A/);
+});
+test('whatsapp: con PAUTA_WHATSAPP apagado una fila con Destino WhatsApp no se despacha', async () => {
+  const { f, cl } = await despachaWA(fila('Pauta', ['camp-a'], { brief: BRIEF_WA }), paginasBase(), c);
+  assert.equal(cl.creadas.length, 0); assert.equal(f.estado, 'Error'); assert.match(f.error, /PAUTA_WHATSAPP apagado/);
+});
+test('whatsapp: sin Destino WhatsApp todo sigue como hoy (sin --whatsapp aunque la ficha tenga número)', async () => {
+  const { cl, msg } = await despachaWA(fila('Pauta', ['camp-a'], { brief: 'Destino: https://landings.cliente-a.mx/promo/' }));
+  assert.equal(cl.creadas.length, 1); assert.doesNotMatch(msg.match(/"pm" en tu prompt es exactamente: (.*)/)[1], /--whatsapp|PAUTA_WHATSAPP/);
+  assert.doesNotMatch(msg, /Destino WhatsApp: el número es/);
+});
+test('whatsapp: sin RUTEO_CLIENTES el número igual sale de la ficha de la fila', async () => {
+  const { cl, msg } = await despachaWA(fila('Pauta', ['camp-a'], { brief: BRIEF_WA }), paginasBase(), { ...cW, ruteoClientes: false });
+  assert.equal(cl.creadas.length, 1); assert.match(msg, /--pagina 9999998 .*--whatsapp 5218111111111/);
+});
+
+// Meta falsa para una campaña Click to WhatsApp del cliente A (cuenta 1111111, página 2111111).
+function metaWA({ numConjunto = '5218111111111', ligado = '+52 1 81 1111 1111', status = 'PAUSED' } = {}) {
+  const st = { posts: [] };
+  const ok = x => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+  st.fetch = async (url, init = {}) => {
+    const p = new URL(url).pathname.replace('/v25.0', '');
+    if (init.method === 'POST') { st.posts.push([p, String(init.body)]); return ok({ success: true }); }
+    if (p === '/900') return ok({ id: '900', name: '2026-11_mty_promo', status, objective: 'OUTCOME_LEADS', account_id: '1111111' });
+    if (p === '/900/adsets') return ok({ data: [{ id: '901', status: 'PAUSED', daily_budget: '50000', destination_type: 'WHATSAPP',
+      promoted_object: { page_id: '2111111', whatsapp_phone_number: numConjunto } }] });
+    if (p === '/900/ads') return ok({ data: [{ id: '902', status: 'PAUSED', creative: { object_story_spec: { page_id: '2111111', link_data: {
+      link: 'https://api.whatsapp.com/send', call_to_action: { type: 'WHATSAPP_MESSAGE', value: { app_destination: 'WHATSAPP' } } } } } }] });
+    if (p === '/2111111') return ok({ id: '2111111', ...(ligado ? { whatsapp_number: ligado } : {}) });
+    return ok({ spend_cap: '1' });
+  };
+  return st;
+}
+const respWA = { campana_meta_id: '900', nombre: '2026-11_mty_promo', conjunto_id: '901', anuncios: [{ id: '902' }] };
+test('whatsapp (Meta): campaña al número de la ficha, ligado a la página y en pausa → Aprobada', async () => {
+  const { compruebaCampana } = await import('../lib/meta.mjs');
+  const rev = await compruebaCampana({ c: cfgCliente(cW, leeCliente(pageCliente('a'))), respuesta: respWA, fetchImpl: metaWA().fetch });
+  assert.equal(rev.ok, true, rev.informe); assert.match(rev.informe, /a WhatsApp 5218111111111 \(el de la ficha\)/);
+});
+test('whatsapp (Meta): campaña activa con el número de B en una fila de A → el harness la pausa y sale Rechazada', async () => {
+  const { compruebaCampana } = await import('../lib/meta.mjs');
+  const m = metaWA({ numConjunto: '5215522222222', status: 'ACTIVE' });
+  const rev = await compruebaCampana({ c: cfgCliente(cW, leeCliente(pageCliente('a'))), respuesta: respWA, fetchImpl: m.fetch });
+  assert.equal(rev.ok, false); assert.deepEqual(m.posts, [['/900', 'status=PAUSED']]);
+  assert.match(rev.informe, /el harness la pausó/); assert.match(rev.informe, /WhatsApp 5215522222222, no al de la ficha \(5218111111111\)/);
+});
+test('whatsapp (Meta): página con otro número ligado, ficha sin número o interruptor apagado → Rechazada', async () => {
+  const { compruebaCampana } = await import('../lib/meta.mjs');
+  const casos = [
+    [cfgCliente(cW, leeCliente(pageCliente('a'))), metaWA({ ligado: '5215522222222' }), /tiene ligado el WhatsApp 5215522222222/],
+    [cfgCliente(cW, leeCliente(pageCliente('a'))), metaWA({ ligado: '' }), /tiene ligado el WhatsApp ninguno/],
+    [cfgCliente(cW, leeCliente(pageCliente('a', { whatsapp: '' }))), metaWA(), /la ficha del cliente no tiene WhatsApp pauta/],
+    [cfgCliente(c, leeCliente(pageCliente('a'))), metaWA(), /PAUTA_WHATSAPP apagado/],
+  ];
+  for (const [cc, m, re] of casos) {
+    const rev = await compruebaCampana({ c: cc, respuesta: respWA, fetchImpl: m.fetch });
+    assert.equal(rev.ok, false, `${re}`); assert.match(rev.informe, re);
+  }
+});
+test('whatsapp (cierre): fila de Pauta de A con campaña a WhatsApp de B → Verificador = Rechazada', async () => {
+  const f = fila('Pauta', ['camp-a'], { brief: BRIEF_WA });
+  const notion = mockNotion({ filas: [f], paginas: paginasBase() }); const cl = mockClient();
+  await despacha({ client: cl, notion, c: cW, fetchImpl: mockApis().fetch });
+  cl.beta.sessions.events.list = async function* () { yield { type: 'agent.message', content: [{ text: JSON.stringify({ ...respWA, cuenta: 'act_1111111' }) }] }; };
+  const m = metaWA({ numConjunto: '5215522222222' });
+  await cierraSesion({ client: cl, notion, c: cW, sessionId: f.sesion, fetchImpl: m.fetch });
+  assert.equal(f.verificador, 'Rechazada'); assert.match(f.informe, /no al de la ficha \(5218111111111\)/);
 });
