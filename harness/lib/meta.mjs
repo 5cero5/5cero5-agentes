@@ -4,6 +4,8 @@
 //   - Lee la campaña, su conjunto y sus anuncios en la cuenta configurada.
 //   - Todo tiene que estar en pausa. Lo que no lo esté, el harness lo PAUSA de inmediato (única escritura del harness
 //     en Meta) y la fila sale Rechazada: encender es de Al o Bonzo, nunca de un agente.
+//   - Click to WhatsApp: se acepta solo con PAUTA_WHATSAPP=1, si el número del conjunto es el de la ficha del cliente
+//     (m.whatsappFicha) y si la página lo tiene ligado en Meta. Si no, Rechazada.
 
 async function graph(c, fetchImpl, method, path, params = {}) {
   const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]));
@@ -22,6 +24,8 @@ async function graph(c, fetchImpl, method, path, params = {}) {
 }
 
 const hostDe = u => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } };
+const digitos = v => String(v || '').replace(/\D/g, '');
+const WA_HOSTS = ['api.whatsapp.com', 'wa.me'];
 
 // Pausa una entidad (campaña, conjunto o anuncio). Devuelve null si pudo, o el error.
 export async function pausa(c, id, fetchImpl = fetch) {
@@ -42,7 +46,7 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
   let camp, conjuntos = [], ads = [];
   try {
     camp = await g(`/${cid}`, { fields: 'id,name,status,effective_status,objective,account_id,created_time' });
-    conjuntos = (await g(`/${cid}/adsets`, { fields: 'id,name,status,daily_budget,lifetime_budget,created_time', limit: 50 })).data || [];
+    conjuntos = (await g(`/${cid}/adsets`, { fields: 'id,name,status,daily_budget,lifetime_budget,created_time,destination_type,promoted_object', limit: 50 })).data || [];
     ads = (await g(`/${cid}/ads`, { fields: 'id,name,status,created_time,creative{id,object_story_spec,url_tags}', limit: 50 })).data || [];
   } catch (e) {
     return { ok: false, informe: `Comprobación en Meta: no se pudo leer la campaña ${cid} (${e.message}). Revisar a mano en el Administrador de anuncios.` };
@@ -80,12 +84,36 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
   const reportados = (Array.isArray(r.anuncios) ? r.anuncios : []).map(a => String(a?.id)).sort();
   const enMeta = ads.map(a => String(a.id)).sort();
   if (JSON.stringify(reportados) !== JSON.stringify(enMeta)) problemas.push(`anuncios: el agente reportó ${reportados.length}, Meta tiene ${enMeta.length} distintos o con otros ids`);
+  // Click to WhatsApp: basta una señal (conjunto a WhatsApp, número en el conjunto o botón de WhatsApp) para revisarla así.
+  const ctaDe = a => a.creative?.object_story_spec?.link_data?.call_to_action || {};
+  const esWA = conjuntos.some(s => s.destination_type === 'WHATSAPP' || s.promoted_object?.whatsapp_phone_number)
+    || ads.some(a => ctaDe(a).type === 'WHATSAPP_MESSAGE' || ctaDe(a).value?.app_destination === 'WHATSAPP');
+  if (esWA) {
+    const ficha = digitos(m.whatsappFicha);
+    if (!c.pautaWhatsapp) problemas.push('campaña de WhatsApp con PAUTA_WHATSAPP apagado');
+    if (!ficha) problemas.push('campaña de WhatsApp y la ficha del cliente no tiene WhatsApp pauta');
+    for (const s of conjuntos) {
+      const num = digitos(s.promoted_object?.whatsapp_phone_number);
+      if (s.destination_type !== 'WHATSAPP') problemas.push(`el conjunto ${s.id} tiene destino ${s.destination_type || 'ninguno'}, no WHATSAPP`);
+      if (!num || num !== ficha) problemas.push(`el conjunto ${s.id} lleva a WhatsApp ${num || 'sin número'}, no al de la ficha (${ficha || 'vacío'})`);
+    }
+    // El número que manda es el que Meta tiene ligado a la página: tiene que ser el de la ficha.
+    try {
+      const ligado = digitos((await g(`/${m.pagina}`, { fields: 'whatsapp_number' })).whatsapp_number);
+      if (!ligado || ligado !== ficha) problemas.push(`la página ${m.pagina} tiene ligado el WhatsApp ${ligado || 'ninguno'}, no el de la ficha (${ficha || 'vacío'})`);
+    } catch (e) { problemas.push(`no se pudo leer el WhatsApp ligado a la página ${m.pagina} (${e.message})`); }
+  }
   for (const a of ads) {
     const spec = a.creative?.object_story_spec || {};
     const link = spec.link_data?.link || spec.link_data?.call_to_action?.value?.link || '';
     if (String(spec.page_id || '') !== String(m.pagina)) problemas.push(`el anuncio ${a.id} no usa la página ${m.pagina}`);
-    if (!m.dominios.includes(hostDe(link))) problemas.push(`el anuncio ${a.id} lleva a ${link || 'ningún lado'}, fuera de ${m.dominios.join(', ')}`);
-    if (!String(a.creative?.url_tags || '').includes('utm_source=meta')) avisos.push(`el anuncio ${a.id} no trae las UTM de la convención`);
+    if (esWA) {
+      if (ctaDe(a).type !== 'WHATSAPP_MESSAGE') problemas.push(`el anuncio ${a.id} no tiene el botón de WhatsApp (${ctaDe(a).type || 'ninguno'})`);
+      if (link && !WA_HOSTS.includes(hostDe(link))) problemas.push(`el anuncio ${a.id} de WhatsApp lleva a ${link}`);
+    } else {
+      if (!m.dominios.includes(hostDe(link))) problemas.push(`el anuncio ${a.id} lleva a ${link || 'ningún lado'}, fuera de ${m.dominios.join(', ')}`);
+      if (!String(a.creative?.url_tags || '').includes('utm_source=meta')) avisos.push(`el anuncio ${a.id} no trae las UTM de la convención`);
+    }
   }
   try {
     const cuenta = await g(`/${m.cuenta}`, { fields: 'spend_cap,amount_spent' });
@@ -95,7 +123,7 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
   const resumen = `Comprobación en Meta: campaña ${cid} (${camp.name}, ${camp.objective}), ${conjuntos.length} conjunto(s), ${ads.length} anuncio(s)` +
     (conjuntos[0] ? `, ${Number(conjuntos[0].daily_budget || 0) / 100} MXN al día` : '') + '.';
   const informe = resumen +
-    (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ' Todo en pausa, en la cuenta y página correctas, dentro del tope.') +
+    (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ` Todo en pausa, en la cuenta y página correctas, dentro del tope${esWA ? `, a WhatsApp ${digitos(m.whatsappFicha)} (el de la ficha)` : ''}.`) +
     (avisos.length ? ` Avisos: ${avisos.join('; ')}.` : '') +
     (problemas.length ? '' : ' Falta revisar en el Administrador de anuncios y encenderla (Al o Bonzo).');
   return { ok: problemas.length === 0, informe, pausadas };

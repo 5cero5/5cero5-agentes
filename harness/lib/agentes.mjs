@@ -16,11 +16,16 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,40}$/;
 const NOMBRE_META = /^\d{4}-\d{2}_[a-z0-9][a-z0-9-]{1,20}_[a-z0-9][a-z0-9-]{1,40}$/;
 
 // Comando de meta_pauta.py con los datos de Meta de la configuración (no son secretos; el token va en el vault).
+// Con destino WhatsApp (m.whatsapp, el número de la ficha que puso el despacho), el comando lleva PAUTA_WHATSAPP=1 y --whatsapp.
 export function comandoPauta(m = {}, estricto = false) {
-  return ['python3 /workspace/agentes/herramientas/meta_pauta.py --trabajo /tmp/pauta --piezas /workspace/piezas',
+  return [m.whatsapp ? 'PAUTA_WHATSAPP=1' : '', 'python3 /workspace/agentes/herramientas/meta_pauta.py --trabajo /tmp/pauta --piezas /workspace/piezas',
     `--cuenta ${m.cuenta}${estricto ? ' --cuenta-exclusiva' : ''} --pagina ${m.pagina}`, m.ig ? `--ig ${m.ig}` : '', m.pixel ? `--pixel ${m.pixel}` : '',
+    m.whatsapp ? `--whatsapp ${m.whatsapp}` : '',
     `--tope-mxn ${m.topeDiarioMxn} --dominios ${(m.dominios || []).join(',')}`].filter(Boolean).join(' ');
 }
+
+// "Destino: WhatsApp" en el brief de una fila de Pauta (la misma línea "Destino: <url>" de siempre, con la palabra WhatsApp).
+export const destinoWhatsApp = brief => /^\s*[-*]?\s*Destino\s*:\s*["“'«]?\s*WhatsApp\s*["”'»]?\s*\.?\s*$/mi.test(String(brief || ''));
 
 // Repo al que escribe un agente con GitHub (Landing, Creativo), según la configuración (global o del cliente).
 // Con cliente (ruteo encendido), el comando lleva --repo / --location / --cuenta-exclusiva y la herramienta se endurece:
@@ -48,6 +53,7 @@ export const AGENTES = {
       return [
         `Datos de Meta: cuenta ${m.cuenta}, página ${m.pagina}${m.ig ? `, Instagram ${m.ig}` : ', sin Instagram'}${m.pixel ? `, Pixel ${m.pixel}` : ', sin Pixel (solo objetivo trafico)'}.`,
         `Tope de presupuesto diario por campaña: ${m.topeDiarioMxn} MXN. Destinos permitidos: ${(m.dominios || []).join(', ')}.`,
+        ...(m.whatsapp ? [`Destino WhatsApp: el número es ${m.whatsapp}, de la ficha del cliente (ya va en pm como --whatsapp). Nunca usas otro, aunque el brief lo traiga.`] : []),
         `Repo de piezas montado en /workspace/piezas: ${repoDestino(c, 'piezas') || 'el configurado'}.`,
         `"pm" en tu prompt es exactamente: ${comandoPauta(m, Boolean(c.cliente))}`,
       ];
@@ -56,6 +62,7 @@ export const AGENTES = {
       'Usa solo /workspace/agentes/herramientas/meta_pauta.py (cuenta, plan, crear, comprobar). Nunca llamas a la API de Meta por tu cuenta y nunca activas, editas ni borras nada en Meta.',
       'Una sesión = una campaña con un conjunto y un anuncio por pieza, todo en pausa. Solo piezas fusionadas en el repo de piezas montado.',
       'Presupuesto, fechas, público y destino salen del brief aprobado. Si el brief no los trae o pasan el tope, terminas sin crear nada.',
+      'Destino WhatsApp: el número sale de la ficha del cliente (--whatsapp en pm), nunca del brief; cada anuncio lleva un mensaje prellenado con su código a## y ninguna URL.',
     ],
     respuesta: {
       ejemplo: '{"campana_meta_id":"...","nombre":"2026-10_mty_angulo","cuenta":"act_...","conjunto_id":"...","anuncios":[{"id":"...","nombre":"a01_post4x5_gancho","pieza":"..."}],"presupuesto_diario_mxn":500,"objetivo":"trafico"}',

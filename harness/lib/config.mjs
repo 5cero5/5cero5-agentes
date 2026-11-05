@@ -76,6 +76,9 @@ export function cfg(env = process.env) {
     // Ruteo por cliente (lib/clientes.mjs): con RUTEO_CLIENTES=1 cada fila toma repos, vaults, ids y topes de su ficha
     // en la base Clientes. Apagado (por defecto), todo sale de las variables globales de arriba.
     ruteoClientes: env.RUTEO_CLIENTES === '1',
+    // Pauta con destino WhatsApp (Click to WhatsApp). Apagado por defecto: sin PAUTA_WHATSAPP=1, una fila de Pauta con
+    // "Destino: WhatsApp" pasa a Error y, al cerrar, una campaña de WhatsApp sale Rechazada.
+    pautaWhatsapp: env.PAUTA_WHATSAPP === '1',
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
     // Location ID de HighLevel para el mensaje del CRM con el ruteo apagado (con el ruteo sale de la ficha).
     hl: { location: env.HL_LOCATION_ID || '', api: env.HL_API_BASE || 'https://services.leadconnectorhq.com',

@@ -4,6 +4,8 @@
   0. Revisión en Meta con el token del usuario del sistema (META_TOKEN), por el mismo encabezado que usará el agente:
      quién es el token, qué cuentas publicitarias ve (activa y en MXN), qué es el id de la página (--pagina), su
      Instagram y los Pixeles de la cuenta. Si algo no cuadra, se detiene sin tocar Managed Agents.
+     Con --whatsapp <número de la ficha> (destino WhatsApp): exige pages_manage_ads y pages_read_engagement y que la
+     página tenga ese número ligado en Meta (campo whatsapp_number). Sin --whatsapp solo muestra el número ligado.
   1. Vault "5cero5 · Pauta" con la credencial META_TOKEN, que solo se sustituye en encabezados hacia graph.facebook.com.
   2. Entorno común "5cero5-harness": se le reaplican la red (con graph.facebook.com) y los paquetes.
   3. Agente "5cero5 · Pauta" con el prompt de harness/agentes/pauta.md.
@@ -13,7 +15,7 @@ prompt y modelo a una versión nueva; con --solo-revisar hace solo el paso 0.
 
   cd harness/infra
   read -rs "META_TOKEN?Token del usuario del sistema de Meta: " && export META_TOKEN && echo
-  python3 crear_agente_pauta.py --pagina 1127307763190247 --solo-revisar
+  python3 crear_agente_pauta.py --pagina 1127307763190247 --solo-revisar [--whatsapp 5281...]
   read -rs "ANTHROPIC_API_KEY?Llave de Anthropic: " && export ANTHROPIC_API_KEY && echo
   uv run --with "anthropic>=1.12" python crear_agente_pauta.py --pagina 1127307763190247 [--cuenta act_...] [--pixel ...]
   Otro cliente: META_TOKEN es el de SU usuario del sistema (asignado solo a su cuenta publicitaria) y --cliente <slug>.
@@ -23,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -61,8 +64,15 @@ def revisa_meta(a) -> dict:
     if permisos:
         dados = sorted(p["permission"] for p in permisos if p.get("status") == "granted")
         print(f"▸ Permisos: {', '.join(dados)}")
-        if "pages_manage_ads" not in dados:
+        if a.whatsapp:
+            # Click to WhatsApp (documentación de Meta): ads_management, pages_manage_ads, pages_read_engagement y pages_show_list.
+            faltan = [x for x in ("pages_manage_ads", "pages_read_engagement", "pages_show_list") if x not in dados]
+            if faltan:
+                raise SystemExit(f"✗ Para el destino WhatsApp falta {', '.join(faltan)} en el token. Agrégalo a la app y genera el token otra vez.")
+        elif "pages_manage_ads" not in dados:
             print("⚠ Falta pages_manage_ads. Si al crear anuncios Meta responde (#200) por permisos de la página, agrégalo a la app y genera el token otra vez.")
+    elif a.whatsapp:
+        print("⚠ No se pudieron leer los permisos: para WhatsApp el token necesita pages_manage_ads, pages_read_engagement y pages_show_list.")
         if "ads_management" not in dados:
             raise SystemExit("✗ El token no tiene ads_management. Genéralo otra vez con ads_management, ads_read, pages_show_list y business_management.")
 
@@ -97,6 +107,19 @@ def revisa_meta(a) -> dict:
         raise SystemExit(f"✗ {a.pagina} no está entre las páginas asignadas al usuario del sistema. Páginas que ve el token: {vistas}.\n"
                          "  Revisa en Configuración del negocio › Cuentas › Páginas que la página esté en el portafolio (ahí sale su id) y\n"
                          "  asígnala en Usuarios del sistema › agente-pauta › Asignar activos › Páginas, con permiso de anuncios.")
+    # WhatsApp ligado a la página (campo whatsapp_number). Con --whatsapp tiene que ser ese número, solo dígitos.
+    try:
+        ligado = re.sub(r"\D", "", str(g(f"/{a.pagina}", fields="whatsapp_number").get("whatsapp_number") or ""))
+    except SystemExit as e:
+        if a.whatsapp:
+            raise SystemExit(f"✗ No se pudo leer el WhatsApp ligado a la página {a.pagina} ({e}). Revisa pages_read_engagement.")
+        print(f"⚠ No se pudo leer el WhatsApp ligado a la página ({e}).")
+        ligado = None
+    if ligado is not None:
+        print(f"▸ WhatsApp ligado a la página: {ligado or 'ninguno'}")
+    if a.whatsapp and ligado != a.whatsapp:
+        raise SystemExit(f"✗ La página {a.pagina} tiene ligado el WhatsApp {ligado or 'ninguno'}, no {a.whatsapp} (WhatsApp pauta de la ficha).\n"
+                         "  Se liga en la página: Configuración › WhatsApp (o Meta Business Suite › Configuración › WhatsApp).")
     # Instagram: el que la cuenta publicitaria puede usar en anuncios (/act_.../instagram_accounts). Es lo que importa
     # para instagram_user_id. El campo instagram_business_account de la página puede venir vacío sin instagram_basic.
     try:
@@ -126,7 +149,7 @@ def revisa_meta(a) -> dict:
     pixel = a.pixel or ""
     if pixel and pixel not in {p["id"] for p in pixeles}:
         raise SystemExit(f"✗ El Pixel {pixel} no es de la cuenta {cuenta['id']}.")
-    return {"cuenta": cuenta["id"], "pagina": a.pagina, "ig": ig.get("id", ""), "pixel": pixel}
+    return {"cuenta": cuenta["id"], "pagina": a.pagina, "ig": ig.get("id", ""), "pixel": pixel, "whatsapp": a.whatsapp or ""}
 
 
 def main() -> None:
@@ -135,10 +158,13 @@ def main() -> None:
     ap.add_argument("--cuenta", help="cuenta publicitaria (act_...) si el token ve más de una")
     ap.add_argument("--ig", help="id de la cuenta de Instagram para anuncios (si la cuenta publicitaria puede usar varias)")
     ap.add_argument("--pixel", help="id del Pixel (sin él, el agente solo arma campañas de tráfico)")
+    ap.add_argument("--whatsapp", default="", help="WhatsApp pauta de la ficha (solo dígitos): revisa que la página lo tenga ligado y los permisos")
     ap.add_argument("--solo-revisar", action="store_true", help="solo revisa Meta; no toca Managed Agents")
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
     arg_cliente(ap)
     a = ap.parse_args()
+    if a.whatsapp and not re.fullmatch(r"\d{10,15}", a.whatsapp):
+        raise SystemExit("✗ --whatsapp va en formato internacional, solo dígitos (por ejemplo 5281...)")
     slug = cliente(a)
     ids = revisa_meta(a)
     if a.solo_revisar:
@@ -158,7 +184,7 @@ def main() -> None:
                                                  "model": MODELO, "system": prompt}))
 
     imprime_ficha(slug, {"Vault Pauta": e["vault_id"], "Meta cuenta": ids["cuenta"], "Meta página": ids["pagina"],
-                         "Meta Instagram": ids["ig"], "Meta Pixel": ids["pixel"]})
+                         "Meta Instagram": ids["ig"], "Meta Pixel": ids["pixel"], **({"WhatsApp pauta": ids["whatsapp"]} if ids["whatsapp"] else {})})
     if slug != CLIENTE_BASE:
         print(f"\nY como variable SECRETA en Netlify (opcional): META_TOKEN_{slug.upper().replace('-', '_')}, el mismo token.")
         return

@@ -12,10 +12,13 @@ Lo que se impone aquí (no depende del prompt):
   - Solo escribe en /act_<cuenta>/{campaigns,adsets,ads,adcreatives,adimages} de la cuenta que se le da. Nada más.
   - Toda campaña, conjunto y anuncio se manda con status PAUSED. No hay forma de mandar otro status: no activa, no
     borra, no edita nada que ya exista.
-  - El presupuesto diario no pasa del tope (--tope-mxn). El destino es https y de un dominio permitido.
+  - El presupuesto diario no pasa del tope (--tope-mxn). El destino es https y de un dominio permitido, o WhatsApp.
+  - Destino WhatsApp (Click to WhatsApp): solo con PAUTA_WHATSAPP=1 y --whatsapp (el número de la ficha del cliente,
+    que pone el harness; nunca sale del brief). El brief no puede cambiarlo, la página tiene que tenerlo ligado en Meta
+    (se lee antes de crear), cada anuncio lleva un mensaje prellenado con su código a## y ninguno lleva URL.
   - Solo piezas de 5cero5-piezas (main) con informe del Verificador aprobado y del mismo PNG.
   - META_TOKEN solo viaja en el encabezado Authorization hacia la Graph API (lo sustituye el vault de la sesión).
-Variables: META_TOKEN; META_API_BASE solo para pruebas.
+Variables: META_TOKEN; PAUTA_WHATSAPP=1 enciende el destino WhatsApp; META_API_BASE solo para pruebas.
 """
 from __future__ import annotations
 
@@ -43,7 +46,14 @@ OBJETIVOS = {
     # objetivo -> (objective de campaña, optimization_goal del conjunto)
     "trafico": ("OUTCOME_TRAFFIC", "LINK_CLICKS"),
     "clientes_potenciales": ("OUTCOME_LEADS", "OFFSITE_CONVERSIONS"),
+    "whatsapp": ("OUTCOME_LEADS", "CONVERSATIONS"),  # solo con destino WhatsApp
 }
+# Click to WhatsApp: el link fijo que usa Meta en sus ejemplos; lo pone la herramienta, nunca el brief.
+WA_LINK = "https://api.whatsapp.com/send"
+TEL = re.compile(r"^\d{10,15}$")  # formato internacional, solo dígitos (52 + 10 dígitos en México)
+CODIGO = re.compile(r"^a\d{2}")
+HAY_URL = re.compile(r"(https?://|www\.|wa\.me/|\b[a-z0-9-]+\.(?:com|mx|net|org|io|app|me|co|site|page|link)\b)", re.I)
+CLAVES_URL = {"destino", "link", "url", "enlace", "landing"}
 ESCRITURA = re.compile(r"^/(act_\d+)/(campaigns|adsets|ads|adcreatives|adimages)$")
 CON_STATUS = {"campaigns", "adsets", "ads"}
 MX = timezone(timedelta(hours=-6))  # México centro, sin horario de verano desde 2022
@@ -117,6 +127,38 @@ def cuenta_exclusiva(cta: str) -> None:
     vistas = [str(x.get("id", "")) for x in meta_get("/me/adaccounts", {"fields": "id", "limit": 100}).get("data", [])]
     if vistas != [cta]:
         die(f"El token no es exclusivo de {cta} (ve: {', '.join(vistas) or 'ninguna'}). No se usa otra cuenta.")
+
+
+def wa_activo() -> bool:
+    return os.environ.get("PAUTA_WHATSAPP", "").strip() == "1"
+
+
+def es_destino_wa(v) -> bool:
+    return str(v or "").strip().lower() == "whatsapp"
+
+
+def numero_de_la_ficha(a, del_brief=None) -> str:
+    """El número sale de la ficha (--whatsapp, lo pone el harness). El del brief, si viene, tiene que ser idéntico."""
+    if not wa_activo():
+        die("Destino WhatsApp apagado (PAUTA_WHATSAPP no es 1): no se crea nada. Lo enciende Al en el harness.")
+    ficha = a.whatsapp
+    if not ficha:
+        die('La ficha del cliente no tiene "WhatsApp pauta" (el comando no trae --whatsapp): no se crea nada.')
+    if del_brief not in (None, "") and str(del_brief) != ficha:
+        die(f"El número del brief ({del_brief}) no es idéntico al de la ficha ({ficha}): un brief no puede cambiar el número.")
+    return ficha
+
+
+def numero_ligado(pagina: str) -> str:
+    """El número de WhatsApp ligado a la página en Meta (campo whatsapp_number de la página), solo dígitos."""
+    return re.sub(r"\D", "", str(meta_get(f"/{pagina}", {"fields": "whatsapp_number"}).get("whatsapp_number") or ""))
+
+
+def revisa_pagina_wa(pagina: str, numero: str) -> None:
+    ligado = numero_ligado(pagina)
+    if ligado != numero:
+        die(f"La página {pagina} no tiene ligado en Meta el número {numero} de la ficha (tiene: {ligado or 'ninguno'}). "
+            "Se liga en la página: Configuración › WhatsApp. No se crea nada.")
 
 
 def lee_json(p: Path) -> dict:
@@ -209,7 +251,14 @@ def cmd_plan(a) -> None:
     carpeta = str(p.get("carpeta_piezas", ""))
     if not SLUG.match(carpeta):
         die(f"carpeta_piezas {carpeta!r} inválida")
-    objetivo = p.get("objetivo")
+    destino = str(p.get("destino", ""))
+    wa = es_destino_wa(destino)
+    objetivo = p.get("objetivo") or ("whatsapp" if wa else None)
+    if wa and objetivo != "whatsapp":
+        die("Con destino WhatsApp el objetivo es whatsapp (clientes potenciales que optimizan a conversaciones)")
+    if objetivo == "whatsapp" and not wa:
+        die("objetivo whatsapp solo con destino WhatsApp")
+    numero = numero_de_la_ficha(a, p.get("whatsapp")) if wa else None
     if objetivo not in OBJETIVOS:
         die(f"objetivo debe ser uno de {sorted(OBJETIVOS)}")
     if objetivo == "clientes_potenciales" and not a.pixel:
@@ -246,15 +295,26 @@ def cmd_plan(a) -> None:
     emin, emax = int(pub.get("edad_min", 18)), int(pub.get("edad_max", 65))
     if not 18 <= emin < emax <= 65:
         die("edades de 18 a 65, edad_min menor que edad_max")
-    destino = str(p.get("destino", ""))
-    u = urllib.parse.urlsplit(destino)
-    if u.scheme != "https" or (u.hostname or "").lower() not in dominios:
-        die(f"destino debe ser https y de {sorted(dominios)}")
-    if u.query or u.fragment:
-        die("destino sin parámetros: las UTM las pone Meta (url_tags)")
-    boton = p.get("boton", "LEARN_MORE")
-    if boton not in BOTONES:
-        die(f"boton debe ser uno de {sorted(BOTONES)}")
+    if wa:
+        # Sin URL de ningún tipo: el anuncio abre WhatsApp con el número de la ficha. Los url_tags no aplican.
+        sueltas = sorted(k for k in p if k.lower() in CLAVES_URL - {"destino"})
+        if sueltas:
+            die(f"Con destino WhatsApp el plan no lleva URL ({', '.join(sueltas)})")
+        for k in ("texto", "titulo", "descripcion", "saludo"):
+            if HAY_URL.search(str(p.get(k) or "")):
+                die(f"{k} trae una URL: con destino WhatsApp no se lleva a ningún lado más")
+        if p.get("boton") not in (None, "", "WHATSAPP_MESSAGE"):
+            die("Con destino WhatsApp el botón es WHATSAPP_MESSAGE (Enviar mensaje): no se cambia")
+        destino, boton = "WhatsApp", "WHATSAPP_MESSAGE"
+    else:
+        u = urllib.parse.urlsplit(destino)
+        if u.scheme != "https" or (u.hostname or "").lower() not in dominios:
+            die(f"destino debe ser https y de {sorted(dominios)}, o WhatsApp")
+        if u.query or u.fragment:
+            die("destino sin parámetros: las UTM las pone Meta (url_tags)")
+        boton = p.get("boton", "LEARN_MORE")
+        if boton not in BOTONES:
+            die(f"boton debe ser uno de {sorted(BOTONES)}")
     anuncios = p.get("anuncios") or []
     if not 1 <= len(anuncios) <= MAX_ANUNCIOS:
         die(f"De 1 a {MAX_ANUNCIOS} anuncios")
@@ -268,7 +328,21 @@ def cmd_plan(a) -> None:
         if n in vistos:
             die(f"anuncio repetido: {n}")
         vistos.add(n)
-        listos.append({"nombre": n, **pieza_aprobada(Path(a.piezas), carpeta, pz)})
+        extra = {}
+        if wa:
+            urls = sorted(k for k in x if k.lower() in CLAVES_URL) + sorted(k for k, v in x.items() if k not in ("nombre", "pieza") and HAY_URL.search(str(v)))
+            if urls:
+                die(f"El anuncio {n} trae URL de destino ({', '.join(dict.fromkeys(urls))}): con destino WhatsApp ningún anuncio lleva URL")
+            codigo = CODIGO.match(n).group(0)
+            msg = valida_texto(x.get("mensaje"), f"mensaje prellenado de {n}", 300)
+            if not re.search(rf"(?<![a-z0-9]){codigo}(?![0-9])", msg, re.I):
+                die(f"El mensaje prellenado de {n} no incluye su código {codigo}: sin él no se rastrea en HighLevel")
+            extra["mensaje"] = msg
+        elif "mensaje" in x:
+            die(f"El anuncio {n} trae mensaje prellenado, pero el destino no es WhatsApp")
+        listos.append({"nombre": n, **extra, **pieza_aprobada(Path(a.piezas), carpeta, pz)})
+    if wa:
+        revisa_pagina_wa(a.pagina, numero)  # se lee en Meta antes de dejar el plan listo (y otra vez antes de crear)
     plan = {
         "nombre": nombre, "carpeta_piezas": carpeta, "objetivo": objetivo, "presupuesto_diario_mxn": ppto,
         "inicio": ini.isoformat() if ini else None, "fin": fin.isoformat() if fin else None,
@@ -278,6 +352,7 @@ def cmd_plan(a) -> None:
         "titulo": valida_texto(p.get("titulo"), "titulo", 60),
         "descripcion": valida_texto(p.get("descripcion"), "descripcion", 60, obligatorio=False),
         "anuncios": listos,
+        **({"whatsapp": numero, "saludo": valida_texto(p.get("saludo"), "saludo", 300, obligatorio=False)} if wa else {}),
         "cuenta": cuenta_id(a.cuenta), "pagina": a.pagina, "ig": a.ig or None, "pixel": a.pixel or None,
     }
     plan["huella"] = huella({k: v for k, v in plan.items() if k != "huella"})
@@ -313,6 +388,13 @@ def cmd_crear(a) -> None:
     res_p = d / "resultado.json"
     if res_p.exists():
         die(f"Ya se creó algo para {a.nombre} (resultado.json). No se crea otra vez: usa comprobar.")
+    wa = plan["objetivo"] == "whatsapp"
+    if wa:
+        # Antes de cualquier escritura: interruptor, número de la ficha (el del plan tiene que ser el mismo) y página ligada.
+        numero_de_la_ficha(a, plan.get("whatsapp"))
+        if plan.get("pagina") != a.pagina:
+            die("El plan es de otra página")
+        revisa_pagina_wa(a.pagina, plan["whatsapp"])
     res = {"nombre": plan["nombre"], "cuenta": cta, "anuncios": []}
     guarda = lambda: escribe_json(res_p, res)  # noqa: E731  progreso: si algo falla a medias, se sabe qué quedó creado
     objective, goal = OBJETIVOS[plan["objetivo"]]
@@ -351,10 +433,12 @@ def cmd_crear(a) -> None:
                  "targeting_automation": {"advantage_audience": 0}}
     conj = {"name": plan["publico"]["nombre"], "campaign_id": c["id"], "status": "PAUSED",
             "daily_budget": int(round(plan["presupuesto_diario_mxn"] * 100)), "billing_event": "IMPRESSIONS",
-            "optimization_goal": goal, "bid_strategy": "LOWEST_COST_WITHOUT_CAP", "destination_type": "WEBSITE",
+            "optimization_goal": goal, "bid_strategy": "LOWEST_COST_WITHOUT_CAP", "destination_type": "WHATSAPP" if wa else "WEBSITE",
             "targeting": targeting}
     if plan["objetivo"] == "clientes_potenciales":
         conj["promoted_object"] = {"pixel_id": plan["pixel"], "custom_event_type": "LEAD"}
+    if wa:
+        conj["promoted_object"] = {"page_id": plan["pagina"], "whatsapp_phone_number": plan["whatsapp"]}
     if plan.get("inicio"):
         conj["start_time"] = cuando(plan["inicio"])
     if plan.get("fin"):
@@ -378,14 +462,27 @@ def cmd_crear(a) -> None:
         h = next(iter((img.get("images") or {}).values()), {}).get("hash")
         if not h:
             die(f"Meta no regresó el hash de la imagen de {x['pieza']}")
-        link = {"link": plan["destino"], "message": plan["texto"], "name": plan["titulo"], "image_hash": h,
-                "call_to_action": {"type": plan["boton"], "value": {"link": plan["destino"]}}}
+        if wa:
+            # Click to WhatsApp: botón WHATSAPP_MESSAGE y el mensaje prellenado (con el código a##) en page_welcome_message.
+            texto = {"customer_action_type": "autofill_message", "message": {"autofill_message": {"content": x["mensaje"]}}}
+            if plan.get("saludo"):
+                texto["message"]["text"] = plan["saludo"]
+            bienvenida = {"type": "VISUAL_EDITOR", "version": 2, "landing_screen_type": "welcome_message", "media_type": "text", "text_format": texto}
+            link = {"link": WA_LINK, "message": plan["texto"], "name": plan["titulo"], "image_hash": h,
+                    "call_to_action": {"type": "WHATSAPP_MESSAGE", "value": {"app_destination": "WHATSAPP"}},
+                    "page_welcome_message": json.dumps(bienvenida, ensure_ascii=False)}
+        else:
+            link = {"link": plan["destino"], "message": plan["texto"], "name": plan["titulo"], "image_hash": h,
+                    "call_to_action": {"type": plan["boton"], "value": {"link": plan["destino"]}}}
         if plan.get("descripcion"):
             link["description"] = plan["descripcion"]
         spec = {"page_id": plan["pagina"], "link_data": link}
         if plan.get("ig"):
             spec["instagram_user_id"] = plan["ig"]
-        cr = meta_post(cta, f"/{cta}/adcreatives", {"name": x["nombre"], "object_story_spec": spec, "url_tags": URL_TAGS})
+        creativo = {"name": x["nombre"], "object_story_spec": spec}
+        if not wa:
+            creativo["url_tags"] = URL_TAGS  # en WhatsApp no hay URL a la que ponerle UTM
+        cr = meta_post(cta, f"/{cta}/adcreatives", creativo)
         ad = meta_post(cta, f"/{cta}/ads", {"name": x["nombre"], "adset_id": s["id"], "creative": {"creative_id": cr["id"]}, "status": "PAUSED"})
         res["anuncios"].append({"id": ad["id"], "nombre": x["nombre"], "pieza": x["pieza"], "creativo_id": cr["id"], "imagen_hash": h})
         guarda()
@@ -404,7 +501,7 @@ def cmd_comprobar(a) -> None:
         die("resultado.json no tiene campaña")
     cid = res["campana_meta_id"]
     c = meta_get(f"/{cid}", {"fields": "id,name,status,effective_status,objective,account_id"})
-    conj = meta_get(f"/{cid}/adsets", {"fields": "id,name,status,effective_status,daily_budget,lifetime_budget", "limit": 50}).get("data", [])
+    conj = meta_get(f"/{cid}/adsets", {"fields": "id,name,status,effective_status,daily_budget,lifetime_budget,destination_type,promoted_object", "limit": 50}).get("data", [])
     ads = meta_get(f"/{cid}/ads", {"fields": "id,name,status,effective_status", "limit": 50}).get("data", [])
     problemas = []
     if f"act_{c.get('account_id')}" != plan["cuenta"]:
@@ -420,6 +517,10 @@ def cmd_comprobar(a) -> None:
     for s in conj:
         if int(s.get("daily_budget") or 0) > round(plan["presupuesto_diario_mxn"] * 100) or int(s.get("lifetime_budget") or 0):
             problemas.append(f"presupuesto del conjunto {s.get('id')} distinto del plan")
+        if plan["objetivo"] == "whatsapp":
+            num = str((s.get("promoted_object") or {}).get("whatsapp_phone_number") or "")
+            if s.get("destination_type") != "WHATSAPP" or re.sub(r"\D", "", num) != plan["whatsapp"]:
+                problemas.append(f"el conjunto {s.get('id')} no lleva a WhatsApp {plan['whatsapp']} (destino {s.get('destination_type')}, número {num or 'ninguno'})")
     if sorted(x["id"] for x in ads) != sorted(x["id"] for x in res["anuncios"]):
         problemas.append("los anuncios en Meta no son los creados")
     if not res.get("completa"):
@@ -444,6 +545,7 @@ def main() -> None:
     ap.add_argument("--ig", default="", help="id de la cuenta de Instagram (opcional)")
     ap.add_argument("--pixel", default="", help="id del Pixel (opcional; sin él solo trafico)")
     ap.add_argument("--tope-mxn", type=float, required=True, help="presupuesto diario máximo por campaña")
+    ap.add_argument("--whatsapp", default="", help="número de WhatsApp de la ficha del cliente (solo dígitos); lo pone el harness")
     ap.add_argument("--dominios", default="marketing.5cero5.com", help="dominios permitidos para el destino, separados por coma")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("cuenta")
@@ -458,6 +560,8 @@ def main() -> None:
         die("--ig debe ser numérico")
     if a.pixel and not str(a.pixel).isdigit():
         die("--pixel debe ser numérico")
+    if a.whatsapp and not TEL.match(a.whatsapp):
+        die("--whatsapp debe ser el número en formato internacional, solo dígitos (por ejemplo 5281...)")
     if getattr(a, "nombre", None) and not NOMBRE.match(a.nombre):
         die("--nombre inválido")
     {"cuenta": cmd_cuenta, "plan": cmd_plan, "crear": cmd_crear, "comprobar": cmd_comprobar}[a.cmd](a)
