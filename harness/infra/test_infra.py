@@ -47,8 +47,10 @@ class Anthropic:
 
 # Graph API falsa para crear_agente_pauta.py: el token de cada cliente ve una sola cuenta (o dos, para el caso malo).
 CUENTAS = {"EAA_a": ["act_1111111"], "EAA_b": ["act_2222222"], "EAA_dos": ["act_1111111", "act_2222222"], "EAA_sinperm": ["act_1111111"]}
-WA = {"2111111": "+52 1 81 1111 1111"}  # WhatsApp ligado a cada página
 PAGINAS = {"EAA_a": "2111111", "EAA_b": "3222222", "EAA_dos": "2111111", "EAA_sinperm": "2111111"}
+
+
+GETS = []
 
 
 class G(BaseHTTPRequestHandler):
@@ -58,12 +60,11 @@ class G(BaseHTTPRequestHandler):
         b = json.dumps(o).encode(); self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
     def do_GET(self):
-        t = self.headers.get("Authorization", "").replace("Bearer ", ""); p = urllib.parse.urlsplit(self.path).path
+        t = self.headers.get("Authorization", "").replace("Bearer ", ""); p = urllib.parse.urlsplit(self.path).path; GETS.append(self.path)
         if p == "/me": return self.send({"id": "1", "name": "agente-pauta"})
         if p == "/me/permissions":
             dados = ["ads_management"] + ([] if t == "EAA_sinperm" else ["pages_manage_ads", "pages_read_engagement", "pages_show_list"])
             return self.send({"data": [{"permission": x, "status": "granted"} for x in dados]})
-        if p.lstrip("/") in PAGINAS.values(): return self.send({"id": p.lstrip("/"), **({"whatsapp_number": WA[p.lstrip("/")]} if p.lstrip("/") in WA else {})})
         if p == "/me/adaccounts": return self.send({"data": [{"id": c, "currency": "MXN", "account_status": 1, "spend_cap": "100"} for c in CUENTAS[t]]})
         if p == "/me/accounts": return self.send({"data": [{"id": PAGINAS[t], "name": "Página"}]})
         return self.send({"data": []})
@@ -138,11 +139,10 @@ caso("pauta: cliente-b imprime su cuenta y página para la ficha", rc == 0 and "
 rc, out, ll = corre("crear_agente_pauta.py", "--cliente", "cliente-b", "--pagina", "2111111", "--cuenta", "act_1111111", META_TOKEN="EAA_dos")
 caso("pauta: un token que ve dos cuentas se rechaza antes de tocar Managed Agents", rc != 0 and "ve 2 cuentas" in out and not ll, out)
 rc, out, ll = corre("crear_agente_pauta.py", "--pagina", "2111111", "--whatsapp", "5218111111111", "--solo-revisar", META_TOKEN="EAA_a")
-caso("pauta --solo-revisar --whatsapp: página con ese número ligado y permisos completos pasa", rc == 0 and "WhatsApp ligado a la página: 5218111111111" in out and not ll, out)
-rc, out, ll = corre("crear_agente_pauta.py", "--pagina", "2111111", "--whatsapp", "5215522222222", "--solo-revisar", META_TOKEN="EAA_a")
-caso("pauta --solo-revisar --whatsapp: otro número ligado se rechaza", rc != 0 and "no 5215522222222" in out and not ll, out)
-rc, out, ll = corre("crear_agente_pauta.py", "--cliente", "cliente-b", "--pagina", "3222222", "--whatsapp", "5215522222222", "--solo-revisar", META_TOKEN="EAA_b")
-caso("pauta --solo-revisar --whatsapp: página sin número ligado se rechaza", rc != 0 and "tiene ligado el WhatsApp ninguno" in out, out)
+caso("pauta --solo-revisar --whatsapp: con permisos completos pasa y dice que el número lo valida Meta al crear",
+     rc == 0 and "lo valida Meta" in out and "+52 18111111111" in out and not ll and not any("whatsapp_number" in x for x in GETS), out)
+rc, out, ll = corre("crear_agente_pauta.py", "--pagina", "2111111", "--whatsapp", "+52 81", "--solo-revisar", META_TOKEN="EAA_a")
+caso("pauta --solo-revisar --whatsapp: número que no es solo dígitos se rechaza", rc != 0 and "solo dígitos" in out, out)
 rc, out, ll = corre("crear_agente_pauta.py", "--pagina", "2111111", "--whatsapp", "5218111111111", "--solo-revisar", META_TOKEN="EAA_sinperm")
 caso("pauta --solo-revisar --whatsapp: sin pages_manage_ads ni pages_read_engagement se rechaza", rc != 0 and "pages_manage_ads, pages_read_engagement" in out, out)
 rc, out, ll = corre("crear_agente_pauta.py", "--pagina", "2111111", "--solo-revisar", META_TOKEN="EAA_sinperm")

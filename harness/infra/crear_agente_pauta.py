@@ -4,8 +4,9 @@
   0. Revisión en Meta con el token del usuario del sistema (META_TOKEN), por el mismo encabezado que usará el agente:
      quién es el token, qué cuentas publicitarias ve (activa y en MXN), qué es el id de la página (--pagina), su
      Instagram y los Pixeles de la cuenta. Si algo no cuadra, se detiene sin tocar Managed Agents.
-     Con --whatsapp <número de la ficha> (destino WhatsApp): exige pages_manage_ads y pages_read_engagement y que la
-     página tenga ese número ligado en Meta (campo whatsapp_number). Sin --whatsapp solo muestra el número ligado.
+     Con --whatsapp <número de la ficha> (destino WhatsApp): exige pages_manage_ads, pages_read_engagement y
+     pages_show_list. Que el número esté ligado a la página no se puede leer en la API: lo valida Meta en meta_pauta.py
+     antes de crear el conjunto (validate_only). Aquí se revisa a mano en el Administrador de anuncios.
   1. Vault "5cero5 · Pauta" con la credencial META_TOKEN, que solo se sustituye en encabezados hacia graph.facebook.com.
   2. Entorno común "5cero5-harness": se le reaplican la red (con graph.facebook.com) y los paquetes.
   3. Agente "5cero5 · Pauta" con el prompt de harness/agentes/pauta.md.
@@ -107,19 +108,12 @@ def revisa_meta(a) -> dict:
         raise SystemExit(f"✗ {a.pagina} no está entre las páginas asignadas al usuario del sistema. Páginas que ve el token: {vistas}.\n"
                          "  Revisa en Configuración del negocio › Cuentas › Páginas que la página esté en el portafolio (ahí sale su id) y\n"
                          "  asígnala en Usuarios del sistema › agente-pauta › Asignar activos › Páginas, con permiso de anuncios.")
-    # WhatsApp ligado a la página (campo whatsapp_number). Con --whatsapp tiene que ser ese número, solo dígitos.
-    try:
-        ligado = re.sub(r"\D", "", str(g(f"/{a.pagina}", fields="whatsapp_number").get("whatsapp_number") or ""))
-    except SystemExit as e:
-        if a.whatsapp:
-            raise SystemExit(f"✗ No se pudo leer el WhatsApp ligado a la página {a.pagina} ({e}). Revisa pages_read_engagement.")
-        print(f"⚠ No se pudo leer el WhatsApp ligado a la página ({e}).")
-        ligado = None
-    if ligado is not None:
-        print(f"▸ WhatsApp ligado a la página: {ligado or 'ninguno'}")
-    if a.whatsapp and ligado != a.whatsapp:
-        raise SystemExit(f"✗ La página {a.pagina} tiene ligado el WhatsApp {ligado or 'ninguno'}, no {a.whatsapp} (WhatsApp pauta de la ficha).\n"
-                         "  Se liga en la página: Configuración › WhatsApp (o Meta Business Suite › Configuración › WhatsApp).")
+    # WhatsApp: la API no expone qué números tiene ligados una página (whatsapp_number viene vacío aunque esté ligado).
+    # Lo valida Meta al crear el conjunto (meta_pauta.py, validate_only). Aquí solo se recuerda cómo revisarlo.
+    if a.whatsapp:
+        print(f"▸ WhatsApp pauta: {a.whatsapp}. Que esté ligado a la página no se puede leer en la API: lo valida Meta antes de crear\n"
+              "  el conjunto. Revísalo a mano: Administrador de anuncios › conjunto de interacción › WhatsApp, tiene que salir\n"
+              f"  este mismo número (+{a.whatsapp[:2]} {a.whatsapp[2:]}). Si Meta lo muestra con otros dígitos, usa esos en la ficha.")
     # Instagram: el que la cuenta publicitaria puede usar en anuncios (/act_.../instagram_accounts). Es lo que importa
     # para instagram_user_id. El campo instagram_business_account de la página puede venir vacío sin instagram_basic.
     try:
