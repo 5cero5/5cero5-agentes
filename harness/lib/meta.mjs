@@ -4,8 +4,9 @@
 //   - Lee la campaña, su conjunto y sus anuncios en la cuenta configurada.
 //   - Todo tiene que estar en pausa. Lo que no lo esté, el harness lo PAUSA de inmediato (única escritura del harness
 //     en Meta) y la fila sale Rechazada: encender es de Al o Bonzo, nunca de un agente.
-//   - Click to WhatsApp: se acepta solo con PAUTA_WHATSAPP=1, si el número del conjunto es el de la ficha del cliente
-//     (m.whatsappFicha) y si la página lo tiene ligado en Meta. Si no, Rechazada.
+//   - Click to WhatsApp: se acepta solo con PAUTA_WHATSAPP=1 y si el número del conjunto es el de la ficha del cliente
+//     (m.whatsappFicha), con la página de la ficha. Si no, Rechazada. La API no deja leer qué números tiene ligados una
+//     página; que Meta haya aceptado el conjunto con ese número y esa página es la prueba de que está ligado.
 
 async function graph(c, fetchImpl, method, path, params = {}) {
   const q = new URLSearchParams(Object.entries(params).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]));
@@ -96,12 +97,9 @@ export async function compruebaCampana({ c, respuesta, inicio, fetchImpl = fetch
       const num = digitos(s.promoted_object?.whatsapp_phone_number);
       if (s.destination_type !== 'WHATSAPP') problemas.push(`el conjunto ${s.id} tiene destino ${s.destination_type || 'ninguno'}, no WHATSAPP`);
       if (!num || num !== ficha) problemas.push(`el conjunto ${s.id} lleva a WhatsApp ${num || 'sin número'}, no al de la ficha (${ficha || 'vacío'})`);
+      const pag = String(s.promoted_object?.page_id || '');
+      if (pag !== String(m.pagina)) problemas.push(`el conjunto ${s.id} promueve la página ${pag || 'ninguna'}, no la de la ficha (${m.pagina})`);
     }
-    // El número que manda es el que Meta tiene ligado a la página: tiene que ser el de la ficha.
-    try {
-      const ligado = digitos((await g(`/${m.pagina}`, { fields: 'whatsapp_number' })).whatsapp_number);
-      if (!ligado || ligado !== ficha) problemas.push(`la página ${m.pagina} tiene ligado el WhatsApp ${ligado || 'ninguno'}, no el de la ficha (${ficha || 'vacío'})`);
-    } catch (e) { problemas.push(`no se pudo leer el WhatsApp ligado a la página ${m.pagina} (${e.message})`); }
   }
   for (const a of ads) {
     const spec = a.creative?.object_story_spec || {};

@@ -428,7 +428,7 @@ test('whatsapp: sin RUTEO_CLIENTES el número igual sale de la ficha de la fila'
 });
 
 // Meta falsa para una campaña Click to WhatsApp del cliente A (cuenta 1111111, página 2111111).
-function metaWA({ numConjunto = '5218111111111', ligado = '+52 1 81 1111 1111', status = 'PAUSED' } = {}) {
+function metaWA({ numConjunto = '5218111111111', paginaConjunto = '2111111', status = 'PAUSED' } = {}) {
   const st = { posts: [] };
   const ok = x => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
   st.fetch = async (url, init = {}) => {
@@ -436,10 +436,9 @@ function metaWA({ numConjunto = '5218111111111', ligado = '+52 1 81 1111 1111', 
     if (init.method === 'POST') { st.posts.push([p, String(init.body)]); return ok({ success: true }); }
     if (p === '/900') return ok({ id: '900', name: '2026-11_mty_promo', status, objective: 'OUTCOME_LEADS', account_id: '1111111' });
     if (p === '/900/adsets') return ok({ data: [{ id: '901', status: 'PAUSED', daily_budget: '50000', destination_type: 'WHATSAPP',
-      promoted_object: { page_id: '2111111', whatsapp_phone_number: numConjunto } }] });
+      promoted_object: { page_id: paginaConjunto, whatsapp_phone_number: numConjunto } }] });
     if (p === '/900/ads') return ok({ data: [{ id: '902', status: 'PAUSED', creative: { object_story_spec: { page_id: '2111111', link_data: {
       link: 'https://api.whatsapp.com/send', call_to_action: { type: 'WHATSAPP_MESSAGE', value: { app_destination: 'WHATSAPP' } } } } } }] });
-    if (p === '/2111111') return ok({ id: '2111111', ...(ligado ? { whatsapp_number: ligado } : {}) });
     return ok({ spend_cap: '1' });
   };
   return st;
@@ -457,11 +456,10 @@ test('whatsapp (Meta): campaña activa con el número de B en una fila de A → 
   assert.equal(rev.ok, false); assert.deepEqual(m.posts, [['/900', 'status=PAUSED']]);
   assert.match(rev.informe, /el harness la pausó/); assert.match(rev.informe, /WhatsApp 5215522222222, no al de la ficha \(5218111111111\)/);
 });
-test('whatsapp (Meta): página con otro número ligado, ficha sin número o interruptor apagado → Rechazada', async () => {
+test('whatsapp (Meta): conjunto con la página de B, ficha sin número o interruptor apagado → Rechazada', async () => {
   const { compruebaCampana } = await import('../lib/meta.mjs');
   const casos = [
-    [cfgCliente(cW, leeCliente(pageCliente('a'))), metaWA({ ligado: '5215522222222' }), /tiene ligado el WhatsApp 5215522222222/],
-    [cfgCliente(cW, leeCliente(pageCliente('a'))), metaWA({ ligado: '' }), /tiene ligado el WhatsApp ninguno/],
+    [cfgCliente(cW, leeCliente(pageCliente('a'))), metaWA({ paginaConjunto: '3222222' }), /promueve la página 3222222, no la de la ficha \(2111111\)/],
     [cfgCliente(cW, leeCliente(pageCliente('a', { whatsapp: '' }))), metaWA(), /la ficha del cliente no tiene WhatsApp pauta/],
     [cfgCliente(c, leeCliente(pageCliente('a'))), metaWA(), /PAUTA_WHATSAPP apagado/],
   ];

@@ -14,8 +14,10 @@ Lo que se impone aquí (no depende del prompt):
     borra, no edita nada que ya exista.
   - El presupuesto diario no pasa del tope (--tope-mxn). El destino es https y de un dominio permitido, o WhatsApp.
   - Destino WhatsApp (Click to WhatsApp): solo con PAUTA_WHATSAPP=1 y --whatsapp (el número de la ficha del cliente,
-    que pone el harness; nunca sale del brief). El brief no puede cambiarlo, la página tiene que tenerlo ligado en Meta
-    (se lee antes de crear), cada anuncio lleva un mensaje prellenado con su código a## y ninguno lleva URL.
+    que pone el harness; nunca sale del brief). El brief no puede cambiarlo, cada anuncio lleva un mensaje prellenado con
+    su código a## y ninguno lleva URL. La API no deja leer qué números tiene ligados una página: antes de crear el
+    conjunto, Meta lo valida (execution_options validate_only, no crea nada); si no acepta el número para esa página,
+    se para y la campaña queda vacía y en pausa.
   - Solo piezas de 5cero5-piezas (main) con informe del Verificador aprobado y del mismo PNG.
   - META_TOKEN solo viaja en el encabezado Authorization hacia la Graph API (lo sustituye el vault de la sesión).
 Variables: META_TOKEN; PAUTA_WHATSAPP=1 enciende el destino WhatsApp; META_API_BASE solo para pruebas.
@@ -76,7 +78,7 @@ def token() -> str:
     return t
 
 
-def _pide(req: urllib.request.Request) -> dict:
+def _pide(req: urllib.request.Request, contexto: str | None = None) -> dict:
     try:
         with urllib.request.urlopen(req, timeout=90) as r:
             t = r.read()
@@ -88,7 +90,7 @@ def _pide(req: urllib.request.Request) -> dict:
             detalle = f"{err.get('message', '')} (code {err.get('code')}, subcode {err.get('error_subcode')}) {err.get('error_user_msg', '')}".strip()
         except Exception:
             detalle = cuerpo
-        die(f"Meta respondió {e.code} a {req.get_method()} {urllib.parse.urlsplit(req.full_url).path}: {detalle}")
+        die(f"{contexto + '. ' if contexto else ''}Meta respondió {e.code} a {req.get_method()} {urllib.parse.urlsplit(req.full_url).path}: {detalle}")
 
 
 def meta_get(path: str, params: dict | None = None) -> dict:
@@ -97,8 +99,9 @@ def meta_get(path: str, params: dict | None = None) -> dict:
                                         headers={"Authorization": f"Bearer {token()}", "User-Agent": "5cero5-pauta"}))
 
 
-def meta_post(cuenta: str, path: str, data: dict) -> dict:
-    """La ÚNICA salida de escritura. Solo crea en la cuenta dada y solo en pausa."""
+def meta_post(cuenta: str, path: str, data: dict, solo_validar: bool = False, contexto: str | None = None) -> dict:
+    """La ÚNICA salida de escritura. Solo crea en la cuenta dada y solo en pausa. Con solo_validar, Meta revisa la
+    petición completa sin crear nada (execution_options validate_only); pasa por las mismas reglas."""
     m = ESCRITURA.match(path)
     if not m or m.group(1) != cuenta:
         die(f"Escritura no permitida: {path}")
@@ -107,10 +110,14 @@ def meta_post(cuenta: str, path: str, data: dict) -> dict:
             die(f"{m.group(2)} sin status PAUSED: no se manda")
     elif "status" in data:
         die(f"{m.group(2)} no lleva status")
+    if "execution_options" in data:
+        die("execution_options solo lo pone la herramienta")
+    if solo_validar:
+        data = {**data, "execution_options": ["validate_only"]}
     cuerpo = urllib.parse.urlencode({k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in data.items()}).encode()
     return _pide(urllib.request.Request(api() + path, method="POST", data=cuerpo,
                                         headers={"Authorization": f"Bearer {token()}", "User-Agent": "5cero5-pauta",
-                                                 "Content-Type": "application/x-www-form-urlencoded"}))
+                                                 "Content-Type": "application/x-www-form-urlencoded"}), contexto)
 
 
 def cuenta_id(v: str) -> str:
@@ -149,16 +156,18 @@ def numero_de_la_ficha(a, del_brief=None) -> str:
     return ficha
 
 
-def numero_ligado(pagina: str) -> str:
-    """El número de WhatsApp ligado a la página en Meta (campo whatsapp_number de la página), solo dígitos."""
-    return re.sub(r"\D", "", str(meta_get(f"/{pagina}", {"fields": "whatsapp_number"}).get("whatsapp_number") or ""))
-
-
-def revisa_pagina_wa(pagina: str, numero: str) -> None:
-    ligado = numero_ligado(pagina)
-    if ligado != numero:
-        die(f"La página {pagina} no tiene ligado en Meta el número {numero} de la ficha (tiene: {ligado or 'ninguno'}). "
-            "Se liga en la página: Configuración › WhatsApp. No se crea nada.")
+def valida_conjunto_wa(cta: str, conj: dict, numero: str, pagina: str) -> dict:
+    """Meta valida el conjunto completo (página + número) sin crearlo. Es la comprobación de que el número de la ficha
+    está ligado a la página: la API no expone los números ligados a una página."""
+    r = meta_post(cta, f"/{cta}/adsets", conj, solo_validar=True,
+                  contexto=f"Meta no acepta el WhatsApp {numero} de la ficha para la página {pagina} (¿está ligado a la página "
+                           "en Configuración › Cuentas vinculadas?). No se creó el conjunto ni los anuncios; la campaña queda vacía y en pausa")
+    if r.get("success") is False:
+        die(f"Meta no validó el conjunto con WhatsApp {numero} para la página {pagina} ({json.dumps(r)[:200]}). "
+            "No se creó el conjunto ni los anuncios; la campaña queda vacía y en pausa.")
+    if not r.get("id"):
+        print(f"✓ Meta validó el conjunto con WhatsApp {numero} para la página {pagina} (sin crearlo)")
+    return r
 
 
 def lee_json(p: Path) -> dict:
@@ -341,8 +350,6 @@ def cmd_plan(a) -> None:
         elif "mensaje" in x:
             die(f"El anuncio {n} trae mensaje prellenado, pero el destino no es WhatsApp")
         listos.append({"nombre": n, **extra, **pieza_aprobada(Path(a.piezas), carpeta, pz)})
-    if wa:
-        revisa_pagina_wa(a.pagina, numero)  # se lee en Meta antes de dejar el plan listo (y otra vez antes de crear)
     plan = {
         "nombre": nombre, "carpeta_piezas": carpeta, "objetivo": objetivo, "presupuesto_diario_mxn": ppto,
         "inicio": ini.isoformat() if ini else None, "fin": fin.isoformat() if fin else None,
@@ -390,11 +397,10 @@ def cmd_crear(a) -> None:
         die(f"Ya se creó algo para {a.nombre} (resultado.json). No se crea otra vez: usa comprobar.")
     wa = plan["objetivo"] == "whatsapp"
     if wa:
-        # Antes de cualquier escritura: interruptor, número de la ficha (el del plan tiene que ser el mismo) y página ligada.
+        # Antes de cualquier escritura: interruptor y número de la ficha (el del plan tiene que ser el mismo).
         numero_de_la_ficha(a, plan.get("whatsapp"))
         if plan.get("pagina") != a.pagina:
             die("El plan es de otra página")
-        revisa_pagina_wa(a.pagina, plan["whatsapp"])
     res = {"nombre": plan["nombre"], "cuenta": cta, "anuncios": []}
     guarda = lambda: escribe_json(res_p, res)  # noqa: E731  progreso: si algo falla a medias, se sabe qué quedó creado
     objective, goal = OBJETIVOS[plan["objetivo"]]
@@ -407,11 +413,13 @@ def cmd_crear(a) -> None:
         # falta. Cualquier otra cosa, se para.
         e = ya[0]
         candidata = len(ya) == 1 and e.get("status") == "PAUSED" and e.get("objective") == objective
-        conjs = meta_get(f"/{e['id']}/adsets", {"fields": "id,name,status,daily_budget,lifetime_budget", "limit": 5}).get("data", []) if candidata else []
+        conjs = meta_get(f"/{e['id']}/adsets", {"fields": "id,name,status,daily_budget,lifetime_budget,destination_type,promoted_object", "limit": 5}).get("data", []) if candidata else []
         anuncios_previos = meta_get(f"/{e['id']}/ads", {"fields": "id", "limit": 1}).get("data", []) if candidata else [1]
         conj_ok = (not conjs) or (len(conjs) == 1 and conjs[0].get("status") == "PAUSED" and conjs[0].get("name") == plan["publico"]["nombre"]
                                   and int(conjs[0].get("daily_budget") or 0) == int(round(plan["presupuesto_diario_mxn"] * 100))
-                                  and not int(conjs[0].get("lifetime_budget") or 0))
+                                  and not int(conjs[0].get("lifetime_budget") or 0)
+                                  and (not wa or (conjs[0].get("destination_type") == "WHATSAPP"
+                                                  and re.sub(r"\D", "", str((conjs[0].get("promoted_object") or {}).get("whatsapp_phone_number") or "")) == plan["whatsapp"])))
         if not (candidata and not anuncios_previos and conj_ok):
             die(f"Ya existe una campaña llamada {plan['nombre']} en la cuenta ({e.get('id')}) y no es un intento a medias que se pueda retomar. No se duplica.")
         res["campana_meta_id"] = e["id"]
@@ -449,6 +457,12 @@ def cmd_crear(a) -> None:
         guarda()
         print(f"✓ conjunto {s['id']} retomado: ya existía en pausa con el público y el presupuesto del plan")
     else:
+        if wa:
+            v = valida_conjunto_wa(cta, conj, plan["whatsapp"], plan["pagina"])
+            if v.get("id"):  # Meta creó en vez de solo validar (en pausa): se deja anotado y se para para que lo vea una persona
+                res["conjunto_id"] = v["id"]
+                guarda()
+                die(f"Meta creó el conjunto {v['id']} (en pausa) al pedirle solo validar. No se crea nada más: revisarlo a mano.")
         s = meta_post(cta, f"/{cta}/adsets", conj)
         res["conjunto_id"] = s["id"]
         guarda()

@@ -22,7 +22,7 @@ class M:
         self.objs, self.n, self.campanas_existentes = {}, 100, []
         self.forzar_status = None
         self.cuentas_token = [CTA]  # cuentas que ve el token (usuario del sistema del cliente)
-        self.wa_pagina = "+52 1 81 1234 5678"  # número de WhatsApp ligado a la página (como lo regresa Meta)
+        self.wa_pagina = "5218112345678"  # número ligado a la página: la API no lo expone, solo lo usa Meta al validar
 
 
 S = M()
@@ -49,7 +49,7 @@ class H(BaseHTTPRequestHandler):
         p = u.path
         if p == f"/{CTA}": return self.send(S.cuenta)
         if p == "/me/adaccounts": return self.send({"data": [{"id": x} for x in S.cuentas_token]})
-        if p == f"/{PAG}": return self.send({"id": PAG, "name": "5cero5", **({"whatsapp_number": S.wa_pagina} if S.wa_pagina else {})})
+        if p == f"/{PAG}": return self.send({"id": PAG, "name": "5cero5"})
         if p == f"/{CTA}/campaigns": return self.send({"data": S.campanas_existentes})
         partes = p.strip("/").split("/")
         if len(partes) == 2 and partes[0] in S.objs and partes[1] in ("adsets", "ads"):
@@ -65,6 +65,12 @@ class H(BaseHTTPRequestHandler):
         body = dict(urllib.parse.parse_qsl(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()))
         S.posts.append((u.path, body))
         tipo = u.path.rsplit("/", 1)[-1]
+        if "validate_only" in body.get("execution_options", ""):
+            # Como Meta: valida sin crear. Un conjunto de WhatsApp solo pasa con un número ligado a esa página.
+            po = json.loads(body.get("promoted_object") or "{}")
+            if tipo == "adsets" and "whatsapp_phone_number" in po and (po.get("page_id") != PAG or po["whatsapp_phone_number"] != S.wa_pagina):
+                return self.send({"error": {"message": "The WhatsApp number is not connected to the Page", "code": 100}}, 400)
+            return self.send({"success": True})
         S.n += 1; i = str(S.n)
         if tipo == "adimages": return self.send({"images": {body["name"]: {"hash": f"h{i}"}}})
         o = {"id": i, "name": body.get("name"), "status": S.forzar_status or body.get("status"), "_tipo": {"campaigns": "campaign", "adsets": "adset", "ads": "ad", "adcreatives": "creative"}[tipo]}
@@ -288,16 +294,19 @@ caso("whatsapp: plan válido con el número de la ficha ligado a la página", rc
 plan_ok = json.loads((TRABAJO / NOM / "plan.json").read_text())
 caso("whatsapp: el plan guarda el número de la ficha, sin URL y con el botón de WhatsApp",
      plan_ok["whatsapp"] == NUM_A and plan_ok["destino"] == "WhatsApp" and plan_ok["boton"] == "WHATSAPP_MESSAGE" and plan_ok["objetivo"] == "whatsapp", str(plan_ok))
-S.gets.clear(); rc, out = wa("crear", "--nombre", NOM)
-caso("whatsapp: crear termina", rc == 0 and "todo en pausa" in out, out)
-idx_pagina = next((i for i, g in enumerate(S.gets) if g[0] == f"/{PAG}" and "whatsapp_number" in g[1].get("fields", "")), None)
-caso("whatsapp: lee en Meta el número ligado a la página antes de escribir", idx_pagina is not None and S.posts, str(S.gets[:3]))
+caso("whatsapp: plan no llama a Meta", not S.gets and not S.posts, str(S.gets))
+rc, out = wa("crear", "--nombre", NOM)
+caso("whatsapp: crear termina", rc == 0 and "todo en pausa" in out and "Meta validó el conjunto" in out, out)
 rutas = escrituras()
-caso("whatsapp: solo escribe en la cuenta y en el orden esperado",
-     rutas == [f"/{CTA}/campaigns", f"/{CTA}/adsets"] + [f"/{CTA}/{t}" for t in ("adimages", "adcreatives", "ads")] * 2, str(rutas))
+caso("whatsapp: valida el conjunto en Meta y luego crea, solo en la cuenta y en el orden esperado",
+     rutas == [f"/{CTA}/campaigns", f"/{CTA}/adsets", f"/{CTA}/adsets"] + [f"/{CTA}/{t}" for t in ("adimages", "adcreatives", "ads")] * 2, str(rutas))
+val, conj = S.posts[1][1], S.posts[2][1]
+caso("whatsapp: la validación es validate_only con el mismo conjunto, y la creación no lo lleva",
+     json.loads(val["execution_options"]) == ["validate_only"] and "execution_options" not in conj
+     and {k: v for k, v in val.items() if k != "execution_options"} == conj, str(val))
 con_status = [b for x, b in S.posts if x.rsplit("/", 1)[-1] in ("campaigns", "adsets", "ads")]
-caso("whatsapp: campaña, conjunto y anuncios en PAUSED", len(con_status) == 4 and all(b["status"] == "PAUSED" for b in con_status), str(con_status))
-camp, conj, cre = S.posts[0][1], S.posts[1][1], S.posts[3][1]
+caso("whatsapp: campaña, validación, conjunto y anuncios en PAUSED", len(con_status) == 5 and all(b["status"] == "PAUSED" for b in con_status), str(con_status))
+camp, cre = S.posts[0][1], S.posts[4][1]
 caso("whatsapp: campaña de clientes potenciales", camp["objective"] == "OUTCOME_LEADS", str(camp))
 caso("whatsapp: conjunto a WhatsApp, optimiza a conversaciones, con página y número de la ficha",
      conj["destination_type"] == "WHATSAPP" and conj["optimization_goal"] == "CONVERSATIONS"
@@ -338,17 +347,38 @@ for nombre, k, espera in rechazos:
     caso(f"whatsapp: plan rechaza {nombre}", rc != 0 and espera in out and not S.posts, out)
 limpia(); rc, out = wa("plan", "--archivo", str(plan_wa()), env={})
 caso("whatsapp: apagado no llama a Meta", rc != 0 and not S.gets and not S.posts, str(S.gets))
-limpia(); S.wa_pagina = ""; rc, out = wa("plan", "--archivo", str(plan_wa()))
-caso("whatsapp: plan rechaza página sin número ligado", rc != 0 and "no tiene ligado" in out and not S.posts, out)
-limpia(); rc, out = wa("plan", "--archivo", str(plan_wa(whatsapp=NUM_B)), numero=NUM_B)
-caso("whatsapp: ficha de B sobre la página de A (ligada a otro número) se rechaza", rc != 0 and "no tiene ligado" in out and NUM_B in out and not S.posts, out)
+
+
+def sin_conjunto_ni_anuncios():
+    creados = [x for x, b in S.posts if "execution_options" not in b]
+    return creados == [f"/{CTA}/campaigns"]
+
+
+for nombre, numero, ligado in [("página sin el número ligado", NUM_A, ""), ("ficha de B sobre la página de A (ligada a otro número)", NUM_B, NUM_A)]:
+    limpia(); S.wa_pagina = ligado; wa("plan", "--archivo", str(plan_wa(whatsapp=numero)), numero=numero)
+    rc, out = wa("crear", "--nombre", NOM, numero=numero)
+    caso(f"whatsapp: Meta rechaza al validar {nombre}: no crea conjunto ni anuncios, solo queda la campaña vacía en pausa",
+         rc != 0 and f"Meta no acepta el WhatsApp {numero}" in out and sin_conjunto_ni_anuncios()
+         and S.posts[0][1]["status"] == "PAUSED", out)
+limpia(); S.wa_pagina = ""; wa("plan", "--archivo", str(plan_wa())); wa("crear", "--nombre", NOM)
+cid = json.loads((TRABAJO / NOM / "resultado.json").read_text())["campana_meta_id"]
+S.campanas_existentes = [{"id": cid, "name": NOM, "status": "PAUSED", "objective": "OUTCOME_LEADS"}]
+(TRABAJO / NOM / "resultado.json").unlink(); S.wa_pagina = NUM_A; S.posts.clear()
+rc, out = wa("crear", "--nombre", NOM)
+caso("whatsapp: ya ligado el número, crear retoma la campaña vacía y termina", rc == 0 and "retomada" in out and f"/{CTA}/campaigns" not in escrituras(), out)
+limpia(); wa("plan", "--archivo", str(plan_wa()))
+S.objs["77"] = {"id": "77", "name": NOM, "status": "PAUSED", "_tipo": "campaign"}
+S.objs["78"] = {"id": "78", "name": "mty_duenos-pyme", "status": "PAUSED", "_tipo": "adset", "_campana": "77", "daily_budget": "50000",
+                "destination_type": "WHATSAPP", "promoted_object": {"page_id": PAG, "whatsapp_phone_number": NUM_B}}
+S.campanas_existentes = [{"id": "77", "name": NOM, "status": "PAUSED", "objective": "OUTCOME_LEADS"}]
+rc, out = wa("crear", "--nombre", NOM)
+caso("whatsapp: no retoma un conjunto a medias con otro número", rc != 0 and "Ya existe" in out and not S.posts, out)
 
 # Lo mismo, pero cuando el plan ya estaba validado: crear vuelve a revisar antes de escribir.
 for nombre, prepara, k, espera in [
     ("PAUTA_WHATSAPP apagado", None, dict(env={}), "PAUTA_WHATSAPP"),
     ("ficha sin número", None, dict(numero=""), "WhatsApp pauta"),
     ("ficha con otro número (B)", None, dict(numero=NUM_B), "no es idéntico"),
-    ("página que ya no tiene el número", lambda: setattr(S, "wa_pagina", ""), {}, "no tiene ligado"),
 ]:
     limpia(); wa("plan", "--archivo", str(plan_wa()))
     if prepara: prepara()
@@ -375,6 +405,7 @@ caso("meta_post: no escribe con status ACTIVE", sale(lambda: mp.meta_post(CTA, f
 caso("meta_post: no escribe sin status", sale(lambda: mp.meta_post(CTA, f"/{CTA}/ads", {"name": "x"})) and not S.posts)
 caso("meta_post: no escribe en otra cuenta", sale(lambda: mp.meta_post(CTA, "/act_999/campaigns", {"status": "PAUSED"})) and not S.posts)
 caso("meta_post: no edita objetos existentes", sale(lambda: mp.meta_post(CTA, "/12345", {"status": "PAUSED"})) and not S.posts)
+caso("meta_post: execution_options no puede venir de afuera", sale(lambda: mp.meta_post(CTA, f"/{CTA}/adsets", {"status": "PAUSED", "execution_options": ["x"]})) and not S.posts)
 caso("meta_post: no toca otras rutas de la cuenta", sale(lambda: mp.meta_post(CTA, f"/{CTA}/customaudiences", {"name": "x"})) and not S.posts)
 
 shutil.rmtree(TMP, ignore_errors=True)
