@@ -38,7 +38,7 @@ class GH:
 
     def nuevo(self, p):
         self.n += 1
-        return f"{p}{self.n}"
+        return hashlib.sha1(f"{p}{self.n}".encode()).hexdigest() if p == "c" else f"{p}{self.n}"  # commits: 40 hex
 
 
 G = GH()
@@ -57,7 +57,7 @@ class Base(BaseHTTPRequestHandler):
 
 class HGit(Base):
     def ok(self):
-        if self.headers.get("Authorization") != "Bearer ghs_prueba":
+        if self.headers.get("Authorization") not in ("Bearer ghs_prueba", "Bearer gho_prueba_humano"):
             self.send({"message": "Bad credentials"}, 401); return False
         return True
 
@@ -80,6 +80,12 @@ class HGit(Base):
                               "head": {"ref": pr["head"], "sha": head, "repo": {"full_name": REPO}},
                               "html_url": f"https://github.com/{REPO}/pull/{m.group(1)}"})
         if m := re.fullmatch(re.escape(pre) + r"commits/(\w+)", p): return self.send({"sha": m.group(1), "tree": {"sha": G.commits[m.group(1)]["tree"]}})
+        if m := re.fullmatch(rf"/repos/{re.escape(REPO)}/compare/(\w+)\.\.\.(\w+)", p):
+            vistos, cola = set(), [m.group(2)]
+            while cola:
+                c = cola.pop()
+                if c not in vistos: vistos.add(c); cola += G.commits[c]["parents"]
+            return self.send({"status": "identical" if m.group(1) == m.group(2) else "ahead" if m.group(1) in vistos else "diverged", "behind_by": 0})
         if m := re.fullmatch(re.escape(pre) + r"trees/(\w+)", p): return self.send({"sha": m.group(1), "tree": G.trees[m.group(1)]})
         self.send({}, 404)
 
@@ -279,9 +285,13 @@ def main():
     r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "estado", "--repo", REPO], capture_output=True, text=True, env=ENV)
     check("sin registro de Higgsfield, estado lo dice y no lo crea", r.returncode != 0 and "iniciar" in r.stdout + r.stderr
           and "refs/heads/agente/higgsfield" not in G.refs, r.stdout + r.stderr)
-    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "iniciar", "--repo", REPO], capture_output=True, text=True, env=ENV)
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "iniciar", "--repo", REPO], capture_output=True, text=True,
+                       env={**ENV, "GITHUB_TOKEN": "gho_prueba_humano"})  # una persona, no la sesión
     check("iniciar crea el registro vacío en agente/higgsfield sin tocar main", r.returncode == 0 and "refs/heads/agente/higgsfield" in G.refs
           and G.refs["refs/heads/main"] == "c0", r.stdout + r.stderr)
+    pol = json.loads((MARCA_COPIA / "higgsfield.json").read_text())
+    pol["registro_raiz"] = json.loads(r.stdout.strip().splitlines()[-1])["registro_raiz"]  # la persona lo anota en la marca
+    (MARCA_COPIA / "higgsfield.json").write_text(json.dumps(pol))
     c, o = corre("nueva", "--campana", "poc", "--pieza", "historia-a", "--formato", "historia-9x16", "--foto")
     d2 = dir_("poc", "historia-a")
     check("nueva con --foto usa la plantilla con foto", c == 0 and 'class="foto"' in (d2 / "plantillas/pieza.html").read_text(), o)

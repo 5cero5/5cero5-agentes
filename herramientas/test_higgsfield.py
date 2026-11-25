@@ -14,7 +14,9 @@ HERE = Path(__file__).resolve().parent
 REPO = "5cero5/5cero5-piezas"
 RAMA = "refs/heads/agente/higgsfield"
 LLAVE = "hfid_prueba:hfsecreto_prueba"
-TOKEN = "ghs_prueba_registro"
+TOKEN = "ghs_prueba_registro"          # token de instalación de la sesión (como el de la GitHub App)
+TOKEN_HUMANO = "gho_prueba_humano"     # token de una persona (iniciar, liberar)
+RAIZ = None
 blob_sha = lambda b: hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
 LOCK = threading.Lock()
 
@@ -44,7 +46,7 @@ class Base(BaseHTTPRequestHandler):
 class HGit(Base):
     def ok(self):
         G.auth.append(self.headers.get("Authorization"))
-        if self.headers.get("Authorization") != f"Bearer {TOKEN}":
+        if self.headers.get("Authorization") not in (f"Bearer {TOKEN}", f"Bearer {TOKEN_HUMANO}"):
             self.send({"message": "Bad credentials"}, 401); return False
         return True
 
@@ -61,6 +63,16 @@ class HGit(Base):
             if p == pre + "ref/heads/agente/higgsfield":
                 return self.send({"object": {"sha": G.refs[RAMA]}}) if RAMA in G.refs else self.send({"message": "Not Found"}, 404)
             if p.startswith(pre + "commits/"): return self.send({"tree": {"sha": G.commits[p.rsplit("/", 1)[1]]["tree"]}})
+            if p.startswith(f"/repos/{REPO}/compare/"):
+                base, head = p.rsplit("/", 1)[1].split("...")
+                if base not in G.commits or head not in G.commits: return self.send({"message": "Not Found"}, 404)
+                vistos, cola = set(), [head]
+                while cola:
+                    c = cola.pop()
+                    if c in vistos: continue
+                    vistos.add(c); cola += G.commits[c]["parents"]
+                st = "identical" if base == head else "ahead" if base in vistos else "diverged"
+                return self.send({"status": st, "behind_by": 0 if st != "diverged" else 1})
             if p.startswith(pre + "trees/"): return self.send({"tree": G.trees[p.rsplit("/", 1)[1]]})
             if p.startswith(pre + "blobs/"): return self.send({"content": base64.b64encode(G.blobs[p.rsplit("/", 1)[1]]).decode()})
         self.send({}, 404)
@@ -77,7 +89,8 @@ class HGit(Base):
                 for e in body["tree"]: base[e["path"]] = e
                 t = f"t{G.n}"; G.trees[t] = list(base.values()); return self.send({"sha": t}, 201)
             if p == pre + "commits":
-                c = f"c{G.n}"; G.commits[c] = {"tree": body["tree"], "parents": body["parents"]}; return self.send({"sha": c}, 201)
+                c = hashlib.sha1(f"c{G.n}".encode()).hexdigest()  # como GitHub: 40 hex
+                G.commits[c] = {"tree": body["tree"], "parents": body["parents"]}; return self.send({"sha": c}, 201)
             if p == pre + "refs":
                 if body["ref"] in G.refs: G.conflictos += 1; return self.send({"message": "Reference already exists"}, 422)
                 G.refs[body["ref"]] = body["sha"]; return self.send({"ref": body["ref"]}, 201)
@@ -216,7 +229,8 @@ def politica(**kw):
     p = MARCA / "higgsfield.json"
     if kw.get("_borrar"):
         p.unlink(missing_ok=True); return
-    p.write_text(json.dumps({**POL, **kw}) if not kw.get("_raw") else kw["_raw"])
+    d = {**POL, **({"registro_raiz": RAIZ} if RAIZ else {}), **kw}
+    p.write_text(json.dumps({k: v for k, v in d.items() if v is not None}))
 
 
 def corre(op: dict, env: dict | None = None, entrada: bytes | None = None):
@@ -248,16 +262,21 @@ def driver():
 
 def herramienta(*args, env=None):
     """higgsfield.py como lo usa una persona (iniciar, estado, liberar)."""
-    e = {**os.environ, "GITHUB_API_BASE": GHAPI, "GITHUB_TOKEN": TOKEN, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", **(env or {})}
+    e = {**os.environ, "GITHUB_API_BASE": GHAPI, "GITHUB_TOKEN": TOKEN_HUMANO, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", **(env or {})}
     r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), *args], capture_output=True, text=True, env=e, timeout=60)
     return r.returncode, r.stdout + r.stderr
 
 
 def limpio(**kw):
     """GitHub y Higgsfield falsos en blanco y el registro del cliente iniciado (como lo haría una persona, una vez)."""
+    global RAIZ
     G.reset(); H.reset(**kw)
     c, o = herramienta("iniciar", "--repo", REPO)
     assert c == 0, o
+    RAIZ = json.loads(o.strip().splitlines()[-1])["registro_raiz"]
+    p = MARCA / "higgsfield.json"
+    if p.exists():  # la persona anota la raíz en la política de la marca
+        d = json.loads(p.read_text()); d["registro_raiz"] = RAIZ; p.write_text(json.dumps(d))
 
 
 def registro():
@@ -351,7 +370,7 @@ def main():
     check("DELETE /requests/{id} DESPUÉS de guardar la copia; limpieza hecha", H.deletes == ["/requests/req-1"]
           and e.get("limpieza") == "hecha" and (e.get("borrado") or {}).get("ok") is True, json.dumps(e)[:400])
     check("credenciales: la llave de Higgsfield nunca va al CDN, a GitHub ni a la salida; el token de GitHub nunca a Higgsfield",
-          H.img_auth == [None] and all(a == f"Bearer {TOKEN}" for a in G.auth) and LLAVE not in o and "hfsecreto" not in json.dumps(registro()[0])
+          H.img_auth == [None] and set(G.auth) <= {f"Bearer {TOKEN}", f"Bearer {TOKEN_HUMANO}"} and LLAVE not in o and "hfsecreto" not in json.dumps(registro()[0])
           and all(TOKEN not in json.dumps(h) for _, _, h in H.posts), f"{H.img_auth} {set(G.auth)}")
     n_gets = H.gets
     c, o, out2 = corre(op("feliz"))
@@ -372,6 +391,15 @@ def main():
     c, o, _ = corre(op("tras-borrado"))
     check("si borran la rama del registro: no se reinicia el consumo, se detiene sin llamar", c != 0 and "restaurarlo" in o
           and len(H.posts) == 1 and len(H.estimates) == 1, o)
+    c, o = herramienta("iniciar", "--repo", REPO)
+    raiz_nueva = json.loads(o.strip().splitlines()[-1])["registro_raiz"] if c == 0 else None
+    c2, o2, _ = corre(op("tras-recrear"))
+    check("si lo recrean con iniciar: la punta no desciende de registro_raiz de la marca y se detiene, sin segunda foto",
+          c == 0 and raiz_nueva != RAIZ and c2 != 0 and "no desciende de registro_raiz" in o2 and len(H.posts) == 1, o + o2)
+    politica(registro_raiz=None)
+    c, o, _ = corre(op("sin-raiz"))
+    check("política sin registro_raiz: se detiene sin llamar", c != 0 and "registro_raiz" in o and len(H.posts) == 1, o)
+    politica()
     check("_prueba_local no acepta un host escondido tras @", hfn._prueba_local("http://127.0.0.1:1/x") and
           not hfn._prueba_local("http://127.0.0.1@attacker.example/x") and not hfn._prueba_local("https://127.0.0.1/x"))
 
@@ -393,6 +421,9 @@ def main():
     limpio(estimate=None)
     corre(op("suelta"))
     antes = hfn.expuesto(registro()[0])
+    c0, o0 = herramienta("liberar", "--repo", REPO, "--operacion", "poc/suelta:original", "--motivo", "x", env={"GITHUB_TOKEN": TOKEN})
+    check("liberar con el token de instalación de la sesión (ghs_): se niega, es solo para personas", c0 != 0 and "personas" in o0
+          and ent("suelta").get("estado") == "reservado", o0)
     c, o = herramienta("liberar", "--repo", REPO, "--operacion", "poc/suelta:original")
     c2, o2 = herramienta("liberar", "--repo", REPO, "--operacion", "poc/suelta:original", "--motivo", "brief cancelado")
     e = ent("suelta")

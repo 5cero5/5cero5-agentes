@@ -13,8 +13,9 @@ marca, la revisa con el Verificador y abre un PR en 5cero5-piezas. Nunca fusiona
                       [--cambios cambios.json] [--prompt "..."]   (ronda de cambios: commit nuevo en la rama del mismo PR)
 
 Rutas: --trabajo /tmp/creativo (piezas en curso), --marca /tmp/marca (copia del repo de marca).
-Global: --fila <id de la página de Notion> (lo pone el harness): dueña de la foto; sin ella no hay Higgsfield, con ella
-una foto se retoma en otra sesión de la misma fila sin pagar otra.
+Global: --fila <id de la página de Notion> (lo pone el harness en comandoPieza, desde la integración con Canva en la rama
+creativo): dueña de la foto; sin ella no hay Higgsfield, con ella una foto se retoma en otra sesión de la misma fila sin
+pagar otra.
 Variables: GITHUB_TOKEN (lo pone el harness; solo hacia api.github.com). HIGGSFIELD_API_KEY (solo para 'foto'; solo
 hacia api.higgsfield.ai; nunca hacia la URL firmada donde se sube una imagen). Opcionales: GH_PIEZAS_REPO
 (5cero5/5cero5-piezas), HF_ENDPOINT y HF_EDICION_ENDPOINT (solo modelos de la lista cerrada de higgsfield.py),

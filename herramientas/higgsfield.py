@@ -7,13 +7,16 @@ pieza.json → higgsfield. Quien compone (plantilla HTML o Canva) pone el archiv
 Una operación NUEVA, en este orden (cada paso falla cerrado y antes de gastar):
   1. Política del cliente: higgsfield.json del repo de marca montado (tope USD agregado, cota por operación, si permite
      generar, editar y referencias, y cuánta retención de uploads acepta). Sin política no hay Higgsfield.
-  2. Identidad: la fila de Notion (--fila, la pone el harness). Sin ella no hay Higgsfield: no se podría retomar.
+  2. Identidad: la fila de Notion (--fila, la pone el harness en comandoPieza de harness/lib/agentes.mjs desde la
+     integración con Canva en la rama creativo). Sin ella no hay Higgsfield: no se podría retomar.
   3. Red y modelo: API fija (api.higgsfield.ai, sin seguir redirecciones con la llave), endpoint de una lista cerrada y
      cuerpo con exactamente sus campos; proporción de la lista de Soul v2. Nunca se cambia de modelo ni de proporción.
   4. Reserva atómica y duradera de la cota en el REGISTRO del cliente (antes de subir nada ni estimar): rama
      agente/higgsfield del repo de piezas del cliente, higgsfield/registro.json; se escribe con un commit encima de la
      punta y PATCH de la ref sin forzar (CAS): si otra sesión escribió antes, se relee y se vuelve a comprobar el tope.
-     El registro lo crea una persona una vez (iniciar); si falta o lo borran, no hay Higgsfield (no vuelve a cero).
+     El registro lo crea una persona una vez (iniciar) y su commit raíz se anota en higgsfield.json (registro_raiz, en el
+     repo de marca, que el agente no puede escribir): cada lectura comprueba que la punta desciende de esa raíz. Si falta,
+     lo borran o lo recrean, no hay Higgsfield (no vuelve a cero).
      Una pieza y etapa (original o ronda) tiene UNA operación; de otra fila de Notion, se detiene.
   5. Con imagen de entrada (Editar o referencia:): la marca tiene que aceptar que los uploads vivan hasta 7 días
      (Higgsfield los guarda aparte del request y no hay borrado por API); se sube SIN la llave a la URL firmada.
@@ -29,7 +32,8 @@ Una operación NUEVA, en este orden (cada paso falla cerrado y antes de gastar):
 Reanudar: la misma pieza y etapa con la MISMA fila (el reintento de esa fila de Notion) retoma su entrada: con el archivo
 ya guardado lo baja del registro (cero llamadas a Higgsfield); enviada, consulta su status_url; congelada y sin respuesta
 (menos de HF_VENTANA_REPLAY_H horas), repite el MISMO POST con la MISMA clave. failed/nsfw/canceled/conflicto: no se pide
-otra. Liberar o cerrar a mano: `python3 higgsfield.py estado|liberar` (solo personas; queda en el historial).
+otra. Liberar o cerrar a mano: `python3 higgsfield.py estado|liberar` (solo personas: se niega con el token de
+instalación de la sesión; queda en el historial).
 Costos: estimate autenticado previo al envío (no es factura). failed/nsfw/canceled no se cobran según la documentación
 de Higgsfield; se registran así, con esa calidad de evidencia, nunca como cero inventado.
 """
@@ -153,7 +157,8 @@ def hf(method: str, url: str, body: dict | None = None, extra: dict | None = Non
 
 # ------------------------------------------------------------------ política del cliente (repo de marca)
 CLAVES_POLITICA = {"version", "permitido", "tope_usd", "max_usd_por_operacion", "generar", "editar", "referencias_ia",
-                   "acepta_retencion_uploads_s", "notas"}
+                   "acepta_retencion_uploads_s", "registro_raiz", "notas"}
+SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def usd(v, que: str) -> Decimal:
@@ -196,8 +201,11 @@ def politica(marca: Path) -> dict:
         die(f"{POLITICA}: acepta_retencion_uploads_s tiene que ser un entero de segundos.")
     if d["permitido"] is not True:
         die(f"{POLITICA}: la marca no permite Higgsfield (permitido = false). No se pide foto.")
+    if not isinstance(d.get("registro_raiz"), str) or not SHA.match(d["registro_raiz"]):
+        die(f"{POLITICA}: falta registro_raiz (el commit que imprime `higgsfield.py iniciar` al crear el registro del "
+            "cliente). Sin él no se puede comprobar que el registro no se recreó. No se pide foto.")
     return {"tope": tope, "maximo": maximo, "generar": d.get("generar", True), "editar": d.get("editar", False),
-            "referencias_ia": d.get("referencias_ia", False), "retencion_uploads": ret,
+            "referencias_ia": d.get("referencias_ia", False), "retencion_uploads": ret, "raiz": d["registro_raiz"],
             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
 
 
@@ -223,14 +231,23 @@ def _contenido(repo: str, head: str, ruta: str) -> bytes | None:
     return base64.b64decode(_g("GET", f"/repos/{repo}/git/blobs/{ent['sha']}").get("content", "")) if ent else None
 
 
+_RAIZ: dict[str, str] = {}  # repo → commit raíz que declara la política de la marca (lo fija opera)
+
+
 def lee_registro(repo: str) -> tuple[str, dict]:
-    """(punta de la rama agente/higgsfield, registro). Sin registro o ilegible, se detiene: nunca vuelve a cero."""
+    """(punta de la rama agente/higgsfield, registro). Sin registro, ilegible o recreado, se detiene: nunca vuelve a cero."""
     r = _g("GET", f"/repos/{repo}/git/ref/heads/{RAMA}", ok=(404,))
     if r.get("_status") == 404:
         die(f"{repo} no tiene el registro de Higgsfield (rama {RAMA}). Lo crea una persona una vez con "
             f"`python3 higgsfield.py iniciar --repo {repo}`; si existía y lo borraron, hay que restaurarlo, no recrearlo. "
             "No se llama a Higgsfield.")
     head = r["object"]["sha"]
+    raiz = _RAIZ.get(repo.lower())
+    if raiz and head != raiz:
+        cmp = _g("GET", f"/repos/{repo}/compare/{raiz}...{head}", ok=(404, 422))
+        if cmp.get("status") not in ("ahead", "identical") or cmp.get("behind_by"):
+            die(f"La rama {RAMA} de {repo} no desciende de registro_raiz {raiz[:12]} (higgsfield.json): el registro se recreó o "
+                "se reescribió. No se llama a Higgsfield; hay que restaurarlo.")
     datos = _contenido(repo, head, RUTA)
     if datos is None:
         die(f"La rama {RAMA} de {repo} no trae {RUTA}. No se toca a mano: revisarla antes de pedir fotos.")
@@ -467,6 +484,7 @@ def opera(*, repo: str, exclusivo: bool, marca: Path, op: Operacion, al_reservar
     preflight(pol, op)
     if exclusivo:
         repo_exclusivo(repo, UA)
+    _RAIZ[repo.lower()] = pol["raiz"]
     _, reg = lee_registro(repo)
     previa = entrada(reg, op.id)
     if previa is not None:
@@ -626,6 +644,10 @@ def _continua(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> 
                     "(no se sabe cuánto dura la Idempotency-Key): confirmar a mano en Higgsfield y cerrar con "
                     "`higgsfield.py liberar`. No se pide otra foto.")
         e = _envia(repo, e, ambiguo=reanudada or e.get("estado") == "incierto")
+    if e.get("estado") == "completed" and e.get("archivo"):  # otra corrida de la misma operación ya la terminó
+        return _resultado(repo, e, lee_archivo(repo, e["archivo"]["ruta"], e["archivo"]["sha256"]), True)
+    if e.get("estado") not in ("enviado", "incierto") or not e.get("request_id"):
+        die(f"La operación {op.id} quedó '{e.get('estado')}' (otra corrida la cambió). No se pide otra foto: revisar el registro.")
     return _espera_y_guarda(repo, e, reanudada)
 
 
@@ -722,7 +744,12 @@ def cli() -> None:
     ap.add_argument("--operacion")
     ap.add_argument("--motivo")
     ap.add_argument("--confirmo-sin-aceptar", action="store_true")
+    ap.add_argument("--raiz", help="registro_raiz de higgsfield.json: estado y liberar comprueban que el registro desciende de él")
     a = ap.parse_args()
+    if a.accion != "estado" and os.environ.get("GITHUB_TOKEN", "").strip().startswith("ghs_"):
+        die(f"{a.accion} es solo para personas: con el token de instalación de una sesión (ghs_…) no se hace.")
+    if a.raiz:
+        _RAIZ[a.repo.lower()] = a.raiz
     if a.accion == "iniciar":
         r = _g("GET", f"/repos/{a.repo}/git/ref/heads/{RAMA}", ok=(404,))
         if r.get("_status") != 404:
@@ -734,7 +761,8 @@ def cli() -> None:
         r = _g("POST", f"/repos/{a.repo}/git/refs", {"ref": f"refs/heads/{RAMA}", "sha": commit}, ok=(422,))
         if "_status" in r:
             die(f"{a.repo} ya tiene la rama {RAMA}: no se recrea.")
-        print(json.dumps({"repo": a.repo, "rama": RAMA, "commit": commit}))
+        print(json.dumps({"repo": a.repo, "rama": RAMA, "commit": commit, "registro_raiz": commit,
+                          "siguiente": "anotar registro_raiz en higgsfield.json del repo de marca del cliente (PR revisado)"}))
         return
     if a.accion == "estado":
         head, reg = lee_registro(a.repo)
