@@ -69,9 +69,10 @@ export function validaRecursos(d, repo = 'el repo de marca') {
 }
 
 export async function recursosCanva({ c, fetchImpl = fetch }) {
-  const { repo, token } = await marcaParaLeer({ c, fetchImpl });
+  // La misma rama que se monta en la sesión (GH_REPO_REF en un piloto; si no, la principal).
+  const { repo, token, ref } = await marcaParaLeer({ c, fetchImpl });
   let x;
-  try { x = await gh(fetchImpl, 'GET', `/repos/${repo}/contents/canva/recursos.json`, token); }
+  try { x = await gh(fetchImpl, 'GET', `/repos/${repo}/contents/canva/recursos.json${ref ? `?ref=${encodeURIComponent(ref)}` : ''}`, token); }
   catch (e) { throw new ErrorCanva(`El repo de marca ${repo} no tiene canva/recursos.json (${e.status || e.message})`, 'canva_sin_recursos'); }
   let d;
   try { d = JSON.parse(Buffer.from(String(x.content || ''), 'base64').toString('utf8')); }

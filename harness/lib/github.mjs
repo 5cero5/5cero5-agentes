@@ -109,7 +109,7 @@ export async function marcaParaLeer({ c, fetchImpl = fetch }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('No hay repo de marca configurado');
   const token = m.dinamico || c.cliente ? await tokenLectura({ c, repo, fetchImpl }) : m.token;
   if (!token) throw new Error(`No hay token para leer ${repo}`);
-  return { repo, token };
+  return { repo, token, ref: m.ref || '' };
 }
 
 // fotos/fotos.json del repo de marca: [{id, archivo, descripcion, autorizo, fecha, uso: ["directo","referencia_ia"], personas}].

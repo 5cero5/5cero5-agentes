@@ -337,3 +337,14 @@ test('comando del Creativo: lleva --fila con el id de la página de Notion (y na
   assert.match(parametrosSesion(fila({ id: uuid }), cOn).initial_events[0].content[0].text, new RegExp(`pr_pieza\\.py --fila ${uuid} --trabajo`));
   assert.doesNotMatch(parametrosSesion(fila({ id: 'p1; rm -rf /' }), cOn).initial_events[0].content[0].text, /--fila/);
 });
+
+test('piloto: GH_REPO_REF / GH_AGENTES_REF montan esa rama y recursos.json se lee de la misma; vacías, como siempre', async () => {
+  const cR = cfg({ ...ENV, CANVA_ACTIVO: '1', GH_REPO_REF: 'creativo', GH_AGENTES_REF: 'creativo' });
+  const p = parametrosSesion(fila(), cR);
+  assert.deepEqual(p.resources.map(r => r.checkout), [{ type: 'branch', name: 'creativo' }, { type: 'branch', name: 'creativo' }]);
+  assert.ok(parametrosSesion(fila(), cOn).resources.every(r => r.checkout === undefined));
+  const vistos = []; const g = red();
+  const f = async (url, init) => { vistos.push(url); return g.fetch(url, init); };
+  await preparaCanva({ client: cliente(), c: cR, fila: fila(), cli: { slug: '5cero5' }, fetchImpl: f });
+  assert.ok(vistos.some(u => u.includes('/contents/canva/recursos.json?ref=creativo')));
+});
