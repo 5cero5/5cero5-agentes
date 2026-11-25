@@ -64,8 +64,10 @@ export function validaRecursos(d, repo = 'el repo de marca') {
   }
   if (!Object.keys(bases).length) throw new ErrorCanva(`canva/recursos.json de ${repo} no trae ninguna base aprobada`, 'canva_sin_recursos');
   if (!ID.test(String(d.carpeta_id || ''))) throw new ErrorCanva(`canva/recursos.json de ${repo}: falta carpeta_id (carpeta compartida con quien aprueba)`, 'canva_sin_recursos');
-  if (!ID.test(String(d.logo_asset_id || ''))) throw new ErrorCanva(`canva/recursos.json de ${repo}: falta logo_asset_id (asset del logo aprobado)`, 'canva_sin_recursos');
-  return { bases, textos, carpeta: d.carpeta_id, logo: d.logo_asset_id, kit: ID.test(String(d.brand_kit_id || '')) ? d.brand_kit_id : '' };
+  // logo_asset_id es opcional (no se ve en la interfaz de Canva): si está, se exige en la relectura; si no, queda el cotejo de
+  // píxeles del logo en el pie del Verificador, que también bloquea.
+  if (d.logo_asset_id && !ID.test(String(d.logo_asset_id))) throw new ErrorCanva(`canva/recursos.json de ${repo}: logo_asset_id inválido`, 'canva_sin_recursos');
+  return { bases, textos, carpeta: d.carpeta_id, logo: d.logo_asset_id || '', kit: ID.test(String(d.brand_kit_id || '')) ? d.brand_kit_id : '' };
 }
 
 export async function recursosCanva({ c, fetchImpl = fetch }) {
@@ -133,13 +135,13 @@ export async function preparaCanva({ client, c, fila, cli, fetchImpl = fetch }) 
   const rec = await recursosCanva({ c, fetchImpl });
   const vault = (c.vaultsPorAgente?.Creativo || [])[0] || c.github?.destinos?.piezas?.vault;
   const cred = await credencialCanva({ client, vault, slug: cli.slug });
-  const canva = { v: 1, b: rec.bases, f: rec.carpeta, l: rec.logo, ...(rec.kit ? { k: rec.kit } : {}), ...(design ? { d: design } : {}), cr: cred.id };
+  const canva = { v: 1, b: rec.bases, f: rec.carpeta, ...(rec.logo ? { l: rec.logo } : {}), ...(rec.kit ? { k: rec.kit } : {}), ...(design ? { d: design } : {}), cr: cred.id };
   if (JSON.stringify(canva).length > 512) throw new ErrorCanva('Los recursos de Canva no caben en la metadata de la sesión (máximo 512 caracteres)');
   return { ...canva, textos: rec.textos, marca: rec.repo, cuenta: cred.cuenta };
 }
 
 // Lo que viaja en la metadata de la sesión (una sola clave, "canva"): el harness lo vuelve a leer al confirmar y al cerrar.
-export const metadataCanva = canva => JSON.stringify({ v: 1, b: canva.b, f: canva.f, l: canva.l, ...(canva.k ? { k: canva.k } : {}),
+export const metadataCanva = canva => JSON.stringify({ v: 1, b: canva.b, f: canva.f, ...(canva.l ? { l: canva.l } : {}), ...(canva.k ? { k: canva.k } : {}),
   ...(canva.d ? { d: canva.d } : {}), cr: canva.cr });
 export function leeMetaCanva(metadata) {
   try {

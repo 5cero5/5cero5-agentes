@@ -138,7 +138,8 @@ test('canva: recursos.json solo vale habilitado, con base válida, carpeta y log
   assert.deepEqual(validaRecursos(RECURSOS).bases, { 'post-4x5': ['design', BASE] });
   assert.throws(() => validaRecursos({ ...RECURSOS, habilitado: false }), /no está habilitado/);
   assert.throws(() => validaRecursos({ ...RECURSOS, carpeta_id: '' }), /carpeta_id/);
-  assert.throws(() => validaRecursos({ ...RECURSOS, logo_asset_id: '' }), /logo_asset_id/);
+  assert.equal(validaRecursos({ ...RECURSOS, logo_asset_id: '' }).logo, '');  // opcional: queda el cotejo de píxeles del pie
+  assert.throws(() => validaRecursos({ ...RECURSOS, logo_asset_id: 'no válido!' }), /logo_asset_id inválido/);
   assert.throws(() => validaRecursos({ ...RECURSOS, formatos: { 'post-4x5': { base: { tipo: 'design', id: 'no-es-id' } } } }), /base inválida/);
   assert.throws(() => validaRecursos({ ...RECURSOS, formatos: {} }), /ninguna base/);
 });

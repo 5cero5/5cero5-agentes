@@ -193,7 +193,7 @@ function lineasCanva(fila) {
   return ['', 'CANVA: esta pieza se hace en Canva con el MCP "canva" (sección Canva de tu prompt), no con la plantilla HTML.',
     k.d ? `Diseño de la pieza (ronda): ${k.d}. Editas ESE diseño; no copias otro.` : `Bases aprobadas del cliente (canva/recursos.json de su repo de marca): ${bases}.`,
     ...(k.d ? [] : [`Textos de muestra de cada base (así encuentras cada elemento): ${muestra || 'los de canva/recursos.json'}.`]),
-    `Carpeta aprobada para el diseño: ${k.f}. Logo aprobado (asset): ${k.l}.${k.k ? ` Brand Kit: ${k.k}.` : ''}`,
+    `Carpeta aprobada para el diseño: ${k.f}.${k.l ? ` Logo aprobado (asset): ${k.l}.` : ' El logo es el de la base: no lo tocas.'}${k.k ? ` Brand Kit: ${k.k}.` : ''}`,
     'Las herramientas de Canva que escriben (copiar, editar, exportar, mover) las aprueba el harness con reglas fijas. Si niega una, lee el motivo y no la repitas igual.'];
 }
 
