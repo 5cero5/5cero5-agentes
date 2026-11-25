@@ -11,8 +11,8 @@ Herramientas que usan los agentes dentro de su sesión de Managed Agents (el rep
 | `gh_pr.py` | (común) | API de Git de GitHub: sube una sola carpeta a una rama `agente/*` y abre el PR a `main`. Lo usan las dos herramientas. |
 
 Pruebas: `MARCA_REPO=… LANDINGS_REPO=… python3 test_pr_landing.py` (GitHub falso; necesita Playwright con Chromium y node). 15 comprobaciones.
-`MARCA_REPO=… python3 test_pr_pieza.py` (GitHub y Higgsfield falsos; necesita Pillow y Playwright con Chromium). 55 comprobaciones.
-`python3 test_higgsfield.py` (GitHub falso con CAS en la ref e Higgsfield falso con Idempotency-Key; cada corrida es un proceso, como una sesión; necesita Pillow). 47 comprobaciones.
+`MARCA_REPO=… python3 test_pr_pieza.py` (GitHub y Higgsfield falsos; necesita Pillow y Playwright con Chromium). 58 comprobaciones.
+`python3 test_higgsfield.py` (GitHub falso con CAS en la ref e Higgsfield falso con Idempotency-Key; cada corrida es un proceso, como una sesión; necesita Pillow). 58 comprobaciones.
 `python3 test_meta_pauta.py` (Graph API falsa; sin dependencias). 50 comprobaciones.
 
 ## Higgsfield (núcleo `higgsfield.py`)
@@ -33,24 +33,29 @@ Configuración por cliente (lo que tiene que existir antes de la primera foto):
 1. `higgsfield.json` en la raíz del repo de marca del cliente (contrato cerrado; importes como texto): `version` 1, `permitido`, `tope_usd` (agregado: reservado + consumido de todas las sesiones), `max_usd_por_operacion` (cota de reserva), `generar`, `editar`, `referencias_ia`, `acepta_retencion_uploads_s` (los uploads de Editar y referencia viven hasta 7 días en Higgsfield sin borrado por API: con menos de 604800 no se sube nada). Sin el archivo, no hay Higgsfield.
 2. `HIGGSFIELD_API_KEY` en el vault Creativo del cliente, restringida a `api.higgsfield.ai` e inyectada solo en encabezados (`harness/infra/crear_agente_creativo.py` con `HF_API_KEY`, o la consola de Claude). Nunca en Notion, en el chat ni en un archivo.
 3. Red del entorno: `api.higgsfield.ai`, el host del CDN de las imágenes y el de la URL firmada de upload (`harness/infra/comun.py`). Un host nuevo no se agrega solo.
-4. El token de GitHub de la sesión (el de siempre: contents y pull_requests en el repo de piezas del cliente) escribe el registro.
+4. El registro del cliente, creado UNA vez por una persona: `GITHUB_TOKEN=… python3 herramientas/higgsfield.py iniciar --repo <org>/<repo-de-piezas>`. Si falta (o lo borraron) no hay Higgsfield: se restaura, no se recrea. El token de GitHub de la sesión (contents y pull_requests en el repo de piezas) lo escribe después.
+5. `--fila <id de la página de Notion>` en el comando del Creativo (lo pone el harness en `comandoPieza`). Sin fila no hay Higgsfield.
+6. Recomendado: una regla del repo de piezas que impida borrar `agente/higgsfield` y los push forzados en ella.
 
-Registro duradero: rama `agente/higgsfield` del repo de piezas del cliente (no tiene PR ni toca `main`).
-- `higgsfield/registro.json`: una entrada por operación con `id` (fila de Notion + pieza + etapa), `estado`, `idempotency_key`, `endpoint`, `cuerpo`, `encabezados` (`Hf-Expires-After: 3600`), `webhook` (null), `cuerpo_sha256`, `cota_usd`, `estimado_usd`, `request_id`, `status_url`, `archivo`, `cargo` (importe y calidad de la evidencia), `borrado`, `limpieza`, `subida` e `historial`.
+Registro duradero: rama `agente/higgsfield` del repo de piezas del cliente (no tiene PR ni toca `main`). Una pieza y etapa (original o `ronda-pr<n>-<head>-Editar|Nueva`) tiene UNA operación; su dueña es la fila de Notion que la reservó.
+- `higgsfield/registro.json`: una entrada por operación con `id` (pieza + etapa), `fila`, `estado`, `idempotency_key`, `endpoint`, `cuerpo`, `encabezados` (`Hf-Expires-After: 3600`), `webhook` (null), `cuerpo_sha256`, `cota_usd`, `estimado_usd`, `request_id`, `status_url`, `archivo`, `cargo` (importe y calidad de la evidencia), `borrado`, `limpieza`, `subida` e `historial`.
 - `higgsfield/archivos/<sha256>.<ext>`: la copia propia de cada imagen, guardada ANTES del `DELETE /requests/{id}`.
 - Cada escritura es un commit encima de la punta y un PATCH de la ref sin forzar: si otra sesión escribió antes, se relee y se vuelve a comprobar el tope. Así dos sesiones no gastan el mismo cupo.
 
 Estados: `reservado` (cota apartada, sin cuerpo) → `listo` (cuerpo, clave y estimate congelados) → `enviado` (request aceptado) → `completed` | `failed` | `nsfw` | `canceled`. Además `incierto` (no se sabe si se aceptó), `conflicto` (422: la clave ya se usó con otros parámetros), `rechazada` (4xx antes de aceptar) y `descartada` (el estimate pasa la cota o el tope). No cuentan contra el tope: `failed`, `nsfw`, `canceled` (sin cobro según la documentación de Higgsfield), `rechazada` y `descartada`.
 
-Reanudar (lo hace la herramienta sola si la corrida trae `--fila`, el id de la página de Notion; un reintento de la misma fila es la misma operación):
+Reanudar (lo hace la herramienta sola cuando la corrida trae la MISMA `--fila`: el reintento de esa fila de Notion; otra fila para la misma pieza y etapa se detiene sin gastar):
 - `completed` con archivo: se baja del registro, cero llamadas a Higgsfield (solo se reintenta el `DELETE` si quedó pendiente).
 - `enviado` o `incierto` con `request_id`: se consulta su `status_url`, no se envía nada.
-- `listo` o `incierto` sin `request_id`: el MISMO POST con la MISMA clave, endpoint, cuerpo y retención; Higgsfield devuelve el request original.
+- `listo` o `incierto` sin `request_id`: el MISMO POST con la MISMA clave, endpoint, cuerpo y retención (solo dentro de `HF_VENTANA_REPLAY_H`, 24 h por defecto: no se sabe cuánto dura la clave); Higgsfield devuelve el request original. Un 4xx después de un envío sin respuesta deja la operación `incierto` (sigue contando).
 - `reservado`: se vuelve a estimar (y a subir la entrada, si es edición) con la misma clave.
 - `failed`, `nsfw`, `canceled`, `conflicto`, `rechazada`, `descartada`: no se pide otra; hace falta una ronda `Nueva` aprobada.
-- Sin `--fila` no se retoma: si ya hay una operación de esa pieza y etapa, se detiene sin gastar.
 
-A mano (solo Al o Bonzo, con un commit en `agente/higgsfield` que diga por qué): liberar una reserva que nunca se envió (`reservado` → `descartada`) o cerrar un `incierto` después de confirmar en Higgsfield, con su `request_id`, si se aceptó. Nunca borrar entradas: el historial es la evidencia del gasto.
+A mano (solo Al o Bonzo, nunca el agente; no llama a Higgsfield):
+- `python3 herramientas/higgsfield.py estado --repo <repo>`: operaciones y USD expuestos.
+- `python3 herramientas/higgsfield.py liberar --repo <repo> --operacion <id> --motivo "…"`: una reserva que nunca se envió (`reservado`) pasa a `descartada`.
+- Igual con `--confirmo-sin-aceptar`: cierra un `listo` o `incierto` sin `request_id` después de comprobar en Higgsfield que no se aceptó. Con `request_id`, nunca.
+- El motivo queda en el historial. Nunca se borran entradas: son la evidencia del gasto.
 
 Costos y evidencia: `estimado_usd` es el estimate autenticado con el cuerpo exacto, previo al envío (la cifra que la documentación da por autoritativa para la cuenta); no es factura. `GET /models/usage` es analítica que puede ir retrasada; la conciliación final es contra la factura o el saldo de la cuenta API.
 

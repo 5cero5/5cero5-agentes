@@ -24,6 +24,8 @@ class GH:
     def reset(self):
         self.blobs, self.trees, self.commits, self.refs = {}, {}, {}, {}
         self.n, self.auth, self.conflictos = 0, [], 0
+        self.barrera, self.llegadas = 0, 0  # barrera: las primeras N lecturas de la ref esperan a que lleguen todas
+COND = threading.Condition()
 G = GH(); G.reset()
 
 
@@ -49,6 +51,12 @@ class HGit(Base):
     def do_GET(self):
         if not self.ok(): return
         p = self.path.split("?")[0]; pre = f"/repos/{REPO}/git/"
+        if p == pre + "ref/heads/agente/higgsfield" and G.barrera:
+            with COND:
+                G.llegadas += 1
+                if G.llegadas <= G.barrera:
+                    COND.notify_all()
+                    COND.wait_for(lambda: G.llegadas >= G.barrera, timeout=5)
         with LOCK:
             if p == pre + "ref/heads/agente/higgsfield":
                 return self.send({"object": {"sha": G.refs[RAMA]}}) if RAMA in G.refs else self.send({"message": "Not Found"}, 404)
@@ -93,7 +101,7 @@ class HF:
         self.caer_tras_aceptar = 0; self.caer_sin_aceptar = 0; self.e503 = 0; self.forzar_422 = False
         self.pendientes = 1; self.final = "completed"; self.delete_code = 200; self.deletes = []; self.gets = 0
         self.imagen = None; self.tipo_imagen = "image/jpeg"; self.img_500 = 0; self.img_auth = []; self.puts = []
-        self.uploads = 0; self.auth_otro = []
+        self.uploads = 0; self.auth_otro = []; self.luego_400 = 0; self.redirigir_status = False
         self.__dict__.update(kw)
 H = HF(); H.reset()
 
@@ -134,11 +142,16 @@ class HHiggs(Base):
                 rid = f"req-{len(H.reqs) + 1}"; H.claves[clave] = (huella, rid); H.reqs[rid] = {"gets": 0, "clave": clave}
             if H.caer_tras_aceptar > 0:
                 H.caer_tras_aceptar -= 1; return self.soltar()
+            if H.luego_400 and len(H.posts) > 1:
+                return self.send({"detail": "invalid request"}, 400)
         self.send({"status": "queued", "request_id": rid, "status_url": f"{API}/requests/{rid}/status", "expires_after": 3600})
 
     def do_GET(self):
         if not self.auth(): return
         rid = self.path.split("/")[2]
+        if H.redirigir_status:  # otro host: la llave NO debe seguir la redirección
+            self.send_response(302); self.send_header("Location", f"{IMG}/captura"); self.send_header("Content-Length", "0")
+            self.end_headers(); return
         with LOCK:
             H.gets += 1
             r = H.reqs.get(rid)
@@ -224,13 +237,27 @@ def driver():
     import higgsfield as hfn
     spec = json.loads(os.environ["HF_SPEC"])
     op = spec["op"]
-    oid, reanudable = hfn.id_operacion(fila=op.get("fila"), campana=op["campana"], pieza=op["pieza"], etapa=op.get("etapa", "original"))
+    oid, fila = hfn.id_operacion(fila=op.get("fila"), campana=op["campana"], pieza=op["pieza"], etapa=op.get("etapa", "original"))
     entrada = base64.b64decode(spec["entrada"]) if spec.get("entrada") else None
     r = hfn.opera(repo=REPO, exclusivo=False, marca=Path(spec["marca"]), op=hfn.Operacion(
         id=oid, campana=op["campana"], pieza=op["pieza"], tipo=op.get("tipo", "generar"), prompt=op.get("prompt", PROMPT),
         aspecto=op.get("aspecto", "16:9"), entrada=entrada, entrada_mime="image/jpeg" if entrada else None,
-        meta_extra=op.get("extra", {}), reanudable=reanudable))
+        meta_extra=op.get("extra", {}), fila=fila))
     print(json.dumps({"sha256": hashlib.sha256(r.datos).hexdigest(), "meta": r.meta, "reanudada": r.reanudada, "prompt": r.prompt}))
+
+
+def herramienta(*args, env=None):
+    """higgsfield.py como lo usa una persona (iniciar, estado, liberar)."""
+    e = {**os.environ, "GITHUB_API_BASE": GHAPI, "GITHUB_TOKEN": TOKEN, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1", **(env or {})}
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), *args], capture_output=True, text=True, env=e, timeout=60)
+    return r.returncode, r.stdout + r.stderr
+
+
+def limpio(**kw):
+    """GitHub y Higgsfield falsos en blanco y el registro del cliente iniciado (como lo haría una persona, una vez)."""
+    G.reset(); H.reset(**kw)
+    c, o = herramienta("iniciar", "--repo", REPO)
+    assert c == 0, o
 
 
 def registro():
@@ -242,7 +269,7 @@ def registro():
 
 def ent(op_pieza):
     reg, _ = registro()
-    return next((e for e in reg["entradas"] if f":poc/{op_pieza}:" in e["id"]), {})
+    return next((e for e in reg["entradas"] if e["id"].startswith(f"poc/{op_pieza}:")), {})
 
 
 res = []
@@ -267,18 +294,18 @@ def main():
           == ("4:3", "9:16", "16:9", None))
 
     # ---------------- permisos y política: cero llamadas
-    def sin_llamadas(): return not H.estimates and not H.posts and not H.uploads and RAMA not in G.refs
-    politica(_borrar=True); G.reset(); H.reset()
+    def sin_llamadas(): return not H.estimates and not H.posts and not H.uploads and registro()[0]["entradas"] == []
+    politica(_borrar=True); limpio()
     c, o, _ = corre(op("a"))
     check("sin higgsfield.json: se detiene sin estimate, POST ni registro", c != 0 and "higgsfield.json" in o and sin_llamadas(), o)
     for nombre, kw, txt in [("permitido=false", {"permitido": False}, "no permite Higgsfield"),
                             ("importe como número", {"tope_usd": 5}, "importe"),
                             ("clave desconocida", {"video": True}, "claves no permitidas"),
                             ("generar=false", {"generar": False}, "no permite generar")]:
-        politica(**kw); G.reset(); H.reset()
+        politica(**kw); limpio()
         c, o, _ = corre(op("a"))
         check(f"política {nombre}: se detiene sin llamar a nadie", c != 0 and txt in o and sin_llamadas(), o)
-    politica(); G.reset(); H.reset()
+    politica(); limpio()
     c, o, _ = corre(op("a"), env={"HIGGSFIELD_API_KEY": ""})
     check("sin HIGGSFIELD_API_KEY en el vault: se detiene antes de reservar", c != 0 and "HIGGSFIELD_API_KEY" in o and sin_llamadas(), o)
     c, o, _ = corre(op("a"), env={"HIGGSFIELD_API_BASE": "https://otro-host.example"})
@@ -287,16 +314,25 @@ def main():
     check("modelo fuera de la lista cerrada: no se cambia de modelo ni se llama", c != 0 and "lista cerrada" in o and sin_llamadas(), o)
     c, o, _ = corre(op("a", aspecto="21:9"))
     check("proporción no soportada: se detiene sin llamar", c != 0 and "Proporción" in o and sin_llamadas(), o)
-    politica(referencias_ia=False); G.reset(); H.reset()
+    politica(referencias_ia=False); limpio()
     c, o, _ = corre(op("ref", tipo="editar", extra={"referencia": "catalogo"}), entrada=IMAGEN)
     check("la marca prohíbe referencias a IA (aunque fotos.json lo permita): no se sube nada", c != 0 and "referencia" in o
           and sin_llamadas() and not H.puts, o)
-    politica(acepta_retencion_uploads_s=3600); G.reset(); H.reset()
+    politica(acepta_retencion_uploads_s=3600); limpio()
     c, o, _ = corre(op("ref", tipo="editar"), entrada=IMAGEN)
     check("la marca no acepta que el upload viva 7 días: se bloquea ANTES de subir", c != 0 and "7 días" in o and sin_llamadas() and not H.puts, o)
 
+    # ---------------- registro: lo crea una persona; si falta o lo borran no vuelve a cero
+    G.reset(); H.reset()
+    c, o, _ = corre(op("sinreg"))
+    check("sin registro del cliente: se detiene sin llamar a Higgsfield ni crear la rama", c != 0 and "iniciar" in o
+          and RAMA not in G.refs and not H.estimates and not H.posts, o)
+    c, o = herramienta("iniciar", "--repo", REPO)
+    c2, o2 = herramienta("iniciar", "--repo", REPO)
+    check("iniciar crea el registro una vez y no lo recrea", c == 0 and c2 != 0 and "no se recrea" in o2 and RAMA in G.refs, o + o2)
+
     # ---------------- camino feliz, credenciales y retención
-    politica(); G.reset(); H.reset()
+    politica(); limpio()
     c, o, out = corre(op("feliz"))
     e = ent("feliz"); reg, arbol = registro()
     post = H.posts[0] if H.posts else ("", {}, {})
@@ -322,17 +358,30 @@ def main():
     check("Igual/reinicio con el archivo ya guardado: lo baja del registro, CERO llamadas a Higgsfield",
           c == 0 and out2["sha256"] == sha and len(H.posts) == 1 and len(H.estimates) == 1 and H.gets == n_gets and len(H.deletes) == 1
           and out2["reanudada"] is True, o)
-    c, o, _ = corre({**op("feliz"), "fila": None})
-    check("sin fila de Notion y con una operación previa registrada: se detiene (no se adivina si es el mismo trabajo)",
-          c != 0 and "no trae la fila" in o and len(H.posts) == 1, o)
+    c, o, _ = corre({**op("feliz"), "fila": "f" * 32})
+    check("la misma pieza y etapa desde OTRA fila de Notion: se detiene, sin segunda generación",
+          c != 0 and "otra fila" in o and len(H.posts) == 1 and len(H.reqs) == 1, o)
+    c, o, _ = corre({**op("otra"), "fila": None})
+    check("sin --fila: se detiene antes de reservar, estimar o enviar", c != 0 and "--fila" in o and len(H.posts) == 1
+          and not ent("otra"), o)
+    c, o, _ = corre({**op("otra"), "fila": "no-es-un-id"})
+    check("--fila que no es un id de Notion: se detiene", c != 0 and "--fila" in o and len(H.posts) == 1, o)
+
+    with LOCK:
+        del G.refs[RAMA]  # alguien borró la rama del registro
+    c, o, _ = corre(op("tras-borrado"))
+    check("si borran la rama del registro: no se reinicia el consumo, se detiene sin llamar", c != 0 and "restaurarlo" in o
+          and len(H.posts) == 1 and len(H.estimates) == 1, o)
+    check("_prueba_local no acepta un host escondido tras @", hfn._prueba_local("http://127.0.0.1:1/x") and
+          not hfn._prueba_local("http://127.0.0.1@attacker.example/x") and not hfn._prueba_local("https://127.0.0.1/x"))
 
     # ---------------- costo: estimate, máximo por operación, tope agregado y sesiones nuevas
-    politica(); G.reset(); H.reset(estimate="0.30")
+    politica(); limpio(estimate="0.30")
     c, o, _ = corre(op("cara"))
     check("estimate mayor que el máximo por operación: no hay POST y la reserva se libera (descartada)",
           c != 0 and "máximo por operación" in o and not H.posts and ent("cara").get("estado") == "descartada"
           and hfn.expuesto(registro()[0]) == 0, o)
-    G.reset(); H.reset(estimate=None)
+    limpio(estimate=None)
     c, o, _ = corre(op("sinest"))
     check("estimate que falla: no hay POST; la reserva queda con su clave para retomar", c != 0 and "estimate" in o and not H.posts
           and ent("sinest").get("estado") == "reservado", o)
@@ -341,10 +390,22 @@ def main():
     c, o, _ = corre(op("sinest"))
     check("reinicio tras el estimate fallido: retoma la MISMA clave y termina con 1 POST", c == 0 and len(H.posts) == 1
           and H.posts[0][2].get("Idempotency-Key") == clave0, o)
-    G.reset(); H.reset(estimate="raro")
+    limpio(estimate=None)
+    corre(op("suelta"))
+    antes = hfn.expuesto(registro()[0])
+    c, o = herramienta("liberar", "--repo", REPO, "--operacion", "poc/suelta:original")
+    c2, o2 = herramienta("liberar", "--repo", REPO, "--operacion", "poc/suelta:original", "--motivo", "brief cancelado")
+    e = ent("suelta")
+    check("liberar (persona): sin motivo no; con motivo, la reserva nunca enviada pasa a descartada y el tope se libera",
+          c != 0 and c2 == 0 and e.get("estado") == "descartada" and antes == hfn.Decimal("0.25") and hfn.expuesto(registro()[0]) == 0
+          and "liberada a mano: brief cancelado" in json.dumps(e.get("historial"), ensure_ascii=False), o + o2)
+    c, o = herramienta("estado", "--repo", REPO)
+    check("estado imprime lo expuesto y las operaciones sin llamar a Higgsfield", c == 0 and '"expuesto_usd": "0"' in o
+          and "poc/suelta:original" in o and not H.posts, o)
+    limpio(estimate="raro")
     c, o, _ = corre(op("raro"))
     check("estimate sin importe utilizable: no hay POST", c != 0 and not H.posts, o)
-    politica(tope_usd="0.20", max_usd_por_operacion="0.10"); G.reset(); H.reset()
+    politica(tope_usd="0.20", max_usd_por_operacion="0.10"); limpio()
     r1 = corre(op("t1")); r2 = corre(op("t2")); r3 = corre(op("t3"))
     check("tope agregado 0.20 USD: dos fotos de 0.094 caben, la tercera se detiene SIN estimate ni POST (sesiones distintas)",
           r1[0] == 0 and r2[0] == 0 and r3[0] != 0 and "Tope de Higgsfield" in r3[1] and len(H.posts) == 2 and len(H.estimates) == 2,
@@ -352,28 +413,30 @@ def main():
     check("lo reservado y consumido se suma desde el registro: 0.188 USD", str(hfn.expuesto(registro()[0])) == "0.188", registro()[0])
 
     # ---------------- concurrencia
-    politica(tope_usd="0.10", max_usd_por_operacion="0.10"); G.reset(); H.reset()
+    politica(tope_usd="0.10", max_usd_por_operacion="0.10"); limpio()
+    G.barrera = 4  # las 4 leen la misma punta antes de escribir: el CAS tiene que resolverlo
     with ThreadPoolExecutor(4) as ex:
         rs = list(ex.map(lambda i: corre(op(f"conc-{i}")), range(4)))
     reg, _ = registro()
     vivas = [x for x in reg["entradas"] if x["estado"] not in ("descartada",)]
     check("4 sesiones concurrentes con cupo para UNA: una sola reserva y un solo POST (CAS sobre la ref)",
-          sum(r[0] == 0 for r in rs) == 1 and len(H.posts) == 1 and len(vivas) == 1 and len(reg["entradas"]) == 1,
+          sum(r[0] == 0 for r in rs) == 1 and len(H.posts) == 1 and len(vivas) == 1 and len(reg["entradas"]) == 1 and G.conflictos >= 1,
           f"{[r[0] for r in rs]} posts={len(H.posts)} conflictos={G.conflictos} {json.dumps(reg)[:500]}")
-    politica(); G.reset(); H.reset(pendientes=3)
+    politica(); limpio(pendientes=3)
     with ThreadPoolExecutor(2) as ex:
         rs = list(ex.map(lambda i: corre(op("misma")), range(2)))
     check("2 sesiones de la MISMA operación a la vez: una sola generación (misma clave), sin foto duplicada",
-          len(H.reqs) == 1 and len(set(h.get("Idempotency-Key") for _, _, h in H.posts)) <= 1 and any(r[0] == 0 for r in rs),
+          len(H.reqs) == 1 and len(set(h.get("Idempotency-Key") for _, _, h in H.posts)) == 1 and any(r[0] == 0 for r in rs)
+          and all(r[0] == 0 or "Otra sesión" in r[1] or "cambió de estado" in r[1] for r in rs),
           f"{[r[1][-200:] for r in rs]} reqs={list(H.reqs)}")
 
     # ---------------- recuperación sin duplicar
-    politica(); G.reset(); H.reset(caer_tras_aceptar=1)
+    politica(); limpio(caer_tras_aceptar=1)
     c, o, out = corre(op("perdida"))
     claves = {h.get("Idempotency-Key") for _, _, h in H.posts}
     check("respuesta perdida tras aceptar: se repite el MISMO POST con la MISMA clave y llega el request original",
           c == 0 and len(H.posts) == 2 and len(claves) == 1 and len(H.reqs) == 1 and out["meta"]["request_id"] == "req-1", o)
-    G.reset(); H.reset(caer_tras_aceptar=9)
+    limpio(caer_tras_aceptar=9)
     c, o, _ = corre(op("incierta"), env={"HF_REINTENTOS_ENVIO": "2"})
     e = ent("incierta")
     check("sin respuesta en todos los intentos: queda incierto con su clave, sin clave nueva", c != 0 and "incierto" in o
@@ -383,23 +446,37 @@ def main():
     check("reinicio: mismo endpoint, cuerpo, retención y clave; Higgsfield devuelve el request original (1 sola generación)",
           c == 0 and len(H.reqs) == 1 and len({h.get("Idempotency-Key") for _, _, h in H.posts}) == 1
           and all(b == {"prompt": PROMPT, "aspect_ratio": "16:9"} and h.get("Hf-Expires-After") == "3600" for _, b, h in H.posts), o)
-    G.reset(); H.reset(e503=1)
+    limpio(caer_tras_aceptar=1, luego_400=1)
+    c, o, _ = corre(op("amb400"))
+    check("4xx después de un envío sin respuesta (que sí se aceptó): queda incierto y sigue contando contra el tope",
+          c != 0 and ent("amb400").get("estado") == "incierto" and len(H.reqs) == 1 and hfn.expuesto(registro()[0]) > 0, o)
+    limpio(caer_tras_aceptar=9)
+    corre(op("vieja"), env={"HF_REINTENTOS_ENVIO": "0"})
+    H.caer_tras_aceptar = 0; n = len(H.posts)
+    c, o, _ = corre(op("vieja"), env={"HF_VENTANA_REPLAY_H": "0"})
+    check("incierto fuera de la ventana de repetición: no se repite el POST, se pide confirmación a mano",
+          c != 0 and "confirmar a mano" in o and len(H.posts) == n, o)
+    limpio(redirigir_status=True)
+    c, o, _ = corre(op("redir"), env={"HF_INTENTOS": "2"})
+    check("status_url que redirige a otro host: la llave NO sigue la redirección y no se pide otra foto",
+          c != 0 and not any(a and a.startswith("Key ") for a in H.img_auth) and len(H.posts) == 1, f"{H.img_auth} {o}")
+    limpio(e503=1)
     c, o, _ = corre(op("e503"))
     check("503 al enviar: mismo POST con la misma clave, una sola generación", c == 0 and len(H.posts) == 2 and len(H.reqs) == 1, o)
-    G.reset(); H.reset(pendientes=99)
+    limpio(pendientes=99)
     c, o, _ = corre(op("lenta"), env={"HF_INTENTOS": "2"})
     check("polling agotado: no pide otra; queda enviado y reanudable", c != 0 and "sigue en" in o and ent("lenta").get("estado") == "enviado", o)
     H.pendientes = 0
     c, o, _ = corre(op("lenta"))
     check("reinicio: retoma ESE request por status_url, sin POST nuevo", c == 0 and len(H.posts) == 1, o)
-    G.reset(); H.reset(forzar_422=True)
+    limpio(forzar_422=True)
     c, o, _ = corre(op("c422"))
     check("422 de Idempotency-Key con otros parámetros: conflicto explícito, sin clave nueva", c != 0 and "422" in o
           and ent("c422").get("estado") == "conflicto", o)
     H.forzar_422 = False
     c, o, _ = corre(op("c422"))
     check("reinicio tras el conflicto: no se pide otra foto", c != 0 and "conflicto" in o and len(H.posts) == 1, o)
-    G.reset(); H.reset(final="nsfw")
+    limpio(final="nsfw")
     c, o, _ = corre(op("nsfw"))
     e = ent("nsfw")
     check("nsfw: fallo explícito, sin cobro según la documentación (no un cero inventado), DELETE y sin reintento",
@@ -409,27 +486,27 @@ def main():
     check("reinicio tras nsfw: no se pide otra", c != 0 and len(H.posts) == 1, o)
 
     # ---------------- descarga y validación
-    G.reset(); H.reset(img_500=1)
+    limpio(img_500=1)
     c, o, _ = corre(op("cdn"))
     check("CDN falla: no paga otra foto; queda reanudable", c != 0 and "No se pide otra" in o and ent("cdn").get("estado") == "enviado"
           and not ent("cdn").get("archivo"), o)
     c, o, out = corre(op("cdn"))
     check("reinicio: baja el resultado del MISMO request (1 POST en total)", c == 0 and len(H.posts) == 1 and out["sha256"] == hashlib.sha256(IMAGEN).hexdigest(), o)
-    G.reset(); H.reset(imagen=b"<html>" + b"x" * 20000, tipo_imagen="image/jpeg")
+    limpio(imagen=b"<html>" + b"x" * 20000, tipo_imagen="image/jpeg")
     c, o, _ = corre(op("falsa"))
     check("un HTML que dice ser image/jpeg no pasa (firma real) y no se guarda", c != 0 and "firma" in o and not ent("falsa").get("archivo"), o)
-    G.reset(); H.reset(imagen=b"\xff\xd8\xff" + os.urandom(30000))
+    limpio(imagen=b"\xff\xd8\xff" + os.urandom(30000))
     c, o, _ = corre(op("rota"))
     check("una imagen que no decodifica no pasa", c != 0 and "decodificar" in o, o)
-    G.reset(); H.reset(imagen=imagen(200, 120, semilla=3))
+    limpio(imagen=imagen(200, 120, semilla=3))
     c, o, _ = corre(op("chica"))
     check("dimensiones inválidas no pasan", c != 0 and ("dimensiones" in o or "tamaño" in o), o)
-    G.reset(); H.reset(imagen=imagen(1200, 1200, "PNG", 5), tipo_imagen="application/octet-stream")
+    limpio(imagen=imagen(1200, 1200, "PNG", 5), tipo_imagen="application/octet-stream")
     c, o, out = corre(op("png", aspecto="1:1"))
     check("PNG servido como octet-stream: se valida por firma y decodificación", c == 0 and out["meta"]["mime"] == "image/png", o)
 
     # ---------------- retención y limpieza
-    G.reset(); H.reset(delete_code=503)
+    limpio(delete_code=503)
     c, o, out = corre(op("borr"))
     e = ent("borr")
     check("DELETE fallido: la foto queda (copia propia) y la limpieza pendiente se registra sin fingir éxito",
@@ -438,7 +515,7 @@ def main():
     H.delete_code = 200
     c, o, _ = corre(op("borr"))
     check("al retomar se reintenta SOLO la limpieza (ninguna generación nueva)", c == 0 and len(H.posts) == 1 and ent("borr").get("limpieza") == "hecha", o)
-    G.reset(); H.reset()
+    limpio()
     entrada = imagen(1000, 800, semilla=9)
     c, o, out = corre(op("edit", tipo="editar", etapa="ronda-pr7-abc-Editar", extra={"edita": blob_sha(entrada)}), entrada=entrada)
     e = ent("edit")

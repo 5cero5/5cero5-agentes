@@ -13,7 +13,8 @@ marca, la revisa con el Verificador y abre un PR en 5cero5-piezas. Nunca fusiona
                       [--cambios cambios.json] [--prompt "..."]   (ronda de cambios: commit nuevo en la rama del mismo PR)
 
 Rutas: --trabajo /tmp/creativo (piezas en curso), --marca /tmp/marca (copia del repo de marca).
-Global: --fila <id de la página de Notion> (lo pone el harness): identidad del trabajo para retomar una foto en otra sesión.
+Global: --fila <id de la página de Notion> (lo pone el harness): dueña de la foto; sin ella no hay Higgsfield, con ella
+una foto se retoma en otra sesión de la misma fila sin pagar otra.
 Variables: GITHUB_TOKEN (lo pone el harness; solo hacia api.github.com). HIGGSFIELD_API_KEY (solo para 'foto'; solo
 hacia api.higgsfield.ai; nunca hacia la URL firmada donde se sube una imagen). Opcionales: GH_PIEZAS_REPO
 (5cero5/5cero5-piezas), HF_ENDPOINT y HF_EDICION_ENDPOINT (solo modelos de la lista cerrada de higgsfield.py),
@@ -60,9 +61,7 @@ from higgsfield import ASPECTOS, hf  # noqa: E402,F401  (hf: compatibilidad con 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 FORMATOS = ("post-4x5", "post-1x1", "historia-9x16")
 REPO = os.environ.get("GH_PIEZAS_REPO", "5cero5/5cero5-piezas")
-HF_API = hfn.API
-HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "").strip() or hfn.SOUL
-HF_EDICION = os.environ.get("HF_EDICION_ENDPOINT", "").strip() or hfn.QWEN
+HF_API, HF_ENDPOINT = hfn.API, hfn.SOUL  # solo diagnóstico y pruebas (hf directo); el núcleo elige el modelo
 FOTOS_RONDA = ("Igual", "Editar", "Nueva")
 HF_RETENCION_S = hfn.RETENCION_S
 FOTOS_MAX = 2  # tope duro: ninguna variable lo sube
@@ -271,7 +270,8 @@ def contexto_hf(a) -> dict:
     return {"repo": a.repo or REPO, "exclusivo": bool(a.repo), "marca": Path(a.marca)}
 
 
-def op_id(a, etapa: str) -> tuple[str, bool]:
+def op_id(a, etapa: str) -> tuple[str, str | None]:
+    """(pieza + etapa, fila de Notion normalizada). Sin --fila el núcleo no pide nada."""
     return hfn.id_operacion(fila=getattr(a, "fila", None), campana=a.campana, pieza=a.pieza, etapa=etapa)
 
 
@@ -345,18 +345,18 @@ def cmd_foto(a) -> None:
     if not a.prompt:
         die("Falta --prompt.")
     prompt = revisa_prompt(a.prompt)
-    oid, reanudable = op_id(a, "original")
+    oid, fila = op_id(a, "original")
     if a.referencia:
         f, archivo = foto_del_cliente(Path(a.marca), a.referencia, "referencia_ia")
         return pide_foto(a, d, meta, hfn.Operacion(
             id=oid, campana=a.campana, pieza=a.pieza, tipo="editar", prompt=prompt, entrada=archivo.read_bytes(),
-            entrada_mime=MIME_FOTO.get(archivo.suffix.lower()), meta_extra={"referencia": f["id"]}, reanudable=reanudable))
+            entrada_mime=MIME_FOTO.get(archivo.suffix.lower()), meta_extra={"referencia": f["id"]}, fila=fila))
     # La proporción se elige y se valida ANTES de reservar y de llamar: con una que Soul v2 no acepta responde 400.
     aspecto = aspecto_pieza(a, d)
     if aspecto not in ASPECTOS:
         die(f"No hay una proporción válida para Higgsfield (permitidas: {', '.join(ASPECTOS_USO) or 'ninguna'}). No se pidió la foto.")
     pide_foto(a, d, meta, hfn.Operacion(id=oid, campana=a.campana, pieza=a.pieza, tipo="generar", prompt=prompt,
-                                        aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, reanudable=reanudable))
+                                        aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, fila=fila))
 
 
 # ------------------------------------------------------------------ llenar
@@ -608,10 +608,10 @@ def cmd_revisar_pr(a) -> None:
             cliente = meta.get("foto_cliente")
             if cliente:  # editar con IA una foto del cliente es usarla como referencia: tiene que permitirlo y no tener personas
                 foto_del_cliente(Path(a.marca), cliente.get("id", ""), "referencia_ia")
-            oid, reanudable = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Editar")
+            oid, fila = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Editar")
             pide_foto(a, d, meta, hfn.Operacion(
                 id=oid, campana=a.campana, pieza=a.pieza, tipo="editar", prompt=instr, entrada=actual.read_bytes(),
-                entrada_mime=MIME_FOTO.get(actual.suffix.lower()), reanudable=reanudable,
+                entrada_mime=MIME_FOTO.get(actual.suffix.lower()), fila=fila,
                 meta_extra={"edita": ronda.get("foto_antes"), **({"referencia": cliente.get("id")} if cliente else {})}))
             if cliente:
                 alt_de_cliente(d, f"{cliente.get('descripcion') or cliente.get('id')} (editada con IA)", cliente.get("personas"))
@@ -620,9 +620,9 @@ def cmd_revisar_pr(a) -> None:
             aspecto = aspecto_pieza(a, d)
             if aspecto not in ASPECTOS:
                 die("No hay una proporción válida para Higgsfield. No se pidió la foto.")
-            oid, reanudable = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Nueva")
+            oid, fila = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Nueva")
             pide_foto(a, d, meta, hfn.Operacion(id=oid, campana=a.campana, pieza=a.pieza, tipo="generar", prompt=prompt,
-                                                aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, reanudable=reanudable))
+                                                aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, fila=fila))
             m = ALT_FOTO.search((Path(a.marca) / meta["plantilla"]).read_text(encoding="utf-8"))
             if m:  # foto nueva de IA: el alt vuelve a ser el de la plantilla
                 pon_alt(d, m.group(2))

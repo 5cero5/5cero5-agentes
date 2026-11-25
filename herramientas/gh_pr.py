@@ -1,5 +1,6 @@
 """Lo común de las herramientas que abren PRs (pr_landing.py y pr_pieza.py): la API de Git de GitHub con el token
-de la sesión y una sola operación de escritura, subir UNA carpeta a una rama agente/* nueva y abrir el PR a main.
+de la sesión y una sola operación de escritura de piezas, subir UNA carpeta a una rama agente/* nueva y abrir el PR a
+main (más la ronda en la rama del mismo PR). higgsfield.py usa gh() para su registro en la rama agente/higgsfield.
 
 Lo que se impone aquí, para todas las herramientas:
   - Solo cambia archivos bajo el prefijo que se le da (una carpeta). Nada fuera de ella.

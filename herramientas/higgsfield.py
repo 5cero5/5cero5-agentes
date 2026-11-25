@@ -5,37 +5,43 @@ proporción ya resuelta (del marco real) y, si hay, la imagen de entrada; devuel
 pieza.json → higgsfield. Quien compone (plantilla HTML o Canva) pone el archivo; aquí no se aplana texto ni logo.
 
 Una operación NUEVA, en este orden (cada paso falla cerrado y antes de gastar):
-  1. Política del cliente: higgsfield.json del repo de marca montado (tope USD agregado, máximo por operación, si permite
+  1. Política del cliente: higgsfield.json del repo de marca montado (tope USD agregado, cota por operación, si permite
      generar, editar y referencias, y cuánta retención de uploads acepta). Sin política no hay Higgsfield.
-  2. Red y modelo: API fija (api.higgsfield.ai), endpoint de una lista cerrada y cuerpo con exactamente sus campos;
-     proporción de la lista de Soul v2. Nunca se cambia de modelo ni de proporción por un error.
-  3. Reserva atómica y duradera en el REGISTRO del cliente con la cota máxima por operación (antes de subir nada):
-     rama agente/higgsfield del repo de piezas del cliente, higgsfield/registro.json; se escribe con un commit encima de
-     la punta y PATCH de la ref sin forzar (CAS): si otra sesión escribió antes, se relee y se vuelve a comprobar el tope.
-     Lo reservado y lo consumido de todas las sesiones cuenta: una sesión nueva no reinicia nada.
-  4. Con imagen de entrada (Editar o referencia:): se comprueba que la marca acepta que los uploads vivan hasta 7 días
-     (Higgsfield los guarda aparte del request y no hay borrado por API) y se sube SIN la llave a la URL firmada.
-  5. Estimate autenticado con el cuerpo EXACTO. Tiene que caber en el máximo por operación y en el tope agregado.
-  6. Se congelan en el registro, ANTES del POST: Idempotency-Key, endpoint, cuerpo, webhook (ninguno) y Hf-Expires-After.
-  7. POST con esa clave. Red, timeout o 5xx: se repite con la MISMA clave y el MISMO cuerpo (HF_REINTENTOS_ENVIO, máx. 3).
-     422 por huella distinta: conflicto, se detiene (nunca se crea otra clave sola). 4xx antes de aceptar: no se cobra.
-  8. request_id y status_url al registro; polling acotado (HF_INTENTOS × HF_ESPERA_S). Si no termina, queda reanudable.
-  9. Descarga SIN la llave, validación (firma, decodificación con Pillow, tamaño, dimensiones), sha256/sha1/blob y copia
+  2. Identidad: la fila de Notion (--fila, la pone el harness). Sin ella no hay Higgsfield: no se podría retomar.
+  3. Red y modelo: API fija (api.higgsfield.ai, sin seguir redirecciones con la llave), endpoint de una lista cerrada y
+     cuerpo con exactamente sus campos; proporción de la lista de Soul v2. Nunca se cambia de modelo ni de proporción.
+  4. Reserva atómica y duradera de la cota en el REGISTRO del cliente (antes de subir nada ni estimar): rama
+     agente/higgsfield del repo de piezas del cliente, higgsfield/registro.json; se escribe con un commit encima de la
+     punta y PATCH de la ref sin forzar (CAS): si otra sesión escribió antes, se relee y se vuelve a comprobar el tope.
+     El registro lo crea una persona una vez (iniciar); si falta o lo borran, no hay Higgsfield (no vuelve a cero).
+     Una pieza y etapa (original o ronda) tiene UNA operación; de otra fila de Notion, se detiene.
+  5. Con imagen de entrada (Editar o referencia:): la marca tiene que aceptar que los uploads vivan hasta 7 días
+     (Higgsfield los guarda aparte del request y no hay borrado por API); se sube SIN la llave a la URL firmada.
+  6. Estimate autenticado con el cuerpo EXACTO. Tiene que caber en la cota por operación y en el tope agregado.
+  7. Se congelan en el registro, ANTES del POST: Idempotency-Key, endpoint, cuerpo, webhook (ninguno) y Hf-Expires-After.
+  8. POST con esa clave. Red, timeout, 3xx, 408, 429 o 5xx: el MISMO POST con la MISMA clave (HF_REINTENTOS_ENVIO, máx. 3).
+     4xx de la primera respuesta: rechazada, sin cobro. 4xx después de un intento sin respuesta: incierto (cuenta).
+     422 por huella distinta: conflicto. Nunca se crea otra clave sola.
+  9. request_id y status_url al registro; polling acotado (HF_INTENTOS × HF_ESPERA_S). Si no termina, queda reanudable.
+ 10. Descarga SIN la llave, validación (firma, decodificación con Pillow, tamaño, dimensiones), sha256/sha1/blob y copia
      propia en el registro (higgsfield/archivos/<sha256>.<ext>) ANTES del DELETE /requests/{id}. Un DELETE fallido queda
      como limpieza pendiente; el archivo propio no se pierde.
-Reanudar: la misma operación (fila de Notion + pieza + etapa) en otra sesión retoma su entrada: con el archivo ya
-guardado lo baja del registro (cero llamadas a Higgsfield); enviada, consulta su status_url; congelada y sin respuesta,
-repite el MISMO POST con la MISMA clave. Terminada en failed/nsfw/canceled/conflicto: no se pide otra.
-Costos: estimado autenticado previo al envío (no es factura). failed/nsfw/canceled no se cobran según la documentación
+Reanudar: la misma pieza y etapa con la MISMA fila (el reintento de esa fila de Notion) retoma su entrada: con el archivo
+ya guardado lo baja del registro (cero llamadas a Higgsfield); enviada, consulta su status_url; congelada y sin respuesta
+(menos de HF_VENTANA_REPLAY_H horas), repite el MISMO POST con la MISMA clave. failed/nsfw/canceled/conflicto: no se pide
+otra. Liberar o cerrar a mano: `python3 higgsfield.py estado|liberar` (solo personas; queda en el historial).
+Costos: estimate autenticado previo al envío (no es factura). failed/nsfw/canceled no se cobran según la documentación
 de Higgsfield; se registran así, con esa calidad de evidencia, nunca como cero inventado.
 """
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import http.client
 import io
 import json
+import math
 import os
 import random
 import re
@@ -46,7 +52,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import urlparse
@@ -76,6 +82,7 @@ ARCHIVOS = "higgsfield/archivos/"
 POLITICA = "higgsfield.json"
 UA = "5cero5-creativo"
 USD = re.compile(r"^\d{1,4}(\.\d{1,6})?$")
+FILA = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _num_env(k: str, defecto: int, maximo: int) -> int:
@@ -84,7 +91,9 @@ def _num_env(k: str, defecto: int, maximo: int) -> int:
 
 
 def _prueba_local(url: str = API) -> bool:
-    return url.startswith("http://127.0.0.1")
+    """Solo los servidores de prueba en http://127.0.0.1:<puerto> (sin usuario ni otro host escondido)."""
+    u = urlparse(url)
+    return u.scheme == "http" and u.hostname == "127.0.0.1" and "@" not in u.netloc
 
 
 def ahora() -> str:
@@ -100,7 +109,16 @@ class ErrorHF(Exception):
 
 
 class RedHF(Exception):
-    """No hubo respuesta utilizable (red, timeout, conexión cortada): resultado incierto."""
+    """No hubo respuesta utilizable (red, timeout, conexión cortada, redirección): resultado incierto."""
+
+
+class _SinRedireccion(urllib.request.HTTPRedirectHandler):
+    """Con la llave no se sigue ninguna redirección: urllib copiaría Authorization al otro host."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RedHF(f"redirección {code} a {urlparse(newurl).netloc} rechazada (la llave no sigue redirecciones)")
+
+
+_CON_LLAVE = urllib.request.build_opener(_SinRedireccion)
 
 
 def llama(method: str, url: str, body: dict | None = None, extra: dict | None = None, timeout: float = 60) -> dict:
@@ -113,10 +131,12 @@ def llama(method: str, url: str, body: dict | None = None, extra: dict | None = 
                                  headers={"Authorization": f"Key {key}", "Accept": "application/json", "User-Agent": UA,
                                           **({"Content-Type": "application/json"} if body is not None else {}), **(extra or {})})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _CON_LLAVE.open(req, timeout=timeout) as r:
             return json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         raise ErrorHF(e.code, e.read()[:300].decode("utf-8", "ignore")) from None
+    except RedHF:
+        raise
     except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, http.client.HTTPException, ValueError) as e:
         raise RedHF(f"{type(e).__name__}: {e}"[:200]) from None
 
@@ -185,7 +205,6 @@ def politica(marca: Path) -> dict:
 def aspecto_para(ancho: int, alto: int, permitidos: tuple = ASPECTOS) -> str | None:
     """La proporción permitida más cercana a un marco de ancho×alto (px del hueco de la imagen en el diseño o en la
     plantilla). None si no hay ninguna permitida o el marco no es válido: entonces no se llama a Higgsfield."""
-    import math
     if not permitidos or not (isinstance(ancho, int) and isinstance(alto, int)) or ancho <= 0 or alto <= 0:
         return None
     r = math.log(ancho / alto)
@@ -197,23 +216,26 @@ def _g(method: str, path: str, body: dict | None = None, ok: tuple = ()) -> dict
     return gh(method, path, body, UA, permitidos=ok)
 
 
-def _vacio(repo: str) -> dict:
-    return {"version": 1, "repo": repo, "entradas": []}
-
-
-def lee_registro(repo: str) -> tuple[str | None, dict]:
-    """(punta de la rama agente/higgsfield o None, registro). Un registro que no se puede leer detiene todo."""
-    r = _g("GET", f"/repos/{repo}/git/ref/heads/{RAMA}", ok=(404,))
-    if r.get("_status") == 404:
-        return None, _vacio(repo)
-    head = r["object"]["sha"]
+def _contenido(repo: str, head: str, ruta: str) -> bytes | None:
     tree = _g("GET", f"/repos/{repo}/git/commits/{head}")["tree"]["sha"]
     ent = next((e for e in _g("GET", f"/repos/{repo}/git/trees/{tree}?recursive=1").get("tree", [])
-                if e.get("path") == RUTA and e.get("type") == "blob"), None)
-    if not ent:
+                if e.get("path") == ruta and e.get("type") == "blob"), None)
+    return base64.b64decode(_g("GET", f"/repos/{repo}/git/blobs/{ent['sha']}").get("content", "")) if ent else None
+
+
+def lee_registro(repo: str) -> tuple[str, dict]:
+    """(punta de la rama agente/higgsfield, registro). Sin registro o ilegible, se detiene: nunca vuelve a cero."""
+    r = _g("GET", f"/repos/{repo}/git/ref/heads/{RAMA}", ok=(404,))
+    if r.get("_status") == 404:
+        die(f"{repo} no tiene el registro de Higgsfield (rama {RAMA}). Lo crea una persona una vez con "
+            f"`python3 higgsfield.py iniciar --repo {repo}`; si existía y lo borraron, hay que restaurarlo, no recrearlo. "
+            "No se llama a Higgsfield.")
+    head = r["object"]["sha"]
+    datos = _contenido(repo, head, RUTA)
+    if datos is None:
         die(f"La rama {RAMA} de {repo} no trae {RUTA}. No se toca a mano: revisarla antes de pedir fotos.")
     try:
-        reg = json.loads(base64.b64decode(_g("GET", f"/repos/{repo}/git/blobs/{ent['sha']}").get("content", "")))
+        reg = json.loads(datos)
     except (ValueError, json.JSONDecodeError):
         die(f"{RUTA} en {RAMA} no es JSON válido. No se llama a Higgsfield.")
     if not isinstance(reg, dict) or reg.get("version") != 1 or str(reg.get("repo", "")).lower() != repo.lower() \
@@ -225,37 +247,32 @@ def lee_registro(repo: str) -> tuple[str | None, dict]:
 def lee_archivo(repo: str, ruta: str, sha256: str) -> bytes:
     """El archivo propio guardado en el registro, comprobado por sha256."""
     head, _ = lee_registro(repo)
-    tree = _g("GET", f"/repos/{repo}/git/commits/{head}")["tree"]["sha"]
-    ent = next((e for e in _g("GET", f"/repos/{repo}/git/trees/{tree}?recursive=1").get("tree", [])
-                if e.get("path") == ruta and e.get("type") == "blob"), None)
-    if not ent:
+    datos = _contenido(repo, head, ruta)
+    if datos is None:
         die(f"El registro dice que la foto está en {ruta}, pero no está en {RAMA}. No se pide otra.")
-    datos = base64.b64decode(_g("GET", f"/repos/{repo}/git/blobs/{ent['sha']}").get("content", ""))
     if hashlib.sha256(datos).hexdigest() != sha256:
         die(f"La copia guardada en {ruta} no coincide con su sha256. No se pide otra.")
     return datos
 
 
 def escribe_registro(repo: str, cambia, mensaje: str, archivos: dict[str, bytes] | None = None) -> dict:
-    """cambia(registro) → registro nuevo (o die()). Un commit encima de la punta y la ref sin forzar: si otra sesión
-    escribió antes (no es fast-forward), se relee y se vuelve a aplicar cambia, que vuelve a comprobar el tope."""
+    """cambia(registro) → registro nuevo, None (nada que escribir) o die(). Un commit encima de la punta y la ref sin
+    forzar: si otra sesión escribió antes (no es fast-forward), se relee y se vuelve a aplicar cambia, que vuelve a
+    comprobar el tope y el estado. Devuelve el registro que quedó escrito (o el leído, si no hubo nada que escribir)."""
     for i in range(_num_env("HF_REGISTRO_INTENTOS", 6, 12)):
         head, reg = lee_registro(repo)
         nuevo = cambia(json.loads(json.dumps(reg)))
+        if nuevo is None:
+            return reg
         datos = (json.dumps(nuevo, ensure_ascii=False, indent=1, sort_keys=True) + "\n").encode()
         entradas = []
         for ruta, b in {RUTA: datos, **(archivos or {})}.items():
             sha = _g("POST", f"/repos/{repo}/git/blobs", {"content": base64.b64encode(b).decode(), "encoding": "base64"})["sha"]
             entradas.append({"path": ruta, "mode": "100644", "type": "blob", "sha": sha})
-        if head:
-            base_tree = _g("GET", f"/repos/{repo}/git/commits/{head}")["tree"]["sha"]
-            arbol = _g("POST", f"/repos/{repo}/git/trees", {"base_tree": base_tree, "tree": entradas})["sha"]
-            commit = _g("POST", f"/repos/{repo}/git/commits", {"message": mensaje, "tree": arbol, "parents": [head]})["sha"]
-            r = _g("PATCH", f"/repos/{repo}/git/refs/heads/{RAMA}", {"sha": commit, "force": False}, ok=(409, 422))
-        else:
-            arbol = _g("POST", f"/repos/{repo}/git/trees", {"tree": entradas})["sha"]
-            commit = _g("POST", f"/repos/{repo}/git/commits", {"message": mensaje, "tree": arbol, "parents": []})["sha"]
-            r = _g("POST", f"/repos/{repo}/git/refs", {"ref": f"refs/heads/{RAMA}", "sha": commit}, ok=(409, 422))
+        base_tree = _g("GET", f"/repos/{repo}/git/commits/{head}")["tree"]["sha"]
+        arbol = _g("POST", f"/repos/{repo}/git/trees", {"base_tree": base_tree, "tree": entradas})["sha"]
+        commit = _g("POST", f"/repos/{repo}/git/commits", {"message": mensaje, "tree": arbol, "parents": [head]})["sha"]
+        r = _g("PATCH", f"/repos/{repo}/git/refs/heads/{RAMA}", {"sha": commit, "force": False}, ok=(409, 422))
         if "_status" not in r:
             return nuevo
         time.sleep(random.uniform(0.05, 0.3) * (i + 1))
@@ -275,16 +292,19 @@ def entrada(reg: dict, op_id: str) -> dict | None:
     return next((e for e in reg.get("entradas", []) if e.get("id") == op_id), None)
 
 
-def _actualiza(repo: str, op_id: str, mensaje: str, archivos: dict[str, bytes] | None = None, **campos) -> dict:
+def _actualiza(repo: str, op_id: str, mensaje: str, archivos: dict[str, bytes] | None = None, *,
+               solo_si: tuple = (), evento: str | None = None, **campos) -> dict:
+    """Cambia campos de UNA entrada. solo_si: estados desde los que vale el cambio; si la entrada ya está en otro (otra
+    sesión de la misma operación avanzó), no se escribe nada y se devuelve la entrada como está."""
     def cambia(reg):
         e = entrada(reg, op_id)
         if e is None:
             die(f"El registro ya no tiene la operación {op_id}. Se detiene aquí.")
-        evento = campos.pop("_evento", None)
-        e.update(campos)
+        if solo_si and e.get("estado") not in solo_si:
+            return None
+        e.update(json.loads(json.dumps(campos)))
         if evento:
             e.setdefault("historial", []).append({"en": ahora(), "evento": evento})
-        campos["_evento"] = evento  # cambia puede repetirse tras un conflicto
         return reg
     return entrada(escribe_registro(repo, cambia, mensaje, archivos), op_id)
 
@@ -320,20 +340,23 @@ def valida_imagen(datos: bytes, tipo_http: str | None) -> dict:
     return {"mime": mime, "ext": FIRMAS[mime], "ancho": ancho, "alto": alto}
 
 
-def baja(url: str) -> tuple[bytes, str | None]:
-    """Descarga SIN la llave (otro host). Solo https (las pruebas locales sirven por http en 127.0.0.1)."""
-    u = urlparse(url)
-    if u.scheme != "https" and not _prueba_local(url):
-        raise ValueError(f"URL de imagen no https: {u.scheme}://{u.netloc}")
+def baja(url: str) -> tuple[bytes, str | None, str]:
+    """Descarga SIN la llave (otro host). Solo https, también tras redirecciones (las pruebas sirven en 127.0.0.1).
+    Devuelve (bytes, Content-Type, host final)."""
+    if urlparse(url).scheme != "https" and not _prueba_local(url):
+        raise ValueError(f"URL de imagen no https: {urlparse(url).scheme}://{urlparse(url).netloc}")
     with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=120) as r:
-        return r.read(MAX_BYTES + 1), r.headers.get_content_type()
+        final = r.geturl()
+        if urlparse(final).scheme != "https" and not _prueba_local(final):
+            raise ValueError(f"la descarga terminó en una URL no https ({urlparse(final).netloc})")
+        return r.read(MAX_BYTES + 1), r.headers.get_content_type(), urlparse(final).netloc
 
 
 def sube(datos: bytes, mime: str) -> dict:
     """URL firmada de Higgsfield y PUT del archivo SIN la llave (otro host). Devuelve public_url y su host."""
     r = hf("POST", API + "/files/generate-upload-url", {"content_type": mime})
     subir, publica = r.get("upload_url"), r.get("public_url")
-    if not subir or not publica or (urlparse(subir).scheme != "https" and not _prueba_local()) \
+    if not subir or not publica or (urlparse(subir).scheme != "https" and not _prueba_local(subir)) \
             or (urlparse(publica).scheme != "https"):
         die(f"Higgsfield no regresó upload_url y public_url https: {json.dumps(r)[:200]}")
     enc = {k: v for k, v in (r.get("upload_headers") or {}).items() if k.lower() not in ("authorization", "cookie")}
@@ -360,7 +383,8 @@ def borra(rid: str) -> dict:
 # ------------------------------------------------------------------ la operación
 @dataclass
 class Operacion:
-    id: str                      # identidad estable: fila de Notion + pieza + etapa (original o ronda)
+    id: str                      # pieza + etapa (original o ronda): UNA operación por id en todo el registro
+    fila: str | None             # fila de Notion dueña (normalizada); sin ella no hay Higgsfield
     campana: str
     pieza: str
     tipo: str                    # generar | editar
@@ -369,7 +393,6 @@ class Operacion:
     entrada: bytes | None = None  # solo editar: la imagen de entrada
     entrada_mime: str | None = None
     meta_extra: dict = field(default_factory=dict)  # referencia, edita, aspect_ratio… (van a pieza.json)
-    reanudable: bool = True      # False: sin fila de Notion; una entrada previa no se retoma, se detiene
 
 
 @dataclass
@@ -379,6 +402,14 @@ class Resultado:
     prompt: str                  # el registrado (si se retomó otra sesión, el de esa intención)
     meta: dict                   # lo que va en pieza.json → higgsfield
     reanudada: bool
+
+
+def id_operacion(*, fila: str | None, campana: str, pieza: str, etapa: str) -> tuple[str, str | None]:
+    """(id de la operación, fila normalizada). El id es la pieza y la etapa; la fila es su dueña."""
+    f = re.sub("-", "", fila or "").lower() or None
+    if f is not None and not FILA.match(f):
+        die(f"--fila no es un id de página de Notion: {fila!r}.")
+    return f"{campana}/{pieza}:{etapa}", f
 
 
 def _cuerpo(op: Operacion, image_urls: list[str] | None) -> tuple[str, dict]:
@@ -410,6 +441,9 @@ def _sha_cuerpo(endpoint: str, cuerpo: dict, encabezados: dict) -> str:
 def preflight(pol: dict, op: Operacion) -> None:
     if API != API_OFICIAL and not _prueba_local():
         die(f"HIGGSFIELD_API_BASE apunta a {urlparse(API).netloc}: la llave solo va a {urlparse(API_OFICIAL).netloc}.")
+    if not op.fila:
+        die("Sin --fila (el id de la fila de Notion, que pone el harness) no se usa Higgsfield: no se podría retomar la "
+            "foto en otra sesión sin pagar otra. No se pidió la foto.")
     if not os.environ.get("HIGGSFIELD_API_KEY", "").strip():
         die("Falta HIGGSFIELD_API_KEY (no está en el vault de este cliente). No se pidió la foto.")
     if op.tipo == "generar" and not pol["generar"]:
@@ -434,17 +468,14 @@ def opera(*, repo: str, exclusivo: bool, marca: Path, op: Operacion, al_reservar
     if exclusivo:
         repo_exclusivo(repo, UA)
     _, reg = lee_registro(repo)
-    if not op.reanudable:  # sin fila: cualquier operación previa de esta pieza y etapa (con o sin fila) detiene todo
-        sufijo = ":" + op.id.split(":", 1)[1]
-        otra = next((x for x in reg.get("entradas", []) if str(x.get("id", "")).endswith(sufijo)), None)
-        if otra is not None:
-            die(f"Ya hay una operación de Higgsfield registrada para {op.campana}/{op.pieza} ({otra.get('estado')}, "
-                f"request {otra.get('request_id') or 'sin aceptar'}) y esta corrida no trae la fila de Notion: no se sabe si es "
-                "el mismo trabajo. No se pide otra foto; usa otro --pieza o revisa el registro.")
     previa = entrada(reg, op.id)
     if previa is not None:
-        if previa.get("tipo") != op.tipo or previa.get("campana") != op.campana or previa.get("pieza") != op.pieza:
-            die(f"La operación registrada {op.id} es de otro tipo o pieza. No se pide otra foto.")
+        if previa.get("fila") != op.fila:
+            die(f"{op.campana}/{op.pieza} ya tiene una operación de Higgsfield para esta etapa ({previa.get('estado')}, request "
+                f"{previa.get('request_id') or 'sin aceptar'}) de otra fila de Notion. No se pide otra foto: termina sin PR y "
+                "explícalo.")
+        if previa.get("tipo") != op.tipo:
+            die(f"La operación registrada {op.id} es de otro tipo ({previa.get('tipo')}). No se pide otra foto.")
         print(f"· Se retoma la operación registrada {op.id} (estado {previa.get('estado')}): misma intención, misma clave.")
         return _continua(repo, pol, op, previa, True)
     # Intención nueva: cota máxima reservada antes de subir nada ni estimar.
@@ -457,16 +488,16 @@ def opera(*, repo: str, exclusivo: bool, marca: Path, op: Operacion, al_reservar
             die(f"Tope de Higgsfield del cliente: {expuesto(reg)} USD reservados o consumidos de {pol['tope']}; una operación "
                 f"puede costar hasta {pol['maximo']}. No se pidió la foto.")
         reg["entradas"].append({
-            "id": op.id, "campana": op.campana, "pieza": op.pieza, "tipo": op.tipo, "estado": "reservado",
+            "id": op.id, "fila": op.fila, "campana": op.campana, "pieza": op.pieza, "tipo": op.tipo, "estado": "reservado",
             "idempotency_key": clave, "cota_usd": str(pol["maximo"]), "politica_sha256": pol["sha256"],
             "entrada_sha256": hashlib.sha256(op.entrada).hexdigest() if op.entrada else None,
             "subida": {"estado": "pendiente"} if op.entrada else None, "meta_extra": op.meta_extra,
-            "historial": [{"en": ahora(), "evento": "reservado"}]})
+            "reservado_en": ahora(), "historial": [{"en": ahora(), "evento": "reservado"}]})
         return reg
-    escribe_registro(repo, reserva, f"Higgsfield: reserva {op.id}")
+    escrito = escribe_registro(repo, reserva, f"Higgsfield: reserva {op.id}")
     if al_reservar:
         al_reservar()
-    return _continua(repo, pol, op, entrada(lee_registro(repo)[1], op.id), False)
+    return _continua(repo, pol, op, entrada(escrito, op.id), False)
 
 
 def _congela(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> dict:
@@ -492,13 +523,14 @@ def _congela(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> d
         v = est.get("usd")
         estimado = usd(str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v, "estimate")
     except (ErrorHF, RedHF, ValueError) as err:
-        _actualiza(repo, op.id, f"Higgsfield: estimate fallido {op.id}", subida=subida or e.get("subida"),
-                   _evento=f"estimate fallido: {str(err)[:120]}")
+        _actualiza(repo, op.id, f"Higgsfield: estimate fallido {op.id}", solo_si=("reservado",),
+                   evento=f"estimate fallido: {str(err)[:120]}", subida=subida or e.get("subida"))
         die(f"No hay estimate utilizable para {endpoint} ({str(err)[:160]}). No se pidió la foto; la reserva queda para "
             "retomarla con la misma clave.")
     if estimado > pol["maximo"]:
-        _actualiza(repo, op.id, f"Higgsfield: descartada {op.id}", estado="descartada", estimado_usd=str(estimado),
-                   subida=subida or e.get("subida"), _evento=f"estimate {estimado} > máximo {pol['maximo']}")
+        _actualiza(repo, op.id, f"Higgsfield: descartada {op.id}", solo_si=("reservado",), estado="descartada",
+                   estimado_usd=str(estimado), subida=subida or e.get("subida"),
+                   evento=f"estimate {estimado} > máximo {pol['maximo']}")
         die(f"El estimate ({estimado} USD) pasa el máximo por operación de la marca ({pol['maximo']}). No se pidió la foto.")
     encabezados = {"Hf-Expires-After": RETENCION_S}
 
@@ -513,7 +545,7 @@ def _congela(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> d
             return reg
         x.update(estado="listo", endpoint=endpoint, cuerpo=cuerpo, encabezados=encabezados, webhook=None,
                  cuerpo_sha256=_sha_cuerpo(endpoint, cuerpo, encabezados), estimado_usd=str(estimado),
-                 estimado_en=ahora(), subida=subida or x.get("subida"))
+                 estimado_en=ahora(), congelado_en=ahora(), subida=subida or x.get("subida"))
         x.setdefault("historial", []).append({"en": ahora(), "evento": f"congelado; estimate {estimado} USD"})
         return reg
     e = entrada(escribe_registro(repo, congela, f"Higgsfield: intención congelada {op.id}"), op.id)
@@ -522,43 +554,52 @@ def _congela(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> d
     return e
 
 
-def _envia(repo: str, e: dict) -> dict:
-    """POST con la clave y el cuerpo congelados. Red/timeout/5xx: mismo POST, misma clave. Nunca una clave nueva."""
+def _envia(repo: str, e: dict, ambiguo: bool) -> dict:
+    """POST con la clave y el cuerpo congelados. Red/timeout/3xx/408/429/5xx: mismo POST, misma clave. Nunca una clave
+    nueva. ambiguo: ya hubo un envío cuyo resultado no se sabe (otra corrida o un intento de esta): un 4xx posterior no
+    prueba que no se aceptara, así que queda incierto y sigue contando contra el tope."""
     extra = {**e["encabezados"], "Idempotency-Key": e["idempotency_key"]}
     if _sha_cuerpo(e["endpoint"], e["cuerpo"], e["encabezados"]) != e.get("cuerpo_sha256"):
         die(f"El cuerpo registrado de {e['id']} no coincide con su huella. No se envía.")
+    desde = ("listo", "incierto")
     ultimo = ""
     for i in range(1 + _num_env("HF_REINTENTOS_ENVIO", 2, 3)):
         try:
             r = llama("POST", API + e["endpoint"], e["cuerpo"], extra)
         except ErrorHF as err:
-            if err.code >= 500 or err.code in (408, 429):  # no aceptada todavía: mismo POST, misma clave
-                ultimo = f"HTTP {err.code}"
+            if err.code >= 500 or err.code in (408, 429):  # no se sabe o no se aceptó todavía: mismo POST, misma clave
+                ultimo, ambiguo = f"HTTP {err.code}", True
                 time.sleep(float(os.environ.get("HF_ESPERA_S", "5")) * (i + 1))
                 continue
             if err.code == 422 and "idempotency" in err.detalle.lower():
-                _actualiza(repo, e["id"], f"Higgsfield: conflicto {e['id']}", estado="conflicto",
-                           _evento=f"422 Idempotency-Key con otros parámetros: {err.detalle[:120]}")
+                _actualiza(repo, e["id"], f"Higgsfield: conflicto {e['id']}", solo_si=desde, estado="conflicto",
+                           evento=f"422 Idempotency-Key con otros parámetros: {err.detalle[:120]}")
                 die(f"Higgsfield dice que la clave de {e['id']} ya se usó con otros parámetros (422). No se crea otra clave: "
                     "revisar a mano si fue un error o una generación nueva deliberada.")
-            _actualiza(repo, e["id"], f"Higgsfield: rechazada {e['id']}", estado="rechazada",
-                       _evento=f"HTTP {err.code} antes de aceptar: {err.detalle[:120]}")
+            if ambiguo:
+                _actualiza(repo, e["id"], f"Higgsfield: incierto {e['id']}", solo_si=desde, estado="incierto",
+                           evento=f"HTTP {err.code} después de un envío sin respuesta: {err.detalle[:100]}")
+                die(f"Higgsfield respondió HTTP {err.code} después de un envío sin respuesta: no se sabe si el primero se aceptó. "
+                    "Queda incierto (cuenta contra el tope); revisar a mano. No se pide otra foto.")
+            _actualiza(repo, e["id"], f"Higgsfield: rechazada {e['id']}", solo_si=desde, estado="rechazada",
+                       evento=f"HTTP {err.code} antes de aceptar: {err.detalle[:120]}")
             die(f"Higgsfield rechazó la solicitud antes de aceptarla (HTTP {err.code}: {err.detalle[:200]}). No se cobra; "
                 "no se reintenta con otra clave.")
         except RedHF as err:
-            ultimo = str(err)
+            ultimo, ambiguo = str(err), True
             time.sleep(float(os.environ.get("HF_ESPERA_S", "5")) * (i + 1))
             continue
         rid, status_url = r.get("request_id"), r.get("status_url")
         su = urlparse(str(status_url or ""))
-        if not rid or su.netloc != urlparse(API).netloc or su.path != f"/requests/{rid}/status":
-            _actualiza(repo, e["id"], f"Higgsfield: respuesta rara {e['id']}", estado="incierto",
-                       _evento=f"aceptación sin request_id/status_url válidos: {json.dumps(r)[:120]}")
+        if not rid or su.scheme != urlparse(API).scheme or su.netloc != urlparse(API).netloc or su.path != f"/requests/{rid}/status":
+            _actualiza(repo, e["id"], f"Higgsfield: respuesta rara {e['id']}", solo_si=desde, estado="incierto",
+                       evento=f"aceptación sin request_id/status_url válidos: {json.dumps(r)[:120]}")
             die(f"Higgsfield no regresó request_id y status_url válidos ({json.dumps(r)[:200]}). Queda incierto; se retoma con "
                 "la misma clave.")
-        return _actualiza(repo, e["id"], f"Higgsfield: aceptada {e['id']}", estado="enviado", request_id=rid,
-                          status_url=status_url, aceptado_en=ahora(), _evento=f"aceptada: {rid}")
-    _actualiza(repo, e["id"], f"Higgsfield: incierto {e['id']}", estado="incierto", _evento=f"sin respuesta: {ultimo[:120]}")
+        return _actualiza(repo, e["id"], f"Higgsfield: aceptada {e['id']}", solo_si=desde, estado="enviado", request_id=rid,
+                          status_url=status_url, aceptado_en=ahora(), evento=f"aceptada: {rid}")
+    _actualiza(repo, e["id"], f"Higgsfield: incierto {e['id']}", solo_si=desde, estado="incierto",
+               evento=f"sin respuesta: {ultimo[:120]}")
     die(f"Sin respuesta de Higgsfield al enviar {e['id']} ({ultimo[:120]}). Resultado incierto: se retoma con la MISMA "
         "clave y el MISMO cuerpo en la próxima corrida; no se pide otra foto.")
 
@@ -572,71 +613,90 @@ def _continua(repo: str, pol: dict, op: Operacion, e: dict, reanudada: bool) -> 
         return _resultado(repo, e, lee_archivo(repo, e["archivo"]["ruta"], e["archivo"]["sha256"]), True)
     if estado == "reservado":
         e = _congela(repo, pol, op, e, reanudada)
-    if e.get("estado") == "listo" or (e.get("estado") == "incierto" and not e.get("request_id")):
-        e = _envia(repo, e)
+    if e.get("estado") in ("listo", "incierto") and not e.get("request_id"):
+        if reanudada:  # otra corrida pudo enviar ya: solo se repite el MISMO POST dentro de la ventana
+            ventana = _num_env("HF_VENTANA_REPLAY_H", 24, 168)
+            desde = e.get("congelado_en") or e.get("estimado_en") or ""
+            try:
+                viejo = datetime.now(timezone.utc) - datetime.fromisoformat(desde) > timedelta(hours=ventana)
+            except ValueError:
+                viejo = True
+            if viejo:
+                die(f"La operación {op.id} quedó '{e.get('estado')}' hace más de {ventana} h sin request_id. No se repite el POST "
+                    "(no se sabe cuánto dura la Idempotency-Key): confirmar a mano en Higgsfield y cerrar con "
+                    "`higgsfield.py liberar`. No se pide otra foto.")
+        e = _envia(repo, e, ambiguo=reanudada or e.get("estado") == "incierto")
     return _espera_y_guarda(repo, e, reanudada)
 
 
 def _espera_y_guarda(repo: str, e: dict, reanudada: bool) -> Resultado:
     rid, status_url = e["request_id"], e["status_url"]
+    vivos = ("enviado", "incierto")
     estado: dict = {}
     for _ in range(max(1, _num_env("HF_INTENTOS", 40, 400))):
         try:
             estado = llama("GET", status_url)
         except (ErrorHF, RedHF) as err:
-            estado = {"status": e.get("estado"), "_error": str(err)[:120]}
+            estado = {"status": None, "_error": str(err)[:120]}
         if estado.get("status") in TERMINALES:
             break
         time.sleep(float(os.environ.get("HF_ESPERA_S", "5")))
     st = estado.get("status")
     if st not in TERMINALES:
-        _actualiza(repo, e["id"], f"Higgsfield: sigue en proceso {e['id']}", _evento=f"sin terminar: {st}")
-        die(f"La foto (request {rid}) sigue en '{st}'. No se pide otra: se retoma ese mismo request en la próxima corrida.")
+        _actualiza(repo, e["id"], f"Higgsfield: sigue en proceso {e['id']}", solo_si=vivos,
+                   evento=f"sin terminar: {st or estado.get('_error')}")
+        die(f"La foto (request {rid}) sigue en '{st or 'sin respuesta'}'. No se pide otra: se retoma ese mismo request en la "
+            "próxima corrida.")
     if st != "completed":
         b = borra(rid)  # terminada: no hay por qué dejar sus datos
-        _actualiza(repo, e["id"], f"Higgsfield: {st} {e['id']}", estado=st, borrado=b,
+        _actualiza(repo, e["id"], f"Higgsfield: {st} {e['id']}", solo_si=vivos, estado=st, borrado=b,
+                   limpieza="hecha" if b["ok"] else "pendiente",
                    cargo={"usd": "0", "calidad": "sin cobro según la documentación de Higgsfield (failed/nsfw/canceled)"},
-                   _evento=f"terminó en {st}: {str(estado.get('error') or '')[:100]}")
+                   evento=f"terminó en {st}: {str(estado.get('error') or '')[:100]}")
         die(f"La foto terminó en '{st}' (request {rid}). No se pide otra: termina y explícalo.")
     url = ((estado.get("images") or [{}])[0] or {}).get("url")
     try:
         if not url:
             raise ValueError("el estado completed no trae images[0].url")
-        datos, tipo = baja(url)
+        datos, tipo, host_final = baja(url)
         info = valida_imagen(datos, tipo)
     except Exception as err:  # noqa: BLE001
-        _actualiza(repo, e["id"], f"Higgsfield: descarga fallida {e['id']}", estado="enviado",
-                   expires_at=estado.get("expires_at"), _evento=f"completed; descarga o validación fallida: {str(err)[:120]}")
+        _actualiza(repo, e["id"], f"Higgsfield: descarga fallida {e['id']}", solo_si=vivos, estado="enviado",
+                   expires_at=estado.get("expires_at"), evento=f"completed; descarga o validación fallida: {str(err)[:120]}")
         die(f"La foto del request {rid} terminó, pero no se pudo bajar o no es una imagen válida ({str(err)[:160]}). No se pide "
             "otra: se retoma ese mismo request (antes de su expires_at) o se revisa a mano.")
     sha256 = hashlib.sha256(datos).hexdigest()
     ruta = f"{ARCHIVOS}{sha256}.{info['ext']}"
     archivo = {"ruta": ruta, "sha256": sha256, "sha1": hashlib.sha1(datos).hexdigest(), "blob_sha": blob_sha(datos),
                "bytes": len(datos), "mime": info["mime"], "ancho": info["ancho"], "alto": info["alto"],
-               "imagen_host": urlparse(url).netloc}
+               "imagen_host": urlparse(url).netloc, "imagen_host_final": host_final}
     # Copia propia ANTES del DELETE: si después se cae algo, la foto ya está en el registro del cliente.
-    e = _actualiza(repo, e["id"], f"Higgsfield: foto guardada {e['id']}", {ruta: datos}, estado="completed", archivo=archivo,
-                   expires_at=estado.get("expires_at"),
+    e = _actualiza(repo, e["id"], f"Higgsfield: foto guardada {e['id']}", {ruta: datos}, solo_si=vivos, estado="completed",
+                   archivo=archivo, expires_at=estado.get("expires_at"),
                    cargo={"usd": e["estimado_usd"], "calidad": "estimate autenticado previo al envío; no es factura"},
-                   _evento=f"completed; copia propia {sha256[:12]}")
+                   evento=f"completed; copia propia {sha256[:12]}")
+    if e.get("estado") != "completed" or not e.get("archivo"):
+        die(f"El registro de {e['id']} cambió a '{e.get('estado')}' mientras se guardaba la foto. Se detiene aquí.")
+    if e["archivo"]["sha256"] != sha256:  # otra corrida de la misma operación guardó antes: manda la suya
+        datos = lee_archivo(repo, e["archivo"]["ruta"], e["archivo"]["sha256"])
     return _resultado(repo, e, datos, reanudada)
 
 
 def _resultado(repo: str, e: dict, datos: bytes, reanudada: bool) -> Resultado:
     if not (e.get("borrado") or {}).get("ok"):
         b = borra(e["request_id"])
-        e = _actualiza(repo, e["id"], f"Higgsfield: limpieza {e['id']}", borrado=b,
-                       limpieza="hecha" if b["ok"] else "pendiente", _evento=f"DELETE {'ok' if b['ok'] else 'fallido'}")
+        e = _actualiza(repo, e["id"], f"Higgsfield: limpieza {e['id']}", solo_si=("completed",), borrado=b,
+                       limpieza="hecha" if b["ok"] else "pendiente", evento=f"DELETE {'ok' if b['ok'] else 'fallido'}")
         if not b["ok"]:
             print(f"⚠ No se pudo borrar el request {e['request_id']} en Higgsfield ({b['error']}). Queda como limpieza pendiente "
                   f"en el registro; Higgsfield lo borra solo al vencer su retención ({e.get('expires_at') or '1 h tras terminar'}).")
     a = e["archivo"]
     meta = {"request_id": e["request_id"], "endpoint": e["endpoint"], **(e.get("meta_extra") or {}), "estado": "completed",
-            "imagen_host": a["imagen_host"], "sha1": a["sha1"], "bytes": a["bytes"], "blob_sha": a["blob_sha"],
-            "sha256": a["sha256"], "mime": a["mime"], "ancho": a["ancho"], "alto": a["alto"],
-            "idempotency_key": e["idempotency_key"], "estimado_usd": e["estimado_usd"], "retencion_s": int(RETENCION_S),
-            "expires_at": e.get("expires_at"), "borrado": e.get("borrado"),
-            "registro": {"rama": RAMA, "entrada": e["id"], "archivo": a["ruta"]}}
+            "imagen_host": a["imagen_host"], "imagen_host_final": a.get("imagen_host_final"), "sha1": a["sha1"],
+            "bytes": a["bytes"], "blob_sha": a["blob_sha"], "sha256": a["sha256"], "mime": a["mime"], "ancho": a["ancho"],
+            "alto": a["alto"], "idempotency_key": e["idempotency_key"], "estimado_usd": e["estimado_usd"],
+            "retencion_s": int(RETENCION_S), "expires_at": e.get("expires_at"), "borrado": e.get("borrado"),
+            "registro": {"rama": RAMA, "entrada": e["id"], "fila": e.get("fila"), "archivo": a["ruta"]}}
     if e.get("subida"):
         meta["subida"] = {k: e["subida"][k] for k in ("host", "sha256", "retencion", "limpieza") if k in e["subida"]}
     if e.get("tipo") == "editar":
@@ -649,11 +709,57 @@ def _resultado(repo: str, e: dict, datos: bytes, reanudada: bool) -> Resultado:
     return Resultado(datos=datos, ext=FIRMAS[a["mime"]], prompt=e["cuerpo"]["prompt"], meta=meta, reanudada=reanudada)
 
 
-def id_operacion(*, fila: str | None, campana: str, pieza: str, etapa: str) -> tuple[str, bool]:
-    """Identidad estable de la operación. Con la fila de Notion (la misma en un reintento de esa fila) se puede retomar
-    en otra sesión. Sin fila: la pieza y la etapa; una entrada previa no se retoma (se detiene)."""
-    if fila:
-        if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", fila):
-            die(f"--fila no es un id de página de Notion: {fila!r}.")
-        return f"fila:{fila.replace('-', '').lower()}:{campana}/{pieza}:{etapa}", True
-    return f"pieza:{campana}/{pieza}:{etapa}", False
+# ------------------------------------------------------------------ uso humano (no lo corre el agente)
+def cli() -> None:
+    """Para personas (Al, Bonzo) con un GITHUB_TOKEN con escritura en el repo de piezas del cliente. Nunca llama a Higgsfield.
+      iniciar: crea el registro vacío del cliente (una vez). No lo recrea si existe.
+      estado:  imprime las operaciones y lo reservado/consumido contra el tope.
+      liberar: cierra a mano una operación que no se envió (reservado) o, con --confirmo-sin-aceptar y el motivo, una
+               listo/incierto sin request_id después de comprobar en Higgsfield que no se aceptó. Queda en el historial."""
+    ap = argparse.ArgumentParser(description=cli.__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("accion", choices=("iniciar", "estado", "liberar"))
+    ap.add_argument("--repo", required=True)
+    ap.add_argument("--operacion")
+    ap.add_argument("--motivo")
+    ap.add_argument("--confirmo-sin-aceptar", action="store_true")
+    a = ap.parse_args()
+    if a.accion == "iniciar":
+        r = _g("GET", f"/repos/{a.repo}/git/ref/heads/{RAMA}", ok=(404,))
+        if r.get("_status") != 404:
+            die(f"{a.repo} ya tiene la rama {RAMA}: no se recrea.")
+        datos = (json.dumps({"version": 1, "repo": a.repo, "entradas": [], "creado_en": ahora()}, indent=1, sort_keys=True) + "\n").encode()
+        blob = _g("POST", f"/repos/{a.repo}/git/blobs", {"content": base64.b64encode(datos).decode(), "encoding": "base64"})["sha"]
+        arbol = _g("POST", f"/repos/{a.repo}/git/trees", {"tree": [{"path": RUTA, "mode": "100644", "type": "blob", "sha": blob}]})["sha"]
+        commit = _g("POST", f"/repos/{a.repo}/git/commits", {"message": "Higgsfield: registro del cliente", "tree": arbol, "parents": []})["sha"]
+        r = _g("POST", f"/repos/{a.repo}/git/refs", {"ref": f"refs/heads/{RAMA}", "sha": commit}, ok=(422,))
+        if "_status" in r:
+            die(f"{a.repo} ya tiene la rama {RAMA}: no se recrea.")
+        print(json.dumps({"repo": a.repo, "rama": RAMA, "commit": commit}))
+        return
+    if a.accion == "estado":
+        head, reg = lee_registro(a.repo)
+        filas = [{k: x.get(k) for k in ("id", "fila", "estado", "estimado_usd", "cota_usd", "request_id", "limpieza")}
+                 for x in reg["entradas"]]
+        print(json.dumps({"repo": a.repo, "punta": head, "expuesto_usd": str(expuesto(reg)), "operaciones": filas},
+                         ensure_ascii=False, indent=1))
+        return
+    if not a.operacion or not (a.motivo or "").strip():
+        die("liberar necesita --operacion y --motivo.")
+    permitidos = ("reservado", "listo", "incierto") if a.confirmo_sin_aceptar else ("reservado",)
+
+    def libera(reg):
+        x = entrada(reg, a.operacion)
+        if x is None:
+            die(f"No existe la operación {a.operacion}.")
+        if x.get("estado") not in permitidos or x.get("request_id"):
+            die(f"{a.operacion} está '{x.get('estado')}'{' con request ' + x['request_id'] if x.get('request_id') else ''}: no se "
+                "libera así (listo o incierto solo con --confirmo-sin-aceptar; con request_id, nunca).")
+        x["estado"] = "descartada"
+        x.setdefault("historial", []).append({"en": ahora(), "evento": f"liberada a mano: {a.motivo.strip()[:200]}"})
+        return reg
+    escribe_registro(a.repo, libera, f"Higgsfield: liberada a mano {a.operacion}")
+    print(f"✓ {a.operacion} liberada (descartada) en {a.repo}.")
+
+
+if __name__ == "__main__":
+    cli()

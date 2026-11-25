@@ -176,7 +176,8 @@ POLITICA = {"version": 1, "permitido": True, "tope_usd": "5.00", "max_usd_por_op
 ENV = {**os.environ, "GITHUB_API_BASE": API_GH, "GITHUB_TOKEN": "ghs_prueba", "HIGGSFIELD_API_BASE": API_HF,
        "HIGGSFIELD_API_KEY": "hf_prueba", "HF_ESPERA_S": "0.05",
        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-TOOL = [sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(TRABAJO), "--marca", str(MARCA_COPIA)]
+FILA = "2b8f0c1e-0d6a-4c39-9b0e-6a1f2e3d4c5b"  # id de la fila de Notion que pone el harness
+TOOL = [sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(TRABAJO), "--marca", str(MARCA_COPIA), "--fila", FILA]
 BIEN = {"kicker": "Sin coordinar a ocho proveedores", "titular": ["Ocho", "proveedores,", "no."],
         "subtitulo": "Un solo equipo arma tus citas, pedidos y visitas.", "nota": "Desde $20,000 al mes + IVA. Licencias incluidas."}
 PROMPT = "Fotografía editorial del mostrador de una papelería de barrio en Monterrey, luz natural, encuadre horizontal, sin personas, sin texto y sin logos"
@@ -274,7 +275,13 @@ def main():
     check("el PNG del PR es el del informe (blob sha)", out.get("png_blob_sha") in G.blobs and blob_sha(G.blobs[out["png_blob_sha"]]) == out["png_blob_sha"], o)
     check("main no se movió y nada intentó fusionar", G.refs["refs/heads/main"] == "c0" and not any("merge" in p for _, p in G.llamadas), str(G.llamadas[-5:]))
 
-    # Historia con foto de Higgsfield
+    # Historia con foto de Higgsfield. El registro del cliente lo crea una persona una vez (higgsfield.py iniciar).
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "estado", "--repo", REPO], capture_output=True, text=True, env=ENV)
+    check("sin registro de Higgsfield, estado lo dice y no lo crea", r.returncode != 0 and "iniciar" in r.stdout + r.stderr
+          and "refs/heads/agente/higgsfield" not in G.refs, r.stdout + r.stderr)
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "iniciar", "--repo", REPO], capture_output=True, text=True, env=ENV)
+    check("iniciar crea el registro vacío en agente/higgsfield sin tocar main", r.returncode == 0 and "refs/heads/agente/higgsfield" in G.refs
+          and G.refs["refs/heads/main"] == "c0", r.stdout + r.stderr)
     c, o = corre("nueva", "--campana", "poc", "--pieza", "historia-a", "--formato", "historia-9x16", "--foto")
     d2 = dir_("poc", "historia-a")
     check("nueva con --foto usa la plantilla con foto", c == 0 and 'class="foto"' in (d2 / "plantillas/pieza.html").read_text(), o)
@@ -336,6 +343,13 @@ def main():
     check("sin higgsfield.json en el repo de marca no se llama a Higgsfield ni se cuenta la foto", c != 0 and "higgsfield.json" in o
           and len(HF["posts"]) == n0 and len(HF["estimates"]) == e0 and (cont.read_text() if cont.exists() else "") == antes, o)
     shutil.rmtree(dir_("poc", "historia-sin-politica"))
+    corre("nueva", "--campana", "poc", "--pieza", "historia-sin-fila", "--formato", "historia-9x16", "--foto")
+    sin_fila = [x for x in TOOL if x not in ("--fila", FILA)]
+    r = subprocess.run(sin_fila + ["foto", "--campana", "poc", "--pieza", "historia-sin-fila", "--prompt", PROMPT],
+                       capture_output=True, text=True, env=ENV, timeout=120)
+    check("sin --fila (la pone el harness) no se llama a Higgsfield ni se cuenta la foto", r.returncode != 0 and "--fila" in r.stdout
+          and len(HF["posts"]) == n0 and len(HF["estimates"]) == e0 and (cont.read_text() if cont.exists() else "") == antes, r.stdout + r.stderr)
+    shutil.rmtree(dir_("poc", "historia-sin-fila"))
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})
@@ -390,7 +404,7 @@ def imagen(semilla):
 def fotos_del_cliente_y_rondas():
     """Fotos del repo de marca (repo: y referencia:), nota opcional y rondas sobre el mismo PR (Igual, Editar, fusionado)."""
     trabajo = TMP / "creativo2"  # sesión aparte: su propio tope de fotos
-    tool = lambda *a, env=None: subprocess.run([sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(trabajo), "--marca", str(MARCA_COPIA)] + list(a),
+    tool = lambda *a, env=None: subprocess.run([sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(trabajo), "--marca", str(MARCA_COPIA), "--fila", FILA] + list(a),
                                                capture_output=True, text=True, env=env or ENV, timeout=300)
     def corre2(*a):
         r = tool(*a); return r.returncode, r.stdout + r.stderr
