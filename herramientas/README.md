@@ -12,3 +12,7 @@ Herramientas que usan los agentes dentro de su sesión de Managed Agents (el rep
 Pruebas: `MARCA_REPO=… LANDINGS_REPO=… python3 test_pr_landing.py` (GitHub falso; necesita Playwright con Chromium y node). 15 comprobaciones.
 `MARCA_REPO=… python3 test_pr_pieza.py` (GitHub y Higgsfield falsos; necesita Pillow y Playwright con Chromium). 29 comprobaciones.
 `python3 test_meta_pauta.py` (Graph API falsa; sin dependencias). 50 comprobaciones.
+
+## Canva (`pieza_canva.py`, lo usa `pr_pieza.py`)
+Piezas del Creativo hechas en Canva (filas con `Canva: sí`; ver harness/README.md). `pr_pieza.py nueva --canva` toma la base aprobada de `canva/recursos.json` del repo de marca; el agente copia la base, cambia solo los textos, guarda, relee y exporta con el MCP de Canva; `canva-importar` baja la exportación original (solo hosts de Canva, sin redirecciones, 15 MB) y escribe `pieza.png` tal cual y `canva.json` (diseño, enlace de edición, elementos, sha256); `revisar` corre `verificador/verificar_canva.py` del repo de marca (sin HTML); `abrir` sube `pieza.png`, `canva.json`, `copia.json`, `pieza.json` e `informe.json`. La ronda (`revisar-pr`, solo Foto = Igual) va en dos pasos sobre el mismo diseño y el mismo PR. Prueba: `MARCA_REPO=../../5cero5-marca python3 test_pieza_canva.py` (necesita la marca con `verificar_canva.py`).
+

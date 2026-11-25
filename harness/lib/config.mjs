@@ -26,6 +26,9 @@ export function cfg(env = process.env) {
     // Una fila Sensible además necesita en Aprobó a alguien de esta lista (ids de usuario de Notion de Al y Bonzo).
     aprobadoresSensibles: (env.APROBADORES_SENSIBLES || '').split(',').map(s => s.trim()).filter(Boolean),
     environmentId: env.MA_ENVIRONMENT_ID,
+    // Entorno propio por agente (MA_ENVIRONMENT_<AGENTE>, opcional): el Creativo con Canva usa uno con los hosts de Canva para que
+    // ningún otro agente pueda llegar a ellos. Sin la variable, el común.
+    entornosPorAgente: Object.fromEntries(Object.keys(AGENTES).map(n => [n, env[`MA_ENVIRONMENT_${n.toUpperCase()}`] || ''])),
     vaultIds: (env.MA_VAULT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
     // Vault propio por agente (ids separados por coma). Si no hay, se usa MA_VAULT_IDS.
     vaultsPorAgente: Object.fromEntries(Object.entries(AGENTES).map(([nombre, d]) =>
@@ -79,6 +82,10 @@ export function cfg(env = process.env) {
     // Pauta con destino WhatsApp (Click to WhatsApp). Apagado por defecto: sin PAUTA_WHATSAPP=1, una fila de Pauta con
     // "Destino: WhatsApp" pasa a Error y, al cerrar, una campaña de WhatsApp sale Rechazada.
     pautaWhatsapp: env.PAUTA_WHATSAPP === '1',
+    // Canva en el Creativo (lib/canva.mjs). Apagado por defecto: sin CANVA_ACTIVO=1, una fila con "Canva: sí" pasa a Error y
+    // ninguna otra cambia. CANVA_EXPORT_HOSTS (separados por coma) reemplaza los hosts de descarga de agentes/canva.json.
+    canvaActivo: env.CANVA_ACTIVO === '1',
+    canvaExportHosts: (env.CANVA_EXPORT_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
     // Location ID de HighLevel para el mensaje del CRM con el ruteo apagado (con el ruteo sale de la ficha).
     hl: { location: env.HL_LOCATION_ID || '', api: env.HL_API_BASE || 'https://services.leadconnectorhq.com',

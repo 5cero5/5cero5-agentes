@@ -1,0 +1,20 @@
+{
+  "_nota": "Fuente única de la integración Canva del Creativo. La leen harness/infra (alta del agente, red y OAuth inicial) y harness/lib/canva.mjs (permisos y cierre). Cambiar algo aquí cambia ambos; ver harness/README.md, sección Canva.",
+  "servidor": { "type": "url", "name": "canva", "url": "https://mcp.canva.com/mcp" },
+  "oauth": {
+    "issuer": "https://mcp.canva.com",
+    "authorization_endpoint": "https://mcp.canva.com/authorize",
+    "token_endpoint": "https://mcp.canva.com/token",
+    "registration_endpoint": "https://mcp.canva.com/register",
+    "resource": "https://mcp.canva.com/mcp",
+    "scopes": ["design:meta:read", "design:content:read", "design:content:write", "folder:read", "folder:write",
+               "brandtemplate:meta:read", "brandtemplate:content:read", "brandkit:read", "asset:read"]
+  },
+  "herramientas": {
+    "lectura": ["read-design", "get-export-formats", "list-brand-kits", "get-assets"],
+    "con_permiso": ["copy-design", "create-design-from-brand-template", "edit-design", "export-design", "move-item-to-folder"]
+  },
+  "operaciones_edicion": ["replace_text", "find_and_replace_text", "delete_element", "update_title"],
+  "hosts_red": ["mcp.canva.com", "export-download.canva.com"],
+  "hosts_export": ["export-download.canva.com"]
+}

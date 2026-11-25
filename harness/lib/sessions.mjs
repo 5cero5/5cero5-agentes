@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { BETA } from './config.mjs';
 import { agenteDe, mensajeInicial } from './agentes.mjs';
+import { metadataCanva } from './canva.mjs';
 
 export function anthropic(key = process.env.ANTHROPIC_API_KEY) {
   return new Anthropic({ apiKey: key, defaultHeaders: { 'anthropic-beta': BETA } });
@@ -12,7 +13,8 @@ export function parametrosSesion(fila, c) {
   const def = agenteDe(fila.agente);
   const agent = def ? c.agentes[fila.agente] : null;
   if (!def || !agent) throw new Error(`Agente sin configurar: ${fila.agente}`);
-  if (!c.environmentId) throw new Error('Falta MA_ENVIRONMENT_ID');
+  const environmentId = c.entornosPorAgente?.[fila.agente] || c.environmentId;
+  if (!environmentId) throw new Error('Falta MA_ENVIRONMENT_ID');
   const tope = Math.min(fila.tope ?? c.topeDefaultUsd, c.topeMaxUsd);
   // Managed Agents recibe el tope en centavos y como cadena ("200" = 2 USD; "2.00" se rechaza).
   const centavos = Math.round(tope * 100);
@@ -27,7 +29,7 @@ export function parametrosSesion(fila, c) {
   });
   const p = {
     agent,
-    environment_id: c.environmentId,
+    environment_id: environmentId,
     title: `${fila.agente} · ${fila.trabajo}`.slice(0, 120),
     budget: { type: 'limit', max_list_cost: { amount: String(centavos), currency: 'USD' } },
     metadata: { notion_page_id: fila.id, agente: fila.agente, intento: String(fila.intentos + 1),
@@ -35,8 +37,11 @@ export function parametrosSesion(fila, c) {
       // Ronda del Creativo: con esto el cierre comprueba mismo PR, commit nuevo y, con Igual, la misma foto.
       ...(fila.ronda ? { ronda_pr: String(fila.ronda.pr), ronda_head: fila.ronda.head, ronda_foto: fila.ronda.foto,
         ronda_pieza: `${fila.ronda.campana}/${fila.ronda.pieza}`, ronda_n: String(fila.ronda.n), ronda_de: String(fila.ronda.originalId || ''),
-        ronda_original: String(fila.ronda.originalTrabajo || '').slice(0, 80) } : {}) },
-    vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
+        ronda_original: String(fila.ronda.originalTrabajo || '').slice(0, 80) } : {}),
+      // Canva (lib/canva.mjs): recursos aprobados y diseño de la ronda; con esto el harness confirma herramientas y cierra.
+      ...(fila.canva ? { canva: metadataCanva(fila.canva) } : {}) },
+    vault_ids: c.vaultsPorAgente?.[fila.agente]?.length ? c.vaultsPorAgente[fila.agente] : c.vaultIds,
+    initial_events: [{ type: 'user.message', content: [{ type: 'text', text: mensajeInicial(fila, def, c) }] }],
   };
   if (resources.length) p.resources = resources;
   return p;

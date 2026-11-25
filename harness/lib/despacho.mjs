@@ -5,6 +5,7 @@ import { agenteDe, destinoWhatsApp } from './agentes.mjs';
 import { conGithub } from './github.mjs';
 import { preparaCliente, resuelveCliente, revisaAprobacion, whatsappDeLaFicha } from './clientes.mjs';
 import { compruebaFotoDelBrief, preparaRonda } from './rondas.mjs';
+import { preparaCanva } from './canva.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -77,6 +78,7 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
     if (cupo <= 0) { out.omitidas.push([fila.id, 'tope_diario']); continue; }
     if (cli && (hoyCliente.get(cli.id) || 0) >= cc.maxSesionesPorDia) { out.omitidas.push([fila.id, 'tope_diario_cliente']); continue; }
     // Creativo: ronda sobre el PR de la pieza original y foto del cliente pedida en el brief, contra lo de ESTE cliente.
+    // Canva (lib/canva.mjs): recursos aprobados del repo de marca y credencial del Vault Creativo de ESE cliente.
     let deSesion = fila;
     if (fila.agente === 'Creativo') {
       try {
@@ -84,6 +86,8 @@ export async function despacha({ client, notion, c, fetchImpl = fetch }) {
           const ronda = await preparaRonda({ notion, c: cc, fila, cli: cliFila, cache, fetchImpl });
           deSesion = { ...fila, brief: ronda.briefOriginal, ronda };
         } else await compruebaFotoDelBrief({ brief: fila.brief, c: cc, fetchImpl });
+        const canva = await preparaCanva({ client, c: cc, fila: deSesion, cli: cliFila, fetchImpl });
+        if (canva) deSesion = { ...deSesion, canva };
       } catch (e) {
         await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(e.message) });
         out.omitidas.push([fila.id, e.motivo || 'creativo']); continue;

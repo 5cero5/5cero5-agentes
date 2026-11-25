@@ -7,6 +7,7 @@ import { compruebaPR } from './github.mjs';
 import { compruebaCampana } from './meta.mjs';
 import { compruebaPlantilla } from './highlevel.mjs';
 import { resuelveCliente, cfgCliente, sesionFueraDelCliente } from './clientes.mjs';
+import { compruebaCanvaSesion, leeMetaCanva, resuelveConfirmaciones } from './canva.mjs';
 
 const ahora = () => new Date().toISOString();
 
@@ -36,6 +37,10 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     return 'error';
   }
   if (session.status !== 'idle') return `aun_${session.status}`;
+  // Idle no siempre es "terminó": con requires_action la sesión espera que alguien apruebe herramientas (Canva va con
+  // always_ask). El harness decide con reglas fijas y la fila sigue En curso (el barrido aplica el mismo tope de minutos).
+  const confirmadas = await resuelveConfirmaciones({ client, sessionId, session });
+  if (confirmadas) return `aun_requiere_accion:${confirmadas}`;
 
   const resultado = await ultimoMensajeAgente(client, sessionId);
 
@@ -94,9 +99,16 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
   } else if (agenteDe(fila.agente)?.github) {
     // El trabajo de Landing y Creativo es un PR: el harness lo comprueba en GitHub (regla 8). Publicar sigue siendo de Al o Bonzo.
-    const rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
+    let rev = formato ? { ok: false, informe: 'Sin comprobación: la respuesta no trae el formato pedido.' }
       : await compruebaPR({ c: cc, agente: fila.agente, respuesta: ultimoJson(resultado), mainAntes: session.metadata?.main_sha,
         ronda: session.metadata?.ronda_pr ? session.metadata : null, fetchImpl });
+    // Canva: lo que pasó en Canva se comprueba en el log de la sesión y la exportación se coteja byte a byte (lib/canva.mjs).
+    if (rev.canva) {
+      const k = await compruebaCanvaSesion({ client, sessionId, session, pieza: rev.canva, c: cc, fetchImpl });
+      rev = { ok: rev.ok && !k.problemas.length, informe: `${rev.informe}${k.resumen}${k.problemas.length ? ` Problemas en Canva: ${k.problemas.join('; ')}.` : ''}` };
+    } else if (!formato && leeMetaCanva(session.metadata)) {
+      rev = { ok: false, informe: `${rev.informe} La fila pedía Canva y la pieza del PR no es de Canva.` };
+    }
     props.Verificador = P.verificador(rev.ok ? 'Aprobada' : 'Rechazada');
     props.Estado = P.estado('Para revisar');
     props['Informe del Verificador'] = P.texto(`Formato de la respuesta: ${formato ?? 'OK'}. ${rev.informe}`);
