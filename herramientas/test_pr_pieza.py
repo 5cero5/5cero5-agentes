@@ -43,7 +43,7 @@ class GH:
 
 G = GH()
 HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed", "puts": [], "imagen": None,
-      "expira": [], "deletes": [], "delete_code": 200}
+      "expira": [], "deletes": [], "delete_code": 200, "estimates": [], "claves": []}
 IMAGEN = None
 
 
@@ -92,7 +92,7 @@ class HGit(Base):
         if p.endswith("/git/blobs"):
             b = base64.b64decode(body["content"]); s = blob_sha(b); G.blobs[s] = b; return self.send({"sha": s}, 201)
         if p.endswith("/git/trees"):
-            base = {e["path"]: e for e in G.trees[body["base_tree"]]}
+            base = {e["path"]: e for e in G.trees[body["base_tree"]]} if body.get("base_tree") else {}
             for e in body["tree"]:
                 if e["sha"] is None: base.pop(e["path"], None)
                 else: base[e["path"]] = e
@@ -100,6 +100,7 @@ class HGit(Base):
         if p.endswith("/git/commits"):
             c = G.nuevo("c"); G.commits[c] = {"tree": body["tree"], "parents": body["parents"]}; return self.send({"sha": c}, 201)
         if p.endswith("/git/refs"):
+            if body["ref"] in G.refs: return self.send({"message": "Reference already exists"}, 422)
             G.refs[body["ref"]] = body["sha"]; return self.send({"ref": body["ref"]}, 201)
         if p.endswith("/pulls"):
             n = len(G.prs) + 1; G.prs.append(body); return self.send({"number": n, "html_url": f"https://github.com/{REPO}/pull/{n}"}, 201)
@@ -121,9 +122,13 @@ class HHiggs(Base):
     def do_POST(self):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        if self.path.startswith("/estimate/"):  # estimate: no genera ni cobra
+            HF["estimates"].append((self.path, body))
+            return self.send({"usd": "0.040" if "qwen" in self.path else "0.094"})
         HF["posts"].append((self.path, body))
         if self.path != "/files/generate-upload-url":
             HF["expira"].append(self.headers.get("Hf-Expires-After"))
+            HF["claves"].append(self.headers.get("Idempotency-Key"))
         if self.path == "/files/generate-upload-url":  # URL firmada: otro host, sin la llave
             return self.send({"upload_url": f"{URL_IMG}/subir/x", "public_url": "https://cdn.prueba/x.jpg", "content_type": body["content_type"],
                               "upload_headers": {"Content-Type": body["content_type"], "x-amz-tagging": "retention=temporary"}})
@@ -165,6 +170,9 @@ API_GH, API_HF, URL_IMG = servidor(HGit), servidor(HHiggs), servidor(HImagen)
 TMP = Path(tempfile.mkdtemp())
 MARCA_COPIA, TRABAJO = TMP / "marca", TMP / "creativo"
 shutil.copytree(MARCA, MARCA_COPIA, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+POLITICA = {"version": 1, "permitido": True, "tope_usd": "5.00", "max_usd_por_operacion": "0.25", "generar": True,
+            "editar": True, "referencias_ia": True, "acepta_retencion_uploads_s": 604800}
+(MARCA_COPIA / "higgsfield.json").write_text(json.dumps(POLITICA))
 ENV = {**os.environ, "GITHUB_API_BASE": API_GH, "GITHUB_TOKEN": "ghs_prueba", "HIGGSFIELD_API_BASE": API_HF,
        "HIGGSFIELD_API_KEY": "hf_prueba", "HF_ESPERA_S": "0.05",
        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
@@ -282,9 +290,22 @@ def main():
     check("foto: una sola solicitud a Higgsfield con la llave en el encabezado", c == 0 and len(HF["posts"]) == 1
           and HF["posts"][0] == ("/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}), o)
     check("la imagen se baja SIN la llave (otro host)", HF["auth_imagen"] == [None], str(HF["auth_imagen"]))
+    borr = meta["higgsfield"].get("borrado") or {}
     check("retención: la generación va con Hf-Expires-After: 3600 y, bajada la imagen, se borra con DELETE /requests/{id}",
-          HF["expira"] == ["3600"] and HF["deletes"] == ["/requests/req-1"] and meta["higgsfield"].get("borrado") == {"ok": True, "estado": "deleted"},
-          f"{HF['expira']} {HF['deletes']} {meta['higgsfield'].get('borrado')}")
+          HF["expira"] == ["3600"] and HF["deletes"] == ["/requests/req-1"] and borr.get("ok") is True and borr.get("estado") == "deleted",
+          f"{HF['expira']} {HF['deletes']} {borr}")
+    reg_head = G.refs.get("refs/heads/agente/higgsfield")
+    reg_arbol = {e["path"]: e["sha"] for e in G.trees[G.commits[reg_head]["tree"]]} if reg_head else {}
+    reg = json.loads(G.blobs[reg_arbol["higgsfield/registro.json"]]) if "higgsfield/registro.json" in reg_arbol else {}
+    ent = (reg.get("entradas") or [{}])[-1]
+    check("estimate con el cuerpo exacto y la Idempotency-Key congelada en el registro ANTES del POST",
+          HF["estimates"] == [("/estimate/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST})]
+          and HF["claves"] == [ent.get("idempotency_key")] and ent.get("estado") == "completed" and ent.get("estimado_usd") == "0.094"
+          and ent.get("cuerpo") == {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}, json.dumps(reg)[:800])
+    check("copia propia de la foto en el registro (sha256) y pieza.json con sha256, mime y dimensiones",
+          reg_arbol.get(f"higgsfield/archivos/{hashlib.sha256(IMAGEN).hexdigest()}.jpg") == blob_sha(IMAGEN)
+          and meta["higgsfield"].get("sha256") == hashlib.sha256(IMAGEN).hexdigest() and meta["higgsfield"].get("mime") == "image/jpeg"
+          and (meta["higgsfield"].get("ancho"), meta["higgsfield"].get("alto")) == (1400, 700), json.dumps(meta["higgsfield"]))
     check("foto guarda fondo.jpg, prompt.txt y el request en pieza.json", (d2 / "fotos/fondo.jpg").read_bytes() == IMAGEN
           and (d2 / "prompt.txt").read_text().strip() == PROMPT and meta["higgsfield"]["request_id"] == "req-1"
           and meta["higgsfield"]["estado"] == "completed" and meta["higgsfield"].get("blob_sha") == blob_sha(IMAGEN), json.dumps(meta))
@@ -307,6 +328,14 @@ def main():
     check("sin proporción válida se detiene SIN llamar a Higgsfield ni contar la foto", c != 0 and "No hay una proporción válida" in o
           and len(HF["posts"]) == n0 and (cont.read_text() if cont.exists() else "") == antes, o)
     shutil.rmtree(dir_("poc", "historia-z"))
+    corre("nueva", "--campana", "poc", "--pieza", "historia-sin-politica", "--formato", "historia-9x16", "--foto")
+    (MARCA_COPIA / "higgsfield.json").rename(TMP / "politica.json")
+    n0, e0 = len(HF["posts"]), len(HF["estimates"])
+    c, o = corre("foto", "--campana", "poc", "--pieza", "historia-sin-politica", "--prompt", PROMPT)
+    (TMP / "politica.json").rename(MARCA_COPIA / "higgsfield.json")
+    check("sin higgsfield.json en el repo de marca no se llama a Higgsfield ni se cuenta la foto", c != 0 and "higgsfield.json" in o
+          and len(HF["posts"]) == n0 and len(HF["estimates"]) == e0 and (cont.read_text() if cont.exists() else "") == antes, o)
+    shutil.rmtree(dir_("poc", "historia-sin-politica"))
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})

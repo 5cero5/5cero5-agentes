@@ -33,7 +33,10 @@ def api() -> str:
     return os.environ.get("GITHUB_API_BASE", "https://api.github.com")
 
 
-def gh(method: str, path: str, body: dict | None = None, ua: str = "5cero5-agente") -> dict:
+def gh(method: str, path: str, body: dict | None = None, ua: str = "5cero5-agente", permitidos: tuple = ()) -> dict:
+    """Una llamada a la API de GitHub. Un error HTTP termina el proceso, salvo los códigos de permitidos: entonces
+    devuelve {"_status": código, "_detalle": texto} (por ejemplo 404 de una rama que no existe o 422 de un PATCH que no
+    es fast-forward)."""
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
         die("Falta GITHUB_TOKEN.")
@@ -46,6 +49,8 @@ def gh(method: str, path: str, body: dict | None = None, ua: str = "5cero5-agent
             t = r.read()
             return json.loads(t) if t else {}
     except urllib.error.HTTPError as e:
+        if e.code in permitidos:
+            return {"_status": e.code, "_detalle": e.read()[:300].decode("utf-8", "ignore")}
         die(f"GitHub respondió {e.code} a {method} {path.split('?')[0]}: {e.read()[:300].decode('utf-8', 'ignore')}")
 
 
