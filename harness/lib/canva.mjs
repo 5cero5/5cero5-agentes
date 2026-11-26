@@ -123,11 +123,33 @@ export async function credencialCanva({ client, vault, slug }) {
   if (!deCanva.length) throw new ErrorCanva(`Canva: el Vault Creativo de ${slug} no tiene la credencial mcp_oauth de Canva (infra/canva_oauth.py --cliente ${slug})`, 'canva_sin_credencial');
   if (deCanva.length > 1) throw new ErrorCanva(`Canva: el Vault Creativo de ${slug} tiene ${deCanva.length} credenciales de Canva; tiene que haber una`, 'canva_sin_credencial');
   const cr = deCanva[0];
-  if (cr.metadata?.cliente !== slug || cr.metadata?.rol !== 'canva') {
-    throw new ErrorCanva(`Canva: la credencial ${cr.id} no es de ${slug}/canva (metadata cliente=${cr.metadata?.cliente || 'vacío'}, rol=${cr.metadata?.rol || 'vacío'})`, 'canva_sin_credencial');
+  // La credencial que se conecta desde la Console (Add credential → MCP OAuth → Connect) no lleva metadata: basta el vault del
+  // cliente y una sola credencial de Canva. Si trae metadata (canva_oauth.py), tiene que ser de este cliente. La cuenta de Canva
+  // se comprueba en la sesión: list-brand-kits tiene que mostrar el Brand Kit del cliente antes de copiar (decideConfirmacion).
+  const m = cr.metadata || {};
+  if ((m.cliente && m.cliente !== slug) || (m.rol && m.rol !== 'canva')) {
+    throw new ErrorCanva(`Canva: la credencial ${cr.id} no es de ${slug}/canva (metadata cliente=${m.cliente || 'vacío'}, rol=${m.rol || 'vacío'})`, 'canva_sin_credencial');
   }
-  return { id: cr.id, cuenta: String(cr.metadata?.canva_cuenta || '') };
+  return { id: cr.id, cuenta: String(m.canva_cuenta || cr.display_name || '') };
 }
+
+// El entorno de Canva: red limitada con exactamente los hosts de agentes/canva.json y allow_mcp_servers encendido (a Canva se
+// conectan los servidores de Anthropic, no el contenedor; así el contenedor no llega a mcp.canva.com). Si alguien lo abrió, no se
+// abre la sesión.
+export async function verificaEntornoCanva({ client, entorno }) {
+  let e;
+  try { e = await client.beta.environments.retrieve(entorno); }
+  catch (er) { throw new ErrorCanva(`Canva: no se pudo leer el entorno ${entorno} (${er.status || er.message})`, 'canva_sin_configurar'); }
+  const n = e?.config?.networking || {};
+  const hosts = [...new Set((n.allowed_hosts || []).map(h => String(h).toLowerCase()))].sort();
+  const esperado = [...new Set(CANVA.hosts_red.map(h => h.toLowerCase()))].sort();
+  if (e?.archived_at || n.type !== 'limited' || n.allow_mcp_servers !== CANVA.allow_mcp_servers || JSON.stringify(hosts) !== JSON.stringify(esperado)) {
+    throw new ErrorCanva(`Canva: el entorno ${entorno} no tiene la red de agentes/canva.json (limitada a ${esperado.join(', ')}, servidores MCP ${CANVA.allow_mcp_servers ? 'encendidos' : 'apagados'})`, 'canva_sin_configurar');
+  }
+}
+
+// La cuenta de Canva de la sesión es la del cliente: list-brand-kits, ya contestado, muestra su Brand Kit.
+export const kitVisto = (hist, k) => hist.orden.some(u => u.name === 'list-brand-kits' && u.resultado && !u.error && cadenas(u.resultado).includes(k));
 
 // El agente de Canva tiene que declarar SOLO el servidor de Canva y la lista cerrada de agentes/canva.json (permisos mínimos en
 // la plataforma, no solo en infra/). Si alguien le cambió la configuración, no se abre la sesión.
@@ -185,6 +207,7 @@ export async function preparaCanva({ client, c, fila, cli, fetchImpl = fetch }) 
   const agente = c.canva?.agente, entorno = c.canva?.entorno;
   if (!agente || !entorno) throw new ErrorCanva('Canva sin configurar: faltan MA_AGENT_CREATIVO_CANVA y MA_ENVIRONMENT_CANVA (los imprime crear_agente_creativo.py --canva)', 'canva_sin_configurar');
   await verificaAgenteCanva({ client, agente });
+  await verificaEntornoCanva({ client, entorno });
   const rec = await recursosCanva({ c, fetchImpl });
   // La sesión recibe exactamente estos vaults (parametrosSesion): tiene que ser uno, el Vault Creativo del cliente.
   const vaults = c.vaultsPorAgente?.Creativo?.length ? c.vaultsPorAgente.Creativo : (c.vaultIds || []);
@@ -325,6 +348,7 @@ export function decideConfirmacion(uso, { meta, hist, ahora = new Map(), fijos =
     case 'create-design-from-brand-template': {
       if (meta.d) return no('en una ronda se edita el mismo diseño: no se crea otro');
       if (yaCreo) return no('una pieza = un diseño: ya se creó uno en esta sesión');
+      if (meta.k && !kitVisto(hist, meta.k)) return no(`antes de copiar, list-brand-kits tiene que mostrar el Brand Kit del cliente (${meta.k}); si no aparece, la cuenta de Canva no es la del cliente`);
       const tipo = uso.name === 'copy-design' ? 'design' : 'brand_template';
       const id = uso.name === 'copy-design' ? idDeDiseno(inp.design_id) : String(inp.brand_template_id || '');
       if (!bases.some(([t, b]) => t === tipo && b === id)) return no('solo se parte de una base aprobada en canva/recursos.json del cliente');
@@ -491,6 +515,7 @@ export async function compruebaCanvaSesion({ client, sessionId, session, pieza, 
     const origen = hist.orden.find(u => CREAN.includes(u.name) && u.resultado && !u.error);
     const desde = origen && (origen.name === 'copy-design' ? idDeDiseno(origen.input.design_id) : origen.input.brand_template_id);
     if (origen && (!b || desde !== b[1])) problemas.push('el diseño no salió de la base aprobada de su formato');
+    if (meta.k && !kitVisto(hist, meta.k)) problemas.push(`la sesión no comprobó la cuenta de Canva (list-brand-kits sin el Brand Kit ${meta.k})`);
   }
   // Guardado y relectura posterior, elemento por elemento (lo que decide; no el archivo que escribió el agente).
   const commits = hist.orden.filter(u => u.name === 'edit-design' && u.input.finalize === 'commit' && u.resultado && !u.error

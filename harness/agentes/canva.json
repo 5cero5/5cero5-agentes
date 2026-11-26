@@ -1,5 +1,5 @@
 {
-  "_nota": "Fuente única de la integración Canva del Creativo. La leen harness/infra (alta del agente, red y OAuth inicial) y harness/lib/canva.mjs (permisos y cierre). Cambiar algo aquí cambia ambos; ver harness/README.md, sección Canva.",
+  "_nota": "Fuente única de la integración Canva del Creativo. La leen harness/infra (alta del agente, red y OAuth inicial) y harness/lib/canva.mjs (permisos y cierre). Cambiar algo aquí cambia ambos; ver harness/README.md, sección Canva. hosts_red es la red COMPLETA del entorno de Canva (GitHub para el PR y la descarga de la exportación); con allow_mcp_servers a Canva se conectan los servidores de Anthropic, no el contenedor, así que mcp.canva.com no va en hosts_red.",
   "servidor": { "type": "url", "name": "canva", "url": "https://mcp.canva.com/mcp" },
   "oauth": {
     "issuer": "https://mcp.canva.com",
@@ -15,6 +15,7 @@
     "con_permiso": ["copy-design", "create-design-from-brand-template", "edit-design", "export-design", "move-item-to-folder"]
   },
   "operaciones_edicion": ["replace_text", "find_and_replace_text", "delete_element"],
-  "hosts_red": ["mcp.canva.com", "export-download.canva.com"],
+  "hosts_red": ["api.github.com", "export-download.canva.com"],
+  "allow_mcp_servers": true,
   "hosts_export": ["export-download.canva.com"]
 }

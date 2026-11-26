@@ -211,8 +211,9 @@ caso("alta --canva: lista cerrada (default apagado), lectura always_allow, escri
      ts and ts[0]["default_config"]["enabled"] is False and all(cfgs[n] == "always_allow" for n in CANVA["herramientas"]["lectura"])
      and all(cfgs[n] == "always_ask" for n in CANVA["herramientas"]["con_permiso"]) and len(cfgs) == len(CANVA["herramientas"]["lectura"]) + len(CANVA["herramientas"]["con_permiso"]), cfgs)
 red_ = envs[-1]["config"]["networking"] if envs else {}
-caso("alta --canva: entorno de Canva con los hosts de Canva explícitos y allow_mcp_servers apagado",
-     envs and envs[-1]["name"] == "5cero5-harness-canva" and all(h in red_["allowed_hosts"] for h in CANVA["hosts_red"]) and red_["allow_mcp_servers"] is False, envs)
+caso("alta --canva: entorno de Canva con SOLO los hosts de canva.json, allow_mcp_servers encendido y sin mcp.canva.com",
+     envs and envs[-1]["name"] == "5cero5-harness-canva" and red_["allowed_hosts"] == CANVA["hosts_red"] and red_["allow_mcp_servers"] is True
+     and "mcp.canva.com" not in red_["allowed_hosts"] and red_["allow_package_managers"] is True, envs)
 caso("alta --canva: el entorno común no recibe hosts de Canva",
      not any(x["op"] in ("env.update", "env.create") and x.get("name") != "5cero5-harness-canva" and "mcp.canva.com" in json.dumps(x) for x in ll), ll)
 caso("alta --canva: imprime MA_AGENT_CREATIVO_CANVA y MA_ENVIRONMENT_CANVA", f"MA_AGENT_CREATIVO_CANVA={ag[0]['id'] if ag else '?'}" in out and "MA_ENVIRONMENT_CANVA=" in out, out)
@@ -231,14 +232,27 @@ caso("alta --solo-canva: lee el entorno común y solo crea el entorno y el agent
      rc == 0 and ops.count("env.retrieve") == 1 and not any(o in ("env.update", "vault.create", "agent.update") or o.startswith("cred.") for o in ops)
      and len(envc) == 1 and len(agc) == 1 and agc[0]["name"] == "5cero5 · Creativo · Canva" and agc[0]["mcp_servers"] == [CANVA["servidor"]], out)
 red_c = envc[0]["config"]["networking"] if envc else {}
-caso("alta --solo-canva: red = la del entorno común leída + hosts de Canva, sin allow_mcp_servers y con sus paquetes",
-     red_c.get("allowed_hosts") == ["api.github.com", "api.higgsfield.ai", "cdn.base.test"] + CANVA["hosts_red"] and red_c.get("allow_mcp_servers") is False
+caso("alta --solo-canva: red mínima de canva.json (no la común), allow_mcp_servers encendido y los paquetes del común",
+     red_c.get("allowed_hosts") == CANVA["hosts_red"] and red_c.get("allow_mcp_servers") is True
      and red_c.get("allow_package_managers") is True and envc[0]["config"]["packages"] == {"pip": ["httpx", "playwright", "pillow"]}
      and "MA_AGENT_CREATIVO_CANVA=" in out and "MA_ENVIRONMENT_CANVA=" in out, envc)
 rc, out, ll = alta("--solo-canva", "no-es-env")
 caso("alta --solo-canva con un id que no es de entorno se rechaza sin tocar nada", rc != 0 and not ll, out)
 rc, out, ll = alta("--canva", "--cliente", "opticas")
 caso("alta --canva con otro cliente se rechaza (la credencial de cada cliente la pone canva_oauth.py)", rc != 0 and "canva_oauth.py" in out and not ll, out)
+
+LOG.write_text("")
+r = subprocess.run([sys.executable, "crear_agente_creativo.py", "--imprimir-canva"], cwd=tmp / "infra", capture_output=True, text=True,
+                   env={k: v for k, v in ENV.items() if k != "ANTHROPIC_API_KEY"})
+try:
+    impreso = json.loads(r.stdout)
+except json.JSONDecodeError:
+    impreso = {}
+ia, ie = impreso.get("agente", {}), impreso.get("entorno", {})
+its = [t for t in ia.get("tools", []) if t.get("type") == "mcp_toolset"]
+caso("--imprimir-canva: sin llave ni API, el mismo agente (servidor, lista cerrada, prompt) y la misma red que crea --canva",
+     r.returncode == 0 and not LOG.read_text() and ia.get("mcp_servers") == [CANVA["servidor"]] and len(its) == 1 and ts and its[0] == ts[0]
+     and ia.get("system") == (tmp / "agentes" / "creativo.md").read_text(encoding="utf-8") and ie.get("config", {}).get("networking") == red_, r.stdout[-300:] + r.stderr)
 
 srv.shutdown()
 shutil.rmtree(tmp, ignore_errors=True)

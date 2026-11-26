@@ -43,6 +43,14 @@ def red(extra: list[str] | None = None) -> dict:
 
 
 RED = red()
+
+
+def red_canva() -> dict:
+    """Red del entorno de Canva: SOLO los hosts de canva.json (GitHub y la descarga de la exportación) y allow_mcp_servers: a
+    Canva se conectan los servidores de Anthropic, no el contenedor, así que el contenedor no llega a mcp.canva.com. El harness
+    (lib/canva.mjs → verificaEntornoCanva) no abre la sesión si el entorno tiene otra red."""
+    return {"type": "limited", "allowed_hosts": list(CANVA["hosts_red"]), "allow_mcp_servers": bool(CANVA.get("allow_mcp_servers")),
+            "allow_package_managers": True}
 PAQUETES = {"pip": ["httpx", "playwright", "pillow"]}  # playwright: render y Verificador (el navegador se baja en la sesión); pillow: Verificador de piezas
 HERRAMIENTAS = [{
     "type": "agent_toolset_20260401",
@@ -122,17 +130,15 @@ def guarda(nombre: str, estado: dict) -> None:
     (AQUI / f"estado-{nombre}.json").write_text(json.dumps(estado, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def entorno(b, hosts_extra: list[str] | None = None, *, clave: str = "entorno", nombre: str = "5cero5-harness",
-            solo: list[str] | None = None) -> str:
+def entorno(b, hosts_extra: list[str] | None = None, *, clave: str = "entorno", nombre: str = "5cero5-harness") -> str:
     """Crea el entorno común o le reaplica la red y los paquetes completos. Adopta el id que haya creado una versión anterior.
     hosts_extra se suma a los que ya estaban guardados en estado-entorno.json.
-    clave/nombre/solo: un entorno aparte (el del Creativo con Canva) con la red común más `solo`, que nunca llegan al común."""
+    clave/nombre: un entorno aparte (el del Creativo con Canva) con su propia red mínima (red_canva), que nunca llega al común."""
     if clave != "entorno":
-        comun = carga("entorno")
         e = carga(clave)
-        red_ = red(list(comun.get("hosts_extra", [])) + list(solo or []))
+        red_ = red_canva()
         if "environment_id" not in e:
-            env = b.environments.create(name=nombre, description=f"Entorno de {nombre}: red común de harness/infra/comun.py más {', '.join(solo or [])}.",
+            env = b.environments.create(name=nombre, description=f"Entorno de {nombre}: solo {', '.join(red_['allowed_hosts'])}; el MCP de Canva lo conecta Anthropic.",
                                         metadata={"cliente": "5cero5", "origen": "harness/infra/comun.py"},
                                         config={"type": "cloud", "networking": red_, "packages": PAQUETES})
             e["environment_id"] = env.id
@@ -176,30 +182,25 @@ def _como_dict(x) -> dict:
     return dict(getattr(x, "__dict__", {}))
 
 
-def entorno_desde(b, base_id: str, *, clave: str, nombre: str, solo: list[str]) -> str:
-    """Entorno aparte (el de Canva) con la red REAL del entorno base (leída de la API: hosts, gestores de paquetes y paquetes)
-    más `solo`. No toca el entorno base. Si la base no es 'limited', usa la red común de HOSTS (nunca 'unrestricted')."""
+def entorno_desde(b, base_id: str, *, clave: str, nombre: str) -> str:
+    """Entorno aparte (el de Canva) con los paquetes REALES del entorno base (leídos de la API) y su propia red mínima
+    (red_canva). No toca el entorno base."""
     base = _como_dict(b.environments.retrieve(base_id))
     cfg = _como_dict(base.get("config"))
-    net = _como_dict(cfg.get("networking"))
-    if net.get("type") == "limited":
-        hosts = list(dict.fromkeys(list(net.get("allowed_hosts") or []) + list(solo)))
-        red_ = {"type": "limited", "allowed_hosts": hosts, "allow_mcp_servers": False, "allow_package_managers": bool(net.get("allow_package_managers"))}
-    else:
-        red_ = red(list(solo))
+    red_ = red_canva()
     paquetes = _como_dict(cfg.get("packages")) or PAQUETES
     paquetes = {k: v for k, v in paquetes.items() if v}  # sin gestores vacíos
     e = carga(clave)
     if "environment_id" not in e:
-        env = b.environments.create(name=nombre, description=f"Entorno {nombre}: la red de {base_id} más {', '.join(solo)}.",
+        env = b.environments.create(name=nombre, description=f"Entorno {nombre}: paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])}.",
                                     metadata={"cliente": "5cero5", "origen": "harness/infra/comun.py", "base": base_id},
                                     config={"type": "cloud", "networking": red_, "packages": paquetes})
         e.update(environment_id=env.id, base=base_id)
         guarda(clave, e)
-        print(f"▸ Entorno {nombre} creado: {env.id} (red de {base_id} + {', '.join(solo)})")
+        print(f"▸ Entorno {nombre} creado: {env.id} (paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])})")
     else:
         b.environments.update(e["environment_id"], config={"type": "cloud", "networking": red_, "packages": paquetes})
-        print(f"▸ Entorno {e['environment_id']} ({nombre}): red de {base_id} + {', '.join(solo)}")
+        print(f"▸ Entorno {e['environment_id']} ({nombre}): paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])}")
     return e["environment_id"]
 
 

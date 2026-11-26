@@ -131,10 +131,11 @@ function logBueno() {
 const META = { v: 1, b: { 'post-4x5': ['design', BASE] }, f: CARPETA, l: LOGO, cr: CRED };
 function cliente({ eventos = logBueno(), metadata = { notion_page_id: 'p1', main_sha: 'm1', cliente_slug: '5cero5', canva: JSON.stringify(META) },
   vaultMeta = { cliente: '5cero5', rol: 'creativo' }, creds = [{ id: CRED, auth: { type: 'mcp_oauth', mcp_server_url: 'https://mcp.canva.com/mcp/' }, metadata: { cliente: '5cero5', rol: 'canva' } }],
-  agente = AGENTE_CANVA } = {}) {
+  agente = AGENTE_CANVA, entorno = { networking: { type: 'limited', allowed_hosts: [...CANVA.hosts_red].reverse(), allow_mcp_servers: true, allow_package_managers: true } } } = {}) {
   const calls = { create: [], send: [], upd: [] };
   return { calls, beta: {
     agents: { retrieve: async id => ({ ...agente, id }) },
+    environments: { retrieve: async id => ({ id, archived_at: null, config: { type: 'cloud', ...entorno } }) },
     vaults: { retrieve: async id => ({ id, metadata: vaultMeta, archived_at: null }),
       credentials: { list: async function* () { yield* creds; }, update: async (id, p) => calls.upd.push([id, p]) } },
     sessions: { create: async p => { calls.create.push(p); return { id: 'sesn_1' }; },
@@ -196,6 +197,9 @@ test('despacho: recursos deshabilitados, credencial ausente, de otro cliente o v
     [{ c: cfg({ ...ENV, CANVA_ACTIVO: '1', MA_VAULT_CREATIVO: 'v_creativo,v_otro' }) }, /llevaría 2 vaults/],
     [{ c: cfg({ ...ENV, CANVA_ACTIVO: '1', MA_AGENT_CREATIVO_CANVA: '' }) }, /faltan MA_AGENT_CREATIVO_CANVA/],
     [{ fila: { brief: 'Post.\nCanva: sí, base 4:5' } }, /línea "Canva:" del brief no se entiende/],
+    [{ cli: { entorno: { networking: { type: 'limited', allowed_hosts: [...CANVA.hosts_red, 'mcp.canva.com'], allow_mcp_servers: true } } } }, /no tiene la red de agentes\/canva\.json/],
+    [{ cli: { entorno: { networking: { type: 'limited', allowed_hosts: CANVA.hosts_red, allow_mcp_servers: false } } } }, /no tiene la red de agentes\/canva\.json/],
+    [{ cli: { entorno: { networking: { type: 'unrestricted' } } } }, /no tiene la red de agentes\/canva\.json/],
   ];
   for (const [o, re] of casos) {
     const f = [fila(o.fila)]; const n = mockNotion(f); const cl = cliente(o.cli);
@@ -218,6 +222,28 @@ test('despacho: Canva válido → sesión con el vault del cliente, metadata can
   assert.match(m, /CANVA: esta pieza se hace en Canva/); assert.match(m, new RegExp(`post-4x5 → design:${BASE}`));
   assert.match(m, new RegExp(CARPETA)); assert.match(m, new RegExp(LOGO)); assert.match(m, /KICKER DE MUESTRA/);
   assert.doesNotMatch(m, /vcrd_|secret|token/i);
+});
+
+test('despacho: la credencial conectada desde la Console (sin metadata) sirve; la de otro cliente por metadata, no', async () => {
+  const consola = [{ id: CRED, display_name: 'Canva MCP · 5cero5 · Creativo', auth: { type: 'mcp_oauth', mcp_server_url: 'https://mcp.canva.com/mcp' }, metadata: {} }];
+  const f = [fila()]; const cl = cliente({ creds: consola });
+  await despacha({ client: cl, notion: mockNotion(f), c: cOn, fetchImpl: red().fetch });
+  assert.equal(cl.calls.create.length, 1);
+  assert.equal(leeMetaCanva(cl.calls.create[0].metadata).cr, CRED);
+});
+
+test('cuenta de Canva: copiar la base exige que list-brand-kits haya mostrado el Brand Kit del cliente; al cerrar también', async () => {
+  const metaK = { ...META, k: 'kAGkit5c05' };
+  const kits = id => [uso('k1', 'list-brand-kits', {}, 'allow'), res('k1', { items: [{ brand_kit_id: id, name: 'x' }] })];
+  const copia = h => decideConfirmacion({ id: 'c1', name: 'copy-design', mcp_server_name: 'canva', input: { design_id: BASE } }, { meta: metaK, hist: historiaCanva(h) });
+  assert.equal(copia([]).result, 'deny'); assert.match(copia([]).deny_message, /Brand Kit del cliente \(kAGkit5c05\)/);
+  assert.equal(copia(kits('kAGotro0001')).result, 'deny');
+  assert.equal(copia(kits('kAGkit5c05')).result, 'allow');
+  const pieza = { meta: red().meta, canva: red().canvaJson, copia: COPIA, png: PNG };
+  const cierra = ev => compruebaCanvaSesion({ client: cliente({ eventos: ev }), sessionId: 's', session: { metadata: { canva: JSON.stringify(metaK) } }, pieza, c: cOn, fetchImpl: red().fetch });
+  assert.deepEqual((await cierra(logBueno())).problemas, []);
+  const sinKit = logBueno().filter(e => e.id !== 's1' && e.mcp_tool_use_id !== 's1');
+  assert.ok((await cierra(sinKit)).problemas.some(p => /no comprobó la cuenta de Canva/.test(p)));
 });
 
 test('sesión: sin Canva, ni metadata canva ni bloque CANVA (todo como antes)', () => {
