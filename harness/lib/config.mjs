@@ -36,8 +36,9 @@ export function cfg(env = process.env) {
     repos: {
       // GH_REPO_REF / GH_AGENTES_REF (opcionales, solo para un piloto aislado): rama que se monta en vez de la principal.
       // Vacías, como siempre (rama por omisión del repo).
-      marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL', ref: env.GH_REPO_REF || '' },
-      agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL', ref: env.GH_AGENTES_REF || '' },
+      // Con RUTEO_CLIENTES=1 se ignoran (cada cliente monta su repo de marca en su rama principal).
+      marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL', ref: env.RUTEO_CLIENTES === '1' ? '' : (env.GH_REPO_REF || '') },
+      agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL', ref: env.RUTEO_CLIENTES === '1' ? '' : (env.GH_AGENTES_REF || '') },
       // Repo de landings: el token de lectura lo saca la GitHub App al abrir la sesión (lib/github.mjs).
       landings: { url: env.GH_LANDINGS_URL || 'https://github.com/5cero5/5cero5-landings', mount: '/workspace/landings', variable: 'GH_LANDINGS_URL', dinamico: true },
       // Repo de piezas (solo lo monta Pauta, para subir a Meta las piezas ya fusionadas). Token de lectura de la GitHub App.

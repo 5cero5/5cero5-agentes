@@ -76,7 +76,7 @@ export function idDeDiseno(x) {
 export function validaRecursos(d, repo = 'el repo de marca') {
   if (!d || typeof d !== 'object' || d.version !== 1) throw new ErrorCanva(`canva/recursos.json de ${repo} no es versión 1`, 'canva_sin_recursos');
   if (d.habilitado !== true) throw new ErrorCanva(`canva/recursos.json de ${repo} no está habilitado: faltan recursos aprobados de Canva`, 'canva_sin_recursos');
-  const bases = {}, textos = {};
+  const bases = {}, textos = {}, fijosFormato = {};
   for (const f of FORMATOS) {
     const b = d.formatos?.[f]?.base;
     if (!b?.id) continue;
@@ -84,6 +84,7 @@ export function validaRecursos(d, repo = 'el repo de marca') {
     if (!ok) throw new ErrorCanva(`canva/recursos.json de ${repo}: base inválida para ${f} (${b.tipo}:${b.id})`, 'canva_sin_recursos');
     bases[f] = [b.tipo, b.id];
     textos[f] = d.formatos[f].textos || {};
+    fijosFormato[f] = (Array.isArray(d.formatos[f].fijos) ? d.formatos[f].fijos : []).filter(x => typeof x === 'string' && x.trim());
   }
   if (!Object.keys(bases).length) throw new ErrorCanva(`canva/recursos.json de ${repo} no trae ninguna base aprobada`, 'canva_sin_recursos');
   if (!ID.test(String(d.carpeta_id || ''))) throw new ErrorCanva(`canva/recursos.json de ${repo}: falta carpeta_id (carpeta compartida con quien aprueba)`, 'canva_sin_recursos');
@@ -91,7 +92,7 @@ export function validaRecursos(d, repo = 'el repo de marca') {
   // píxeles del logo en el pie del Verificador, que también bloquea.
   if (d.logo_asset_id && !ID.test(String(d.logo_asset_id))) throw new ErrorCanva(`canva/recursos.json de ${repo}: logo_asset_id inválido`, 'canva_sin_recursos');
   const fijos = (Array.isArray(d.textos_fijos) ? d.textos_fijos : []).filter(x => typeof x === 'string');
-  return { bases, textos, fijos, carpeta: d.carpeta_id, logo: d.logo_asset_id || '', kit: ID.test(String(d.brand_kit_id || '')) ? d.brand_kit_id : '' };
+  return { bases, textos, fijos: [...new Set([...fijos, ...Object.values(fijosFormato).flat()])], fijosFormato, carpeta: d.carpeta_id, logo: d.logo_asset_id || '', kit: ID.test(String(d.brand_kit_id || '')) ? d.brand_kit_id : '' };
 }
 
 export async function recursosCanva({ c, fetchImpl = fetch }) {
@@ -173,7 +174,7 @@ export async function preparaCanva({ client, c, fila, cli, fetchImpl = fetch }) 
     if (!design) throw new ErrorCanva('Ronda de una pieza de Canva sin design_id válido en pieza.json');
   } else {
     const l = lineaCanva(fila.brief);
-    if (l === 'ilegible') throw new ErrorCanva('La línea "Canva:" del brief no se entiende: tiene que decir "Canva: sí" o "Canva: no" en su propia línea', 'canva_brief');
+    if (l === 'ilegible' && c.canvaActivo) throw new ErrorCanva('La línea "Canva:" del brief no se entiende: tiene que decir "Canva: sí" o "Canva: no" en su propia línea', 'canva_brief');
     if (l !== 'si') return null;
   }
   if (!c.canvaActivo) throw new ErrorCanva('La fila pide Canva y CANVA_ACTIVO está apagado: no se despacha (lo enciende Al en el harness)', 'canva_apagado');
@@ -276,7 +277,7 @@ export function historiaCanva(eventos) {
       u.resultado = valores(ev.content); u.error = ev.is_error === true;
     } else if (ev.type === 'user.tool_confirmation') confirmados.set(ev.tool_use_id, ev.result);
   }
-  const disenos = [], transacciones = new Map(), elementos = new Map();
+  const disenos = [], transacciones = new Map(), elementos = new Map(), primeros = new Map();
   for (const u of orden) {
     if (u.error || !u.resultado) continue;
     if (CREAN.includes(u.name)) { const d = disenoNuevo(u.resultado, idDeDiseno(u.input.design_id) || u.input.brand_template_id); if (d) disenos.push(d); }
@@ -289,9 +290,13 @@ export function historiaCanva(eventos) {
       const prev = elementos.get(d) || new Map();
       for (const [k, t] of e.tipos) prev.set(k, t);
       elementos.set(d, prev);
+      // El primer texto visto de cada elemento (antes de editarlo): con él se protegen los textos fijos de la base.
+      const pr = primeros.get(d) || new Map();
+      for (const [k, t] of e.textos) if (!pr.has(k)) pr.set(k, t);
+      primeros.set(d, pr);
     }
   }
-  return { orden, confirmados, disenos: [...new Set(disenos)], transacciones, elementos };
+  return { orden, confirmados, disenos: [...new Set(disenos)], transacciones, elementos, primeros };
 }
 
 async function eventosDe(client, sessionId) {
@@ -303,7 +308,8 @@ async function eventosDe(client, sessionId) {
 // ---------------------------------------------------------------- 2. confirmaciones
 // Regla fija por herramienta. { result: 'allow' } o { result: 'deny', deny_message }. ctx: { meta, hist, ahora }.
 // ctx.ahora: confirmaciones que se están enviando en este mismo lote (para no permitir dos copias a la vez).
-export function decideConfirmacion(uso, { meta, hist, ahora = new Map() }) {
+// ctx.fijos: textos fijos aprobados (canva/recursos.json): sus elementos no se editan ni se borran.
+export function decideConfirmacion(uso, { meta, hist, ahora = new Map(), fijos = [] }) {
   const no = m => ({ result: 'deny', deny_message: `Harness 5cero5: ${m}` });
   const si = { result: 'allow' };
   if (uso.mcp_server_name !== CANVA_NOMBRE) return no('esta herramienta no tiene regla de aprobación en el harness');
@@ -329,14 +335,20 @@ export function decideConfirmacion(uso, { meta, hist, ahora = new Map() }) {
       const d = hist.transacciones.get(String(inp.transaction_id || ''));
       if (!d || !propios.has(d)) return no('la transacción no es del diseño de esta sesión (ábrela con read-design open_transaction sobre ese diseño)');
       if (inp.finalize !== undefined && !['keep_open', 'commit', 'cancel'].includes(inp.finalize)) return no('finalize desconocido');
+      if (inp.page_index !== undefined && inp.page_index !== 1) return no('solo la página 1');
       const ops = Array.isArray(inp.operations) ? inp.operations : [];
       const malas = [...new Set(ops.map(o => o?.type).filter(t => !CANVA.operaciones_edicion.includes(t)))];
       if (malas.length) return no(`operación no permitida: ${malas.join(', ')}. Solo ${CANVA.operaciones_edicion.join(', ')} sobre textos; colores, fuentes, logo, título y posiciones los fija la base`);
-      // Solo sobre elementos de TEXTO que ya se leyeron de ese diseño (nunca el logo, una imagen o algo que no se ha visto).
+      // Solo sobre elementos de TEXTO que ya se leyeron de ese diseño, por su locator completo (nunca el logo, una imagen, algo
+      // que no se ha visto ni un elemento cuyo texto al leerlo era un texto fijo aprobado, como el precio o un aviso legal).
       const tipos = hist.elementos.get(d) || new Map();
-      const fuera = ops.filter(o => { const k = porId(tipos, o?.locator_id); return !k || !TIPOS_TEXTO.includes(tipos.get(k)) || tipos.get(k) === ''; })
+      const primeros = hist.primeros?.get(d) || new Map();
+      const fijosN = new Set(fijos.map(normT));
+      const fuera = ops.filter(o => { const k = String(o?.locator_id || ''); return !tipos.has(k) || !TIPOS_TEXTO.includes(tipos.get(k)); })
         .map(o => o?.locator_id || '(sin locator)');
-      if (fuera.length) return no(`solo se editan elementos de texto leídos de este diseño; no: ${fuera.slice(0, 4).join(', ')}`);
+      if (fuera.length) return no(`solo se editan elementos de texto leídos de este diseño, con su locator completo; no: ${fuera.slice(0, 4).join(', ')}`);
+      const fijas = ops.filter(o => fijosN.has(normT(primeros.get(String(o.locator_id))))).map(o => o.locator_id);
+      if (fijas.length) return no(`ese elemento es un texto fijo aprobado de la base y no se toca: ${fijas.slice(0, 4).join(', ')}`);
       return si;
     }
     case 'export-design': {
@@ -360,7 +372,7 @@ export function decideConfirmacion(uso, { meta, hist, ahora = new Map() }) {
 // Sesión idle con requires_action: decide cada pendiente y la deja seguir. null si la sesión no espera confirmaciones.
 // Idempotente: lo ya confirmado no se vuelve a enviar (webhook duplicado o barrido).
 // confirmar=false (sesión que ya pasó del tope de minutos): no aprueba nada; solo dice que espera.
-export async function resuelveConfirmaciones({ client, sessionId, session, confirmar = true }) {
+export async function resuelveConfirmaciones({ client, sessionId, session, confirmar = true, c = null, fetchImpl = fetch }) {
   const eventos = await eventosDe(client, sessionId);
   const meta = leeMetaCanva(session?.metadata);
   const estados = eventos.filter(e => e.type === 'session.status_idle' || e.type === 'session.status_running');
@@ -370,14 +382,18 @@ export async function resuelveConfirmaciones({ client, sessionId, session, confi
   if (ultimo?.type !== 'session.status_idle' || ultimo.stop_reason?.type !== 'requires_action') return null;
   if (!confirmar) return 'vencida';
   const hist = historiaCanva(eventos);
+  // Textos fijos aprobados del cliente (una lectura por lote): si no se pueden leer, se niega editar (falla cerrado).
+  let fijos = null;
+  if (meta && c) { try { fijos = (await recursosCanva({ c, fetchImpl })).fijos; } catch { fijos = null; } }
   const porId = new Map(eventos.filter(e => ['agent.mcp_tool_use', 'agent.tool_use'].includes(e.type)).map(e => [e.id, e]));
   const ya = new Set(eventos.filter(e => e.type === 'user.tool_confirmation').map(e => e.tool_use_id));
   const ahora = new Map(), envio = [];
   for (const id of ultimo.stop_reason.event_ids || []) {
     const uso = porId.get(id);
     if (ya.has(id) || !uso || uso.evaluated_permission === 'deny') continue;
-    const d = uso.type === 'agent.mcp_tool_use' ? decideConfirmacion(uso, { meta, hist, ahora })
-      : { result: 'deny', deny_message: 'Harness 5cero5: esta herramienta no tiene regla de aprobación en el harness' };
+    const d = uso.type !== 'agent.mcp_tool_use' ? { result: 'deny', deny_message: 'Harness 5cero5: esta herramienta no tiene regla de aprobación en el harness' }
+      : uso.name === 'edit-design' && meta && fijos === null ? { result: 'deny', deny_message: 'Harness 5cero5: no se pudieron leer los recursos aprobados; no se aprueban ediciones' }
+      : decideConfirmacion(uso, { meta, hist, ahora, fijos: fijos || [] });
     ahora.set(id, d.result);
     envio.push({ type: 'user.tool_confirmation', tool_use_id: id, ...d });
   }
@@ -420,7 +436,8 @@ export async function bajaExport(url, hosts, fetchImpl = fetch) {
 }
 
 // La relectura del log, elemento por elemento, contra el PR y los recursos aprobados (las mismas reglas que verificar_canva.py).
-export function revisaLectura({ vals, canva, copia, textosMuestra = {}, fijos = [], logo = '' }) {
+// fijosFormato: los que tienen que seguir en el diseño de ese formato. primeros: Map(locator → texto al leerlo por primera vez).
+export function revisaLectura({ vals, canva, copia, textosMuestra = {}, fijos = [], fijosFormato = [], primeros = new Map(), logo = '' }) {
   const problemas = [];
   const { textos, assets } = elementosDe(vals);
   if (!textos.size) return ['la relectura de Canva no trae elementos de texto legibles'];
@@ -441,6 +458,13 @@ export function revisaLectura({ vals, canva, copia, textosMuestra = {}, fijos = 
   const quedan = [...textos].filter(([, t]) => muestras.has(normT(t)));
   if (quedan.length) problemas.push(`siguen textos de muestra de la base: ${quedan.slice(0, 3).map(([, t]) => JSON.stringify(String(t).slice(0, 40))).join(', ')}`);
   if (logo && !assets.has(logo)) problemas.push(`la relectura de Canva no trae el logo aprobado (${logo})`);
+  // Los textos fijos no se borran ni se sobrescriben: los del formato siguen en el diseño, y cada elemento que al leerlo tenía un
+  // fijo lo sigue teniendo.
+  const finales = new Set([...textos.values()].map(normT));
+  const faltanFijos = fijosFormato.filter(f => !finales.has(normT(f)));
+  if (faltanFijos.length) problemas.push(`falta el texto fijo aprobado: ${faltanFijos.slice(0, 3).map(f => JSON.stringify(f.slice(0, 40))).join(', ')}`);
+  const tocados = [...primeros].filter(([k, t]) => fijosN.has(normT(t)) && normT(textos.get(porId(textos, k))) !== normT(t)).map(([k]) => k);
+  if (tocados.length) problemas.push(`se cambió o borró un texto fijo de la base (${tocados.slice(0, 3).join(', ')})`);
   return problemas;
 }
 
@@ -449,8 +473,12 @@ export async function compruebaCanvaSesion({ client, sessionId, session, pieza, 
   const meta = leeMetaCanva(session?.metadata);
   if (!meta) return { problemas: ['la pieza es de Canva y la sesión no se despachó como Canva'], resumen: '' };
   const problemas = [];
-  const hist = historiaCanva(await eventosDe(client, sessionId));
+  const eventos = await eventosDe(client, sessionId);
+  const hist = historiaCanva(eventos);
   const cj = pieza.canva || {};
+  // Canva solo por las herramientas MCP (con lista cerrada y aprobaciones): una llamada directa desde bash al servidor MCP rechaza.
+  const directas = eventos.filter(e => e.type === 'agent.tool_use' && JSON.stringify(e.input || {}).toLowerCase().includes(new URL(CANVA_URL).hostname));
+  if (directas.length) problemas.push(`el agente llamó al servidor MCP de Canva por fuera de las herramientas (${directas.length} vez/veces)`);
   const pos = u => hist.orden.indexOf(u);
   const esperado = meta.d || (hist.disenos.length === 1 ? hist.disenos[0] : null);
   if (!esperado) problemas.push(hist.disenos.length > 1 ? `la sesión creó ${hist.disenos.length} diseños (una pieza = un diseño)`
@@ -476,7 +504,7 @@ export async function compruebaCanvaSesion({ client, sessionId, session, pieza, 
     let rec = null;
     try { rec = await recursosCanva({ c, fetchImpl }); } catch (e) { problemas.push(`no se pudieron leer los recursos aprobados para cotejar la relectura (${e.message})`); }
     if (rec) problemas.push(...revisaLectura({ vals: lectura.resultado, canva: cj, copia: pieza.copia, textosMuestra: rec.textos[pieza.meta?.formato] || {},
-      fijos: rec.fijos, logo: meta.l || '' }));
+      fijos: rec.fijos, fijosFormato: rec.fijosFormato[pieza.meta?.formato] || [], primeros: hist.primeros.get(esperado) || new Map(), logo: meta.l || '' }));
   }
   // Exportación PNG después del último commit, cotejada byte a byte con el PR.
   const ex = hist.orden.filter(u => u.name === 'export-design' && u.resultado && !u.error && idDeDiseno(u.input.design_id) === esperado

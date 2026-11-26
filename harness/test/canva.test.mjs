@@ -22,8 +22,8 @@ const ENV = { MA_ENVIRONMENT_ID: 'env_1', MA_AGENT_CREATIVO: 'agent_creativo', M
 const cOn = cfg({ ...ENV, CANVA_ACTIVO: '1' });
 const cOff = cfg(ENV);
 const FIJO = 'Desde $20,000 al mes + IVA.';
-const RECURSOS = { version: 1, habilitado: true, brand_kit_id: 'kAGkit5c05', carpeta_id: CARPETA, logo_asset_id: LOGO, textos_fijos: [FIJO],
-  formatos: { 'post-4x5': { base: { tipo: 'design', id: BASE }, textos: { kicker: 'KICKER DE MUESTRA', titular: 'TITULAR DE MUESTRA', subtitulo: 'Subtítulo de muestra', nota: 'Nota de muestra' } } } };
+const RECURSOS = { version: 1, habilitado: true, brand_kit_id: 'kAGkit5c05', carpeta_id: CARPETA, logo_asset_id: LOGO, textos_fijos: [],
+  formatos: { 'post-4x5': { base: { tipo: 'design', id: BASE }, fijos: [FIJO], textos: { kicker: 'KICKER DE MUESTRA', titular: 'TITULAR DE MUESTRA', subtitulo: 'Subtítulo de muestra', nota: 'Nota de muestra' } } } };
 const COPIA = { kicker: 'Una sola mensualidad', titular: ['Seis', 'licencias,', 'no.'], subtitulo: 'Un solo equipo arma tus citas, pedidos y visitas.', nota: 'Pieza de prueba.' };
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]), Buffer.from('IHDR'),
   Buffer.from([0, 0, 4, 56, 0, 0, 5, 70]), Buffer.alloc(40000, 7)]);  // 1080x1350
@@ -234,7 +234,13 @@ test('confirmaciones: reglas fijas por herramienta', () => {
   assert.match(d('copy-design', { design_id: BASE }).deny_message, /ya se creó uno/);
   assert.match(d('copy-design', { design_id: BASE }, { ...META, d: DIS }, vacio).deny_message, /ronda/);
   assert.equal(d('copy-design', { design_id: BASE, page_numbers: [2] }, META, vacio).result, 'deny');
-  assert.equal(d('edit-design', { transaction_id: 'tx1', operations: [{ type: 'replace_text', locator_id: 'PB-LB1' }, { type: 'find_and_replace_text', locator_id: 'LB3' }] }).result, 'allow');
+  assert.equal(d('edit-design', { transaction_id: 'tx1', operations: [{ type: 'replace_text', locator_id: 'PB-LB1' }, { type: 'find_and_replace_text', locator_id: 'PB-LB3' }] }).result, 'allow');
+  assert.match(d('edit-design', { transaction_id: 'tx1', operations: [{ type: 'replace_text', locator_id: 'LB3' }] }).deny_message, /locator completo/);
+  assert.match(d('edit-design', { transaction_id: 'tx1', page_index: 2, operations: [{ type: 'replace_text', locator_id: 'PB-LB1' }] }).deny_message, /página 1/);
+  const conFijos = (input) => decideConfirmacion({ id: 'n', name: 'edit-design', mcp_server_name: 'canva', input }, { meta: META, hist, fijos: [FIJO] });
+  assert.match(conFijos({ transaction_id: 'tx1', operations: [{ type: 'delete_element', locator_id: 'PB-LB6' }] }).deny_message, /texto fijo aprobado/);
+  assert.match(conFijos({ transaction_id: 'tx1', operations: [{ type: 'replace_text', locator_id: 'PB-LB6', text: COPIA.subtitulo }] }).deny_message, /texto fijo aprobado/);
+  assert.equal(conFijos({ transaction_id: 'tx1', operations: [{ type: 'replace_text', locator_id: 'PB-LB3' }] }).result, 'allow');
   assert.equal(d('edit-design', { transaction_id: 'tx1', finalize: 'commit' }).result, 'allow');
   assert.equal(d('edit-design', { transaction_id: 'tx1', operations: [{ type: 'delete_element', locator_id: 'PB-LB1' }] }).result, 'allow');
   assert.match(d('edit-design', { transaction_id: 'tx1', operations: [{ type: 'delete_element', locator_id: 'PB-LB5' }] }).deny_message, /solo se editan elementos de texto/);  // el logo
@@ -305,6 +311,16 @@ test('cierre: cada falta en Canva rechaza la pieza con su motivo', async () => {
       { logo: null, titulo: `${COPIA.kicker} ${COPIA.titular.join(' ')} ${COPIA.subtitulo} ${COPIA.nota} ${LOGO}` })) }, /kicker guardado en Canva no es la copia del PR.*no trae el logo aprobado/],
     [{ eventos: conLectura(lecturaCon({ subtitulo: 'Otra frase distinta de cinco palabras.' })) }, /subtitulo guardado en Canva no es la copia del PR/],
     [{ eventos: conLectura('sin elementos legibles') }, /no trae elementos de texto legibles/],
+    // Texto fijo borrado (precio o aviso legal): falta el fijo y su elemento cambió.
+    [{ eventos: conLectura((() => { const l = lecturaCon(); l.design_content.pages[0].elements = l.design_content.pages[0].elements.filter(e => e.locator_id !== 'PB-LB6'); return l; })()) },
+      /falta el texto fijo aprobado.*se cambió o borró un texto fijo de la base \(PB-LB6\)/],
+    // Texto fijo sobrescrito con un rol (el subtítulo escrito sobre el elemento del fijo y mapeado ahí).
+    [{ eventos: conLectura((() => { const l = lecturaCon(); const els = l.design_content.pages[0].elements;
+      els.find(e => e.locator_id === 'PB-LB6').text = COPIA.subtitulo; els.find(e => e.locator_id === 'PB-LB3').text = ''; return l; })()),
+      red: { canvaJson: { ...red().canvaJson, elementos: { kicker: 'PB-LB1', titular: 'PB-LB2', subtitulo: 'PB-LB6', nota: 'PB-LB4' } } } }, /se cambió o borró un texto fijo de la base/],
+    // Llamada directa al MCP de Canva desde bash (fuera de las herramientas con aprobación).
+    [{ eventos: [...logBueno().slice(0, -2), { type: 'agent.tool_use', id: 'b1', name: 'bash', input: { command: 'curl -X POST https://mcp.canva.com/mcp -d x' } }, ...logBueno().slice(-2)] },
+      /llamó al servidor MCP de Canva por fuera de las herramientas/],
     [{ red: { canvaJson: { ...red().canvaJson, design_id: 'DAGotro0001' } } }, /canva\.json y pieza\.json no son del mismo diseño/],
     [{ red: { canvaJson: { ...red().canvaJson, edit_url: 'https://evil.example/x' } } }, /enlace de edición/],
     [{ red: { informe: { aprobada: true, formato: 'post-4x5', repo_version: '0.13.0' } } }, /no es del Verificador de Canva/],
@@ -396,6 +412,35 @@ test('confirmaciones: desfase del log y sesiones vencidas no cierran ni aprueban
   await barre({ client: cl, notion: mockNotion(g), c: cOn, fetchImpl: red().fetch });
   assert.ok(cl.calls.send.every(([, e]) => e.events.every(x => x.type !== 'user.tool_confirmation')));
   assert.equal(g[0].estado, 'Error');
+});
+
+test('Canva apagado: una línea "Canva:" ilegible no cambia nada (como antes); encendido, Error', async () => {
+  assert.equal(await preparaCanva({ client: cliente(), c: cOff, fila: fila({ brief: 'Post.\nCanva: no aplica' }), cli: { slug: '5cero5' }, fetchImpl: red().fetch }), null);
+  await assert.rejects(preparaCanva({ client: cliente(), c: cOn, fila: fila({ brief: 'Post.\nCanva: no aplica' }), cli: { slug: '5cero5' }, fetchImpl: red().fetch }), e => e.motivo === 'canva_brief');
+});
+
+test('webhook: una sesión pasada del tope de minutos no recibe aprobaciones', async () => {
+  const pide = [uso('s2', 'copy-design', { design_id: BASE }), { type: 'session.status_idle', id: 'i1', stop_reason: { type: 'requires_action', event_ids: ['s2'] } }];
+  const f = [fila({ estado: 'En curso', sesion: 'sesn_1', inicio: new Date(Date.now() - 90 * 60000).toISOString() })]; const cl = cliente({ eventos: pide });
+  assert.match(await cierraSesion({ client: cl, notion: mockNotion(f), c: cOn, sessionId: 'sesn_1', fetchImpl: red().fetch }), /aun_requiere_accion:vencida/);
+  assert.equal(cl.calls.send.length, 0);
+});
+
+test('confirmaciones de edición: los textos fijos se leen de los recursos del cliente; sin poder leerlos, se niega editar', async () => {
+  const ev = [...logBueno().slice(0, 7), uso('s4', 'edit-design', { transaction_id: 'tx1', operations: [{ type: 'delete_element', locator_id: 'PB-LB6' }] }),
+    { type: 'session.status_idle', id: 'i9', stop_reason: { type: 'requires_action', event_ids: ['s4'] } }];
+  const md = { metadata: { canva: JSON.stringify(META) } };
+  const cl = cliente({ eventos: ev });
+  await resuelveConfirmaciones({ client: cl, sessionId: 's', session: md, c: cOn, fetchImpl: red().fetch });
+  assert.match(cl.calls.send[0][1].events[0].deny_message, /texto fijo aprobado/);
+  const cl2 = cliente({ eventos: ev });
+  await resuelveConfirmaciones({ client: cl2, sessionId: 's', session: md, c: cOn, fetchImpl: red({ recursos: null }).fetch });
+  assert.match(cl2.calls.send[0][1].events[0].deny_message, /no se pudieron leer los recursos aprobados/);
+});
+
+test('piloto: con RUTEO_CLIENTES=1 se ignoran GH_REPO_REF / GH_AGENTES_REF', () => {
+  const r = cfg({ ...ENV, GH_REPO_REF: 'creativo', GH_AGENTES_REF: 'creativo', RUTEO_CLIENTES: '1' });
+  assert.equal(r.repos.marca.ref, ''); assert.equal(r.repos.agentes.ref, '');
 });
 
 test('copy-design con un resultado ambiguo (dos diseños) no hace propio a ninguno', () => {

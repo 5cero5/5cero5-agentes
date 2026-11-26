@@ -265,7 +265,7 @@ def main() -> None:
         sys.exit("✗ Canva no devolvió refresh_token: sin él la credencial caduca y no se renueva sola. No se escribió nada en el vault.")
     vence = (datetime.now(timezone.utc) + timedelta(seconds=int(tok.get("expires_in") or 3600))).strftime("%Y-%m-%dT%H:%M:%SZ")
     refresh = {"token_endpoint": e["token_endpoint"], "client_id": client_id, "scope": tok.get("scope") or " ".join(e["scopes"]),
-               "refresh_token": renovar, "token_endpoint_auth": {"type": "none"}}
+               "refresh_token": renovar, "token_endpoint_auth": {"type": "none"}, "resource": e["resource"]}
     meta = {"cliente": slug, "rol": "canva", "canva_cuenta": a.cuenta, "origen": "harness/infra/canva_oauth.py"}
     mismo_cliente = actual and estado.get("cred_canva_id") == actual.id and estado.get("canva_client_id") == client_id
     if mismo_cliente:  # renovación con el mismo cliente OAuth: se actualizan los secretos en su lugar (nunca queda sin credencial)

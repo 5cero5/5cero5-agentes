@@ -39,7 +39,12 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, confi
   if (session.status !== 'idle') return `aun_${session.status}`;
   // Idle no siempre es "terminó": con requires_action la sesión espera que alguien apruebe herramientas (Canva va con
   // always_ask). El harness decide con reglas fijas y la fila sigue En curso (el barrido aplica el mismo tope de minutos).
-  const confirmadas = await resuelveConfirmaciones({ client, sessionId, session, confirmar });
+  // Pasada del tope de minutos, nadie le aprueba herramientas (ni el webhook ni el barrido); el barrido la interrumpe.
+  const vencida = fila.inicio && (Date.now() - Date.parse(fila.inicio)) / 60000 > c.maxMinutosSesion;
+  // Con el ruteo, los recursos aprobados (textos fijos) son los del repo de marca del cliente de la fila; si no se resuelve, se niega editar.
+  let ccConf = c;
+  if (c.ruteoClientes && leeMetaCanva(session.metadata)) { try { ccConf = cfgCliente(c, await resuelveCliente(notion, c, fila)); } catch { ccConf = null; } }
+  const confirmadas = await resuelveConfirmaciones({ client, sessionId, session, confirmar: confirmar && !vencida, c: ccConf, fetchImpl });
   if (confirmadas) return `aun_requiere_accion:${confirmadas}`;
 
   const resultado = await ultimoMensajeAgente(client, sessionId);
