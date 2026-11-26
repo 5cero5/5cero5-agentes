@@ -101,26 +101,30 @@ const txt = x => [{ type: 'text', text: typeof x === 'string' ? x : JSON.stringi
 const uso = (id, name, input, permiso = 'ask') => ({ type: 'agent.mcp_tool_use', id, name, mcp_server_name: 'canva', input, evaluated_permission: permiso });
 const res = (id, x, error = false) => ({ type: 'agent.mcp_tool_result', id: `r${id}`, mcp_tool_use_id: id, content: txt(x), is_error: error });
 const conf = (id, r = 'allow') => ({ type: 'user.tool_confirmation', id: `c${id}`, tool_use_id: id, result: r });
-// Relectura con la forma que imita read-design: elementos con locator_id, tipo y texto; el logo como imagen con asset_id.
-const lecturaCon = (t = {}, { logo = LOGO, fijo = FIJO, extra = [], titulo = 'Post Canva' } = {}) => ({ design_metadata: { title: titulo },
-  design_content: { pages: [{ page_id: 'PB', elements: [
-    { locator_id: 'PB-LB1', type: 'text', text: t.kicker ?? COPIA.kicker }, { locator_id: 'PB-LB2', type: 'text', text: t.titular ?? COPIA.titular.join('\n') },
-    { locator_id: 'PB-LB3', type: 'text', text: t.subtitulo ?? COPIA.subtitulo }, { locator_id: 'PB-LB4', type: 'text', text: t.nota ?? COPIA.nota },
-    { locator_id: 'PB-LB6', type: 'text', text: fijo },
-    ...extra.map((x, i) => ({ locator_id: `PB-LB9${i}`, type: 'text', text: x })),
-    ...(logo ? [{ locator_id: 'PB-LB5', type: 'image', asset_id: logo }] : [])] }] } });
+// Relectura con la forma REAL de read-design con transacción (vista en vivo el 26 nov 2026): transaction.transaction_id y
+// design_content.pages[].elements[] con id, locator_id, type, textRegions[{characters, formatting}]; imágenes como rect con
+// fill.media.mediaId. Sin transacción, design_content es solo el texto plano.
+const tx = (id, t) => ({ id: id.split('-')[1], top: 0, left: 0, width: 900, height: 100, type: 'text', locator_id: id,
+  textRegions: [{ characters: t, formatting: { fontSize: 44, fontWeight: 'normal', color: '#0e0e0e', fontRef: 'YAFdJsSpokU,0' } }] });
+const lecturaCon = (t = {}, { logo = LOGO, fijo = FIJO, extra = [], titulo = 'Post Canva', transaccion = 'tx9' } = {}) => ({ transaction: { transaction_id: transaccion },
+  design_content: { title: titulo, pages: [{ type: 'fixed', id: 'PB', locator_id: 'PB', dimensions: { width: 1080, height: 1350 }, elements: [
+    tx('PB-LB1', t.kicker ?? COPIA.kicker), tx('PB-LB2', t.titular ?? COPIA.titular.join('\n')),
+    tx('PB-LB3', t.subtitulo ?? COPIA.subtitulo), tx('PB-LB4', t.nota ?? COPIA.nota), tx('PB-LB6', fijo),
+    ...extra.map((x, i) => tx(`PB-LB9${i}`, x)),
+    ...(logo ? [{ id: 'LB5', type: 'rect', locator_id: 'PB-LB5', fill: { media: { type: 'image', mediaId: logo } } }] : [])] }] } });
 const LECTURA = lecturaCon();
 const MUESTRA = RECURSOS.formatos['post-4x5'].textos;
-const BASE_LEIDA = lecturaCon({ kicker: MUESTRA.kicker, titular: MUESTRA.titular, subtitulo: MUESTRA.subtitulo, nota: MUESTRA.nota });
+const BASE_LEIDA = lecturaCon({ kicker: MUESTRA.kicker, titular: MUESTRA.titular, subtitulo: MUESTRA.subtitulo, nota: MUESTRA.nota }, { transaccion: 'tx1' });
 const conLectura = l => logBueno().map(e => (e.id === 'rs6' ? res('s6', l) : e));
 function logBueno() {
   return [
     uso('s1', 'list-brand-kits', {}, 'allow'), res('s1', { items: [{ brand_kit_id: 'kAGkit5c05', name: '5cero5' }] }),
     uso('s2', 'copy-design', { design_id: BASE }), conf('s2'), res('s2', { design: { id: DIS, urls: { edit_url: `https://www.canva.com/design/${DIS}/edit` } } }),
-    uso('s3', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s3', { transaction_id: 'tx1', ...BASE_LEIDA }),
+    uso('s3', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s3', BASE_LEIDA),
     uso('s4', 'edit-design', { transaction_id: 'tx1', page_index: 1, finalize: 'keep_open', operations: [{ type: 'replace_text', locator_id: 'PB-LB1', text: COPIA.kicker }] }), conf('s4'), res('s4', { ok: true }),
     uso('s5', 'edit-design', { transaction_id: 'tx1', finalize: 'commit' }), conf('s5'), res('s5', { saved: true }),
-    uso('s6', 'read-design', { design_id: DIS }, 'allow'), res('s6', LECTURA),
+    uso('s6', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s6', LECTURA),
+    uso('s6c', 'edit-design', { transaction_id: 'tx9', finalize: 'cancel' }), conf('s6c'), res('s6c', { status: 'cancelled', transaction_id: 'tx9' }),
     uso('s7', 'export-design', { design_id: DIS, format: { type: 'png', width: 1080, height: 1350 } }), conf('s7'),
     res('s7', { urls: ['https://export-download.canva.com/abc/pieza.png?firma=1'] }),
     uso('s8', 'move-item-to-folder', { item_id: DIS, to_folder_id: CARPETA }), conf('s8'), res('s8', { ok: true }),
@@ -330,11 +334,15 @@ test('cierre: pieza de Canva completa → Para revisar, Aprobada, con enlace edi
 
 test('cierre: cada falta en Canva rechaza la pieza con su motivo', async () => {
   const sin = ids => logBueno().filter(e => !ids.includes(e.id) && !ids.includes(e.mcp_tool_use_id) && !ids.includes(e.tool_use_id));
-  const lecturaAntes = () => { const l = sin(['s6']); l.splice(l.findIndex(e => e.id === 's4'), 0, uso('s6', 'read-design', { design_id: DIS }, 'allow'), res('s6', LECTURA)); return l; };
+  const lecturaAntes = () => { const l = sin(['s6']); l.splice(l.findIndex(e => e.id === 's4'), 0, uso('s6', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s6', LECTURA)); return l; };
+  // Sin transacción, Canva solo devuelve el texto plano: no sirve como relectura por elemento.
+  const sinTransaccion = () => logBueno().map(e => (e.id === 's6' ? uso('s6', 'read-design', { design_id: DIS }, 'allow')
+    : e.id === 'rs6' ? res('s6', { design_content: [COPIA.kicker, ...COPIA.titular, COPIA.subtitulo, COPIA.nota].join('\n') }) : e));
   const casos = [
     [{ red: { exportBytes: Buffer.from('otro png') } }, /no es la exportación original de Canva/],
     [{ eventos: sin(['s5']) }, /no hay commit del diseño/],
     [{ eventos: lecturaAntes() }, /no hay relectura del diseño guardado/],
+    [{ eventos: sinTransaccion() }, /no hay relectura del diseño guardado \(read-design con open_transaction=true\)/],
     [{ eventos: sin(['s7']) }, /no hay exportación PNG/],
     [{ eventos: sin(['s8']) }, /no se movió a la carpeta aprobada/],
     [{ eventos: conLectura(lecturaCon({}, { extra: ['Nota de muestra'] })) }, /siguen textos de muestra de la base: "Nota de muestra"/],
@@ -349,7 +357,7 @@ test('cierre: cada falta en Canva rechaza la pieza con su motivo', async () => {
       /falta el texto fijo aprobado.*se cambió o borró un texto fijo de la base \(PB-LB6\)/],
     // Texto fijo sobrescrito con un rol (el subtítulo escrito sobre el elemento del fijo y mapeado ahí).
     [{ eventos: conLectura((() => { const l = lecturaCon(); const els = l.design_content.pages[0].elements;
-      els.find(e => e.locator_id === 'PB-LB6').text = COPIA.subtitulo; els.find(e => e.locator_id === 'PB-LB3').text = ''; return l; })()),
+      els.find(e => e.locator_id === 'PB-LB6').textRegions[0].characters = COPIA.subtitulo; els.find(e => e.locator_id === 'PB-LB3').textRegions[0].characters = ''; return l; })()),
       red: { canvaJson: { ...red().canvaJson, elementos: { kicker: 'PB-LB1', titular: 'PB-LB2', subtitulo: 'PB-LB6', nota: 'PB-LB4' } } } }, /se cambió o borró un texto fijo de la base/],
     // Llamada directa al MCP de Canva desde bash (fuera de las herramientas con aprobación).
     [{ eventos: [...logBueno().slice(0, -2), { type: 'agent.tool_use', id: 'b1', name: 'bash', input: { command: 'curl -X POST https://mcp.canva.com/mcp -d x' } }, ...logBueno().slice(-2)] },
@@ -384,7 +392,7 @@ test('ronda Igual en Canva: mismo diseño; crear otro rechaza y la exportación 
   const ronda = [uso('s3', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s3', { transaction_id: 'tx2', ...LECTURA }),
     uso('s4', 'edit-design', { transaction_id: 'tx2', operations: [{ type: 'replace_text', locator_id: 'PB-LB3' }] }), conf('s4'), res('s4', {}),
     uso('s5', 'edit-design', { transaction_id: 'tx2', finalize: 'commit' }), conf('s5'), res('s5', {}),
-    uso('s6', 'read-design', { design_id: DIS }, 'allow'), res('s6', LECTURA),
+    uso('s6', 'read-design', { design_id: DIS, open_transaction: true }, 'allow'), res('s6', LECTURA),
     uso('s7', 'export-design', { design_id: DIS, format: { type: 'png' } }), conf('s7'), res('s7', { urls: ['https://export-download.canva.com/r2.png'] })];
   const pieza = { meta: red().meta, canva: red().canvaJson, copia: COPIA, png: PNG };
   const cl = cliente({ eventos: ronda });

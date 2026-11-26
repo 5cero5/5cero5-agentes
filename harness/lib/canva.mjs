@@ -263,14 +263,17 @@ export function elementosDe(vals) {
     const id = ['locator_id', 'element_id', 'id'].map(k => o[k]).find(v => typeof v === 'string' && v);
     const tipo = String(o.type ?? '').toLowerCase();
     let txt = null;
+    // Forma real de read-design con transacción (26 nov 2026): textRegions: [{ characters, formatting }] por elemento de texto.
+    if (Array.isArray(o.textRegions) && o.textRegions.length && o.textRegions.every(r => typeof r?.characters === 'string')) txt = o.textRegions.map(r => r.characters).join('');
     for (const k of ['text', 'plain_text', 'content']) {
+      if (txt !== null) break;
       const v = o[k];
       if (typeof v === 'string') { txt = v; break; }
       if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string')) { txt = v.join('\n'); break; }
     }
     if (id && tipo) tipos.set(id, tipo);
     if (id && txt !== null && TIPOS_TEXTO.includes(tipo)) { textos.set(id, txt); tipos.set(id, tipo || 'text'); }
-    for (const k of ['asset_id', 'media_id', 'image_id']) if (typeof o[k] === 'string' && o[k]) assets.add(o[k]);
+    for (const k of ['asset_id', 'media_id', 'image_id', 'mediaId']) if (typeof o[k] === 'string' && o[k]) assets.add(o[k]);
     Object.values(o).forEach(anda);
   };
   anda(vals);
@@ -527,9 +530,12 @@ export async function compruebaCanvaSesion({ client, sessionId, session, pieza, 
     && hist.transacciones.get(String(u.input.transaction_id || '')) === esperado);
   const ultimo = commits.at(-1);
   if (!ultimo) problemas.push('no hay commit del diseño (edit-design con finalize=commit): los cambios no quedaron guardados');
+  // Relectura de lo guardado: read-design con una transacción NUEVA abierta después del último commit (sin transacción, Canva solo
+  // devuelve el texto plano, sin elementos: visto en vivo el 26 nov 2026). Lo que se haga en esa transacción sin otro commit no
+  // cambia lo guardado; si hay otro commit, la relectura tiene que ser posterior a él.
   const lectura = hist.orden.filter(u => u.name === 'read-design' && u.resultado && !u.error && idDeDiseno(u.input.design_id) === esperado
-    && !u.input.transaction_id && !u.input.open_transaction && (!ultimo || pos(u) > pos(ultimo))).at(-1);
-  if (!lectura) problemas.push('no hay relectura del diseño guardado (read-design sin transacción) después del último commit');
+    && u.input.open_transaction === true && !u.input.transaction_id && (!ultimo || pos(u) > pos(ultimo))).at(-1);
+  if (!lectura) problemas.push('no hay relectura del diseño guardado (read-design con open_transaction=true) después del último commit');
   else {
     let rec = null;
     try { rec = await recursosCanva({ c, fetchImpl }); } catch (e) { problemas.push(`no se pudieron leer los recursos aprobados para cotejar la relectura (${e.message})`); }

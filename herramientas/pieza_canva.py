@@ -108,7 +108,8 @@ def nueva(a, d: Path) -> None:
     for rol, t in rec["textos"].items():
         print(f"       {rol}: \"{t}\"")
     print("     edit-design: replace_text de cada rol con su copia (kicker vacío → delete_element) y luego finalize=commit.")
-    print("  4. read-design SIN transacción (lo guardado) → guarda ese resultado en un archivo (lectura.json). Confirma que quedó la copia.")
+    print("  4. read-design con open_transaction=true (transacción NUEVA, después del commit) → guarda ese resultado en un archivo (lectura.json),")
+    print("     confirma que quedó la copia y cierra esa transacción con edit-design finalize=cancel. Sin transacción Canva solo da texto plano.")
     print(f"  5. export-design en png al tamaño del formato; move-item-to-folder a la carpeta {rec['carpeta']}.")
     print("  6. pp canva-importar ... y luego pp revisar y pp abrir.")
 
@@ -164,7 +165,7 @@ def importar(a, d: Path) -> None:
         die(f"Falta el elemento de Canva de: {', '.join(faltan)} (cada texto con copia va en su propio elemento).")
     lectura = Path(a.lectura)
     if not lectura.is_file() or lectura.stat().st_size > MAX:
-        die("--lectura: el archivo con el resultado de read-design del diseño guardado (sin transacción).")
+        die("--lectura: el archivo con el resultado de read-design del diseño guardado (transacción nueva después del commit).")
     datos, host = _baja(a.export_url)
     from PIL import Image  # noqa: WPS433 — Pillow ya está en el entorno (lo usa el Verificador)
     import io
@@ -271,7 +272,7 @@ def revisar_pr(a, d: Path, pref: str, repo: str, pr: dict, huella, claves_copia)
         print(json.dumps({"pendiente": "canva", "design_id": canva["design_id"], "edit_url": canva.get("edit_url"),
                           "cambiar": {k: {"locator": el.get(k), "texto": v} for k, v in cambios.items()}}, ensure_ascii=False))
         print(f"→ En Canva, sobre el MISMO diseño {canva['design_id']} (no copies otro): read-design open_transaction=true, edit-design solo con "
-              "replace_text de esos elementos, finalize=commit, read-design sin transacción (guárdalo en lectura.json) y export-design png. "
+              "replace_text de esos elementos, finalize=commit, read-design con open_transaction=true (nueva; guárdalo en lectura.json y ciérrala con finalize=cancel) y export-design png. "
               f"Luego: pp canva-importar --design {canva['design_id']} --edit-url {canva.get('edit_url')} ... y repite este mismo revisar-pr.")
         return True
     revisar(a, d, huella)
