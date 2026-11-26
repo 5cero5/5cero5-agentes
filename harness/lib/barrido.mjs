@@ -15,9 +15,10 @@ export async function barre({ client, notion, c, ahora = Date.now(), fetchImpl =
       }
       continue;
     }
-    const res = await cierraSesion({ client, notion, c, sessionId: fila.sesion, fetchImpl });
+    // Pasada del tope de minutos, no se le aprueba ninguna herramienta (se interrumpe abajo si sigue sin terminar).
+    const min = fila.inicio ? (ahora - Date.parse(fila.inicio)) / 60000 : 0;
+    const res = await cierraSesion({ client, notion, c, sessionId: fila.sesion, confirmar: min <= c.maxMinutosSesion, fetchImpl });
     if (res.startsWith('aun_')) {
-      const min = fila.inicio ? (ahora - Date.parse(fila.inicio)) / 60000 : 0;
       if (min > c.maxMinutosSesion) {
         try { await client.beta.sessions.events.send(fila.sesion, { events: [{ type: 'user.interrupt' }] }); } catch {}
         await notion.update(fila.id, { Estado: P.estado('Error'), Error: P.texto(`Pasó de ${c.maxMinutosSesion} min; se interrumpió.`) });

@@ -48,6 +48,9 @@ from comun import CANVA, arg_cliente, carga, clave_de, cliente, guarda, need
 
 UA = "5cero5-canva-oauth"
 ESPERA_S = int(os.environ.get("CANVA_OAUTH_ESPERA_S", "600"))
+# Puerto fijo de la vuelta en 127.0.0.1: así el cliente OAuth registrado (client_id) se reutiliza y una renovación actualiza la
+# credencial en su lugar, sin archivarla antes. CANVA_OAUTH_PUERTO lo cambia (pruebas o puerto ocupado).
+PUERTO = int(os.environ.get("CANVA_OAUTH_PUERTO", "53682"))
 
 
 class _SinRedirecciones(urllib.request.HTTPRedirectHandler):
@@ -132,7 +135,7 @@ def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).decode().rstrip("=")
 
 
-def espera_vuelta(estado: str) -> tuple[http.server.HTTPServer, dict, threading.Event]:
+def espera_vuelta(estado: str, puerto: int = PUERTO) -> tuple[http.server.HTTPServer, dict, threading.Event]:
     """Servidor de un solo uso en 127.0.0.1 (puerto libre). Solo acepta /callback con el state exacto."""
     recibido: dict = {}
     listo = threading.Event()
@@ -158,7 +161,10 @@ def espera_vuelta(estado: str) -> tuple[http.server.HTTPServer, dict, threading.
             self.end_headers()
             self.wfile.write(cuerpo)
 
-    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    try:
+        srv = http.server.HTTPServer(("127.0.0.1", puerto), H)
+    except OSError as e:
+        sys.exit(f"✗ El puerto {puerto} de 127.0.0.1 está ocupado ({e}). Cierra lo que lo use o pasa CANVA_OAUTH_PUERTO. No se pidió nada.")
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, recibido, listo
 
@@ -227,12 +233,15 @@ def main() -> None:
     srv, recibido, listo = espera_vuelta(estado_oauth)
     redirect = f"http://127.0.0.1:{srv.server_address[1]}/callback"
     try:
-        reg = pide("POST", e["registration_endpoint"], {
-            "client_name": f"5cero5 · Creativo · {slug}", "redirect_uris": [redirect], "grant_types": ["authorization_code", "refresh_token"],
-            "response_types": ["code"], "token_endpoint_auth_method": "none", "scope": " ".join(e["scopes"])})
-        client_id = reg.get("client_id")
-        if not client_id or reg.get("client_secret"):
-            sys.exit("✗ El registro no devolvió un cliente público (client_id sin secreto). No se pidió consentimiento.")
+        # El cliente público ya registrado se reutiliza (mismo redirect); si no hay, se registra uno (registro dinámico).
+        client_id = estado.get("canva_client_id") if estado.get("canva_redirect") == redirect and estado.get("canva_issuer") == e["issuer"] else None
+        if not client_id:
+            reg = pide("POST", e["registration_endpoint"], {
+                "client_name": f"5cero5 · Creativo · {slug}", "redirect_uris": [redirect], "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"], "token_endpoint_auth_method": "none", "scope": " ".join(e["scopes"])})
+            client_id = reg.get("client_id")
+            if not client_id or reg.get("client_secret"):
+                sys.exit("✗ El registro no devolvió un cliente público (client_id sin secreto). No se pidió consentimiento.")
         url = e["authorization_endpoint"] + "?" + urllib.parse.urlencode({
             "response_type": "code", "client_id": client_id, "redirect_uri": redirect, "scope": " ".join(e["scopes"]), "state": estado_oauth,
             "code_challenge": b64url(hashlib.sha256(verificador.encode()).digest()), "code_challenge_method": "S256", "resource": e["resource"]})
@@ -258,18 +267,26 @@ def main() -> None:
     refresh = {"token_endpoint": e["token_endpoint"], "client_id": client_id, "scope": tok.get("scope") or " ".join(e["scopes"]),
                "refresh_token": renovar, "token_endpoint_auth": {"type": "none"}}
     meta = {"cliente": slug, "rol": "canva", "canva_cuenta": a.cuenta, "origen": "harness/infra/canva_oauth.py"}
-    if actual:  # client_id y token_endpoint no se pueden cambiar: se archiva la anterior y se crea otra
-        b.vaults.credentials.archive(actual.id, vault_id=vault_id)
-        print(f"▸ Credencial anterior {actual.id} archivada (su secreto se purga).")
-    cr = b.vaults.credentials.create(vault_id, display_name=f"Canva MCP · {slug} · Creativo", metadata=meta,
-                                     auth={"type": "mcp_oauth", "mcp_server_url": CANVA["servidor"]["url"], "access_token": acceso,
-                                           "expires_at": vence, "refresh": refresh})
+    mismo_cliente = actual and estado.get("cred_canva_id") == actual.id and estado.get("canva_client_id") == client_id
+    if mismo_cliente:  # renovación con el mismo cliente OAuth: se actualizan los secretos en su lugar (nunca queda sin credencial)
+        b.vaults.credentials.update(actual.id, vault_id=vault_id, auth={"type": "mcp_oauth", "access_token": acceso, "expires_at": vence,
+                                                                        "refresh": {"refresh_token": renovar}})
+        cr_id, hecho = actual.id, "actualizada en su lugar"
+    else:
+        if actual:  # client_id y token_endpoint no se pueden cambiar: se archiva la anterior y se crea otra enseguida
+            b.vaults.credentials.archive(actual.id, vault_id=vault_id)
+            print(f"▸ Credencial anterior {actual.id} archivada (su secreto se purga). Si lo siguiente falla, corre esto otra vez: el cliente queda sin Canva hasta entonces.")
+        cr_id = b.vaults.credentials.create(vault_id, display_name=f"Canva MCP · {slug} · Creativo", metadata=meta,
+                                            auth={"type": "mcp_oauth", "mcp_server_url": CANVA["servidor"]["url"], "access_token": acceso,
+                                                  "expires_at": vence, "refresh": refresh}).id
+        hecho = "creada"
     acceso = renovar = refresh = None  # noqa: F841 — fuera de memoria cuanto antes
     estado = carga(clave)
-    estado.update(cred_canva_id=cr.id, canva_client_id=client_id, canva_autorizado_el=time.strftime("%Y-%m-%d"))
+    estado.update(cred_canva_id=cr_id, canva_client_id=client_id, canva_redirect=redirect, canva_issuer=e["issuer"],
+                  canva_cuenta=a.cuenta, canva_autorizado_el=time.strftime("%Y-%m-%d"))
     guarda(clave, estado)
-    print(f"▸ Credencial de Canva creada en el vault de {slug}: {cr.id} (metadata cliente={slug}, rol=canva, cuenta={a.cuenta}).")
-    sys.exit(0 if valida(b, vault_id, cr.id) else 1)
+    print(f"▸ Credencial de Canva {hecho} en el vault de {slug}: {cr_id} (metadata cliente={slug}, rol=canva, cuenta={a.cuenta}).")
+    sys.exit(0 if valida(b, vault_id, cr_id) else 1)
 
 
 if __name__ == "__main__":

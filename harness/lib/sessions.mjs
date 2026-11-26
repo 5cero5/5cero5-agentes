@@ -11,9 +11,10 @@ export function anthropic(key = process.env.ANTHROPIC_API_KEY) {
 // Falla cerrado: si falta el agente, su id, un repo que declara o el tope es inválido, no hay sesión.
 export function parametrosSesion(fila, c) {
   const def = agenteDe(fila.agente);
-  const agent = def ? c.agentes[fila.agente] : null;
+  // Canva: el agente y el entorno de Canva (preparaCanva ya comprobó que existen); el resto, los de siempre.
+  const agent = def ? (fila.canva?.agente || c.agentes[fila.agente]) : null;
   if (!def || !agent) throw new Error(`Agente sin configurar: ${fila.agente}`);
-  const environmentId = c.entornosPorAgente?.[fila.agente] || c.environmentId;
+  const environmentId = fila.canva?.entorno || c.environmentId;
   if (!environmentId) throw new Error('Falta MA_ENVIRONMENT_ID');
   const tope = Math.min(fila.tope ?? c.topeDefaultUsd, c.topeMaxUsd);
   // Managed Agents recibe el tope en centavos y como cadena ("200" = 2 USD; "2.00" se rechaza).

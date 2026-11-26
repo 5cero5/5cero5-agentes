@@ -14,7 +14,7 @@
     "lectura": ["read-design", "get-export-formats", "list-brand-kits", "get-assets"],
     "con_permiso": ["copy-design", "create-design-from-brand-template", "edit-design", "export-design", "move-item-to-folder"]
   },
-  "operaciones_edicion": ["replace_text", "find_and_replace_text", "delete_element", "update_title"],
+  "operaciones_edicion": ["replace_text", "find_and_replace_text", "delete_element"],
   "hosts_red": ["mcp.canva.com", "export-download.canva.com"],
   "hosts_export": ["export-download.canva.com"]
 }

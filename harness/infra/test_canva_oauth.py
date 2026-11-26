@@ -95,8 +95,10 @@ class C(BaseHTTPRequestHandler):
 
 srv = ThreadingHTTPServer(("127.0.0.1", 0), C); threading.Thread(target=srv.serve_forever, daemon=True).start()
 BASE = f"http://127.0.0.1:{srv.server_port}"
+import socket as _s
+_l = _s.socket(); _l.bind(("127.0.0.1", 0)); PUERTO = _l.getsockname()[1]; _l.close()  # puerto libre fijo para la vuelta
 ENV = {**os.environ, "PYTHONPATH": str(tmp / "falso"), "LOG_FALSO": str(LOG), "ANTHROPIC_API_KEY": "sk-falsa", "CANVA_OAUTH_BASE": BASE,
-       "CANVA_OAUTH_NAVEGADOR": "0", "CANVA_OAUTH_ESPERA_S": "20", "CREDS_FALSAS": str(tmp / "creds.json")}
+       "CANVA_OAUTH_NAVEGADOR": "0", "CANVA_OAUTH_ESPERA_S": "20", "CANVA_OAUTH_PUERTO": str(PUERTO), "CREDS_FALSAS": str(tmp / "creds.json")}
 res = []
 
 
@@ -134,8 +136,8 @@ caso("oauth: la credencial trae URL del MCP, access token, refresh con token_end
      and auth["refresh"].get("client_id") == "cli_publico_1" and auth["refresh"].get("token_endpoint_auth") == {"type": "none"} and auth.get("expires_at"), auth)
 caso("oauth: metadata de la credencial {cliente, rol: canva, cuenta}", cr and cr[0]["metadata"] == {"cliente": "5cero5", "rol": "canva", "canva_cuenta": "5cero5 · Creativo", "origen": "harness/infra/canva_oauth.py"}, cr)
 reg = EST["registros"][-1] if EST["registros"] else {}
-caso("oauth: registro dinámico de cliente público con redirección a 127.0.0.1 y los scopes de canva.json",
-     reg.get("token_endpoint_auth_method") == "none" and reg.get("redirect_uris", [""])[0].startswith("http://127.0.0.1:")
+caso("oauth: registro dinámico de cliente público con redirección a 127.0.0.1 (puerto fijo) y los scopes de canva.json",
+     reg.get("token_endpoint_auth_method") == "none" and reg.get("redirect_uris", [""])[0] == f"http://127.0.0.1:{PUERTO}/callback"
      and reg.get("scope") == " ".join(CANVA["oauth"]["scopes"]), reg)
 az = EST["autoriza"][-1] if EST["autoriza"] else {}
 caso("oauth: autoriza con PKCE S256, state, resource del MCP y sin profile:read", az.get("code_challenge_method") == "S256" and len(az.get("code_challenge", "")) >= 43
@@ -147,7 +149,8 @@ caso("oauth: nada secreto en la salida ni en estado-creativo.json (solo ids)", A
      and ACCESO not in json.dumps(estado) and RENOVAR not in json.dumps(estado) and estado.get("cred_canva_id") == (cr[0]["id"] if cr else None), (out, estado))
 
 # 2. Ya hay credencial: no se repite el consentimiento.
-(tmp / "creds.json").write_text(json.dumps([{"id": "vcrd_canva_1", "auth": {"type": "mcp_oauth", "mcp_server_url": CANVA["servidor"]["url"] + "/"}, "metadata": {"cliente": "5cero5", "rol": "canva"}}]))
+CRED_ID = json.loads((tmp / "infra" / "estado-creativo.json").read_text()).get("cred_canva_id", "vcrd_x")
+(tmp / "creds.json").write_text(json.dumps([{"id": CRED_ID, "auth": {"type": "mcp_oauth", "mcp_server_url": CANVA["servidor"]["url"] + "/"}, "metadata": {"cliente": "5cero5", "rol": "canva"}}]))
 n_reg = len(EST["registros"])
 rc, out, ll = corre("--cuenta", "5cero5 · Creativo")
 caso("oauth: con credencial guardada solo valida; no registra ni pide consentimiento", rc == 0 and len(EST["registros"]) == n_reg
@@ -155,8 +158,15 @@ caso("oauth: con credencial guardada solo valida; no registra ni pide consentimi
 rc, out, ll = corre("--solo-validar", VALIDA_FALSA="unknown")
 caso("oauth: --solo-validar con estado unknown sale con error y explica que es transitorio, sin nuevo consentimiento", rc != 0 and "transitorio" in out
      and [x["op"] for x in ll] == ["cred.validate"], out)
+n_reg = len(EST["registros"])
 rc, out, ll = corre("--cuenta", "5cero5 · Creativo", "--renovar")
-caso("oauth: --renovar archiva la anterior y crea otra (client_id no se puede cambiar)", rc == 0 and [x["op"] for x in ll][:2] == ["cred.archive", "cred.create"], out)
+upd = [x for x in ll if x["op"] == "cred.update"]
+caso("oauth: --renovar con el mismo cliente OAuth reutiliza el registro y actualiza la credencial en su lugar (no la archiva)",
+     rc == 0 and len(EST["registros"]) == n_reg and [x["op"] for x in ll][:1] == ["cred.update"] and not any(x["op"] == "cred.archive" for x in ll)
+     and upd and upd[0]["auth"]["refresh"] == {"refresh_token": RENOVAR} and upd[0]["id"] == CRED_ID and ACCESO not in out, out)
+(tmp / "creds.json").write_text(json.dumps([{"id": "vcrd_ajena", "auth": {"type": "mcp_oauth", "mcp_server_url": CANVA["servidor"]["url"]}, "metadata": {"cliente": "5cero5", "rol": "canva"}}]))
+rc, out, ll = corre("--cuenta", "5cero5 · Creativo", "--renovar")
+caso("oauth: --renovar sobre una credencial de otro cliente OAuth la archiva y crea otra enseguida, avisando", rc == 0 and [x["op"] for x in ll][:2] == ["cred.archive", "cred.create"] and "corre esto otra vez" in out, out)
 (tmp / "creds.json").unlink()
 
 # 3. Fallas cerradas: nada en el vault.
@@ -182,28 +192,32 @@ def alta(*args):
     return r.returncode, r.stdout + r.stderr, [json.loads(x) for x in LOG.read_text().splitlines() if x]
 
 
-rc, out, ll = alta("--canva", "--piloto")
-ag = [x for x in ll if x["op"] == "agent.create"]
+rc, out, ll = alta("--canva")
+agentes = [x for x in ll if x["op"] == "agent.create"]
+ag = [x for x in agentes if x["name"] == "5cero5 · Creativo · Canva"]
+comun = [x for x in agentes if x["name"] == "5cero5 · Creativo"]
 envs = [x for x in ll if x["op"] == "env.create"]
 ts = [t for t in (ag[0]["tools"] if ag else []) if t.get("type") == "mcp_toolset"]
 cfgs = {c["name"]: c["permission_policy"]["type"] for c in (ts[0]["configs"] if ts else [])}
-caso("alta --canva --piloto: agente aparte con el servidor de Canva y su toolset", rc == 0 and len(ag) == 1 and ag[0]["name"] == "5cero5 · Creativo (piloto Canva)"
-     and ag[0]["mcp_servers"] == [CANVA["servidor"]] and len(ts) == 1, out)
+caso("alta --canva: agente de Canva APARTE con el servidor de Canva y su toolset; el común sin MCP", rc == 0 and len(ag) == 1
+     and ag[0]["mcp_servers"] == [CANVA["servidor"]] and len(ts) == 1 and len(comun) == 1 and comun[0]["mcp_servers"] == []
+     and not any(t.get("type") == "mcp_toolset" for t in comun[0]["tools"]), out)
 caso("alta --canva: lista cerrada (default apagado), lectura always_allow, escritura always_ask",
      ts and ts[0]["default_config"]["enabled"] is False and all(cfgs[n] == "always_allow" for n in CANVA["herramientas"]["lectura"])
      and all(cfgs[n] == "always_ask" for n in CANVA["herramientas"]["con_permiso"]) and len(cfgs) == len(CANVA["herramientas"]["lectura"]) + len(CANVA["herramientas"]["con_permiso"]), cfgs)
 red_ = envs[-1]["config"]["networking"] if envs else {}
-caso("alta --canva: entorno del Creativo con los hosts de Canva explícitos y allow_mcp_servers apagado",
-     envs and envs[-1]["name"] == "5cero5-harness-creativo" and all(h in red_["allowed_hosts"] for h in CANVA["hosts_red"]) and red_["allow_mcp_servers"] is False, envs)
+caso("alta --canva: entorno de Canva con los hosts de Canva explícitos y allow_mcp_servers apagado",
+     envs and envs[-1]["name"] == "5cero5-harness-canva" and all(h in red_["allowed_hosts"] for h in CANVA["hosts_red"]) and red_["allow_mcp_servers"] is False, envs)
 caso("alta --canva: el entorno común no recibe hosts de Canva",
-     not any(x["op"] in ("env.update", "env.create") and x.get("name") != "5cero5-harness-creativo" and "mcp.canva.com" in json.dumps(x) for x in ll), ll)
-caso("alta --canva --piloto: imprime MA_AGENT_CREATIVO del piloto y MA_ENVIRONMENT_CREATIVO", "piloto con Canva" in out and "MA_ENVIRONMENT_CREATIVO=" in out, out)
-caso("alta --canva --piloto: el estado del piloto va aparte", (tmp / "infra" / "estado-creativo-piloto.json").exists()
-     and "agent_id" not in json.loads((tmp / "infra" / "estado-creativo.json").read_text()), out)
+     not any(x["op"] in ("env.update", "env.create") and x.get("name") != "5cero5-harness-canva" and "mcp.canva.com" in json.dumps(x) for x in ll), ll)
+caso("alta --canva: imprime MA_AGENT_CREATIVO_CANVA y MA_ENVIRONMENT_CANVA", f"MA_AGENT_CREATIVO_CANVA={ag[0]['id'] if ag else '?'}" in out and "MA_ENVIRONMENT_CANVA=" in out, out)
+caso("alta --canva: el agente de Canva guarda su estado aparte", (tmp / "infra" / "estado-creativo-canva.json").exists()
+     and json.loads((tmp / "infra" / "estado-creativo.json").read_text())["agent_id"] != json.loads((tmp / "infra" / "estado-creativo-canva.json").read_text())["agent_id"], out)
+rc, out, ll = alta("--actualizar-agente")
+caso("alta sin --canva: solo el agente común, sin MCP; el de Canva no se toca", rc == 0 and [x["op"] for x in ll if x["op"].startswith("agent.")] == ["agent.update"]
+     and [x for x in ll if x["op"] == "agent.update"][0]["mcp_servers"] == [], out)
 rc, out, ll = alta("--canva", "--cliente", "opticas")
 caso("alta --canva con otro cliente se rechaza (la credencial de cada cliente la pone canva_oauth.py)", rc != 0 and "canva_oauth.py" in out and not ll, out)
-rc, out, ll = alta("--piloto")
-caso("alta --piloto sin --canva se rechaza", rc != 0 and not ll, out)
 
 srv.shutdown()
 shutil.rmtree(tmp, ignore_errors=True)

@@ -26,9 +26,6 @@ export function cfg(env = process.env) {
     // Una fila Sensible además necesita en Aprobó a alguien de esta lista (ids de usuario de Notion de Al y Bonzo).
     aprobadoresSensibles: (env.APROBADORES_SENSIBLES || '').split(',').map(s => s.trim()).filter(Boolean),
     environmentId: env.MA_ENVIRONMENT_ID,
-    // Entorno propio por agente (MA_ENVIRONMENT_<AGENTE>, opcional): el Creativo con Canva usa uno con los hosts de Canva para que
-    // ningún otro agente pueda llegar a ellos. Sin la variable, el común.
-    entornosPorAgente: Object.fromEntries(Object.keys(AGENTES).map(n => [n, env[`MA_ENVIRONMENT_${n.toUpperCase()}`] || ''])),
     vaultIds: (env.MA_VAULT_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
     // Vault propio por agente (ids separados por coma). Si no hay, se usa MA_VAULT_IDS.
     vaultsPorAgente: Object.fromEntries(Object.entries(AGENTES).map(([nombre, d]) =>
@@ -87,6 +84,9 @@ export function cfg(env = process.env) {
     // Canva en el Creativo (lib/canva.mjs). Apagado por defecto: sin CANVA_ACTIVO=1, una fila con "Canva: sí" pasa a Error y
     // ninguna otra cambia. CANVA_EXPORT_HOSTS (separados por coma) reemplaza los hosts de descarga de agentes/canva.json.
     canvaActivo: env.CANVA_ACTIVO === '1',
+    // Solo las filas de Canva usan este agente (el Creativo con el MCP de Canva y su lista cerrada) y este entorno (con los hosts de
+    // Canva). Las demás filas del Creativo siguen con MA_AGENT_CREATIVO y MA_ENVIRONMENT_ID, como siempre.
+    canva: { agente: env.MA_AGENT_CREATIVO_CANVA || '', entorno: env.MA_ENVIRONMENT_CANVA || '' },
     canvaExportHosts: (env.CANVA_EXPORT_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
     // Location ID de HighLevel para el mensaje del CRM con el ruteo apagado (con el ruteo sale de la ficha).

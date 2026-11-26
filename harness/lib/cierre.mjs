@@ -19,7 +19,7 @@ export async function paginaDeSesion(notion, c, sessionId, session) {
 }
 
 // Devuelve una cadena corta con lo que hizo (para logs/tests).
-export async function cierraSesion({ client, notion, c, sessionId, motivo, fetchImpl = fetch }) {
+export async function cierraSesion({ client, notion, c, sessionId, motivo, confirmar = true, fetchImpl = fetch }) {
   const session = await client.beta.sessions.retrieve(sessionId);
   const fila = await paginaDeSesion(notion, c, sessionId, session);
   if (!fila) return 'sin_fila';
@@ -39,7 +39,7 @@ export async function cierraSesion({ client, notion, c, sessionId, motivo, fetch
   if (session.status !== 'idle') return `aun_${session.status}`;
   // Idle no siempre es "terminó": con requires_action la sesión espera que alguien apruebe herramientas (Canva va con
   // always_ask). El harness decide con reglas fijas y la fila sigue En curso (el barrido aplica el mismo tope de minutos).
-  const confirmadas = await resuelveConfirmaciones({ client, sessionId, session });
+  const confirmadas = await resuelveConfirmaciones({ client, sessionId, session, confirmar });
   if (confirmadas) return `aun_requiere_accion:${confirmadas}`;
 
   const resultado = await ultimoMensajeAgente(client, sessionId);

@@ -116,6 +116,8 @@ def nueva(a, d: Path) -> None:
 def _baja(url: str) -> tuple[bytes, str]:
     u = urlparse(url)
     hosts = hosts_export()
+    # Solo pruebas (test_pieza_canva.py): http a 127.0.0.1. No abre nada real: el harness vuelve a bajar la exportación de Canva y
+    # la compara byte a byte con pieza.png al cerrar.
     prueba = os.environ.get("CANVA_EXPORT_PRUEBA") == "1" and u.scheme == "http" and u.hostname == "127.0.0.1"
     if not prueba and (u.scheme != "https" or (u.hostname or "").lower() not in hosts):
         die(f"La exportación viene de {u.hostname or '?'}, que no está entre los hosts de Canva permitidos ({', '.join(hosts)}). "
@@ -199,7 +201,8 @@ def revisar(a, d: Path, huella) -> None:
     canva = _lee(d / "canva.json")
     if canva.get("export", {}).get("sha256") != hashlib.sha256(png).hexdigest():
         die("pieza.png no es la exportación que registró canva-importar.")
-    res = verificar_canva(png, (d / ".lectura.json").read_text(encoding="utf-8"), marca, _lee(d / "copia.json"), canva, meta["formato"])
+    res = verificar_canva(png, (d / ".lectura.json").read_text(encoding="utf-8"), marca, _lee(d / "copia.json"), canva, meta["formato"],
+                          ronda=bool(meta.get("ronda")))
     imprime(res)
     res["png_blob_sha"] = blob_sha(png)
     res["png_sha1"] = hashlib.sha1(png).hexdigest()
