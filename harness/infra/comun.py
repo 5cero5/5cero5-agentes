@@ -46,9 +46,10 @@ RED = red()
 
 
 def red_canva() -> dict:
-    """Red del entorno de Canva: SOLO los hosts de canva.json (GitHub y la descarga de la exportación) y allow_mcp_servers: a
-    Canva se conectan los servidores de Anthropic, no el contenedor, así que el contenedor no llega a mcp.canva.com. El harness
-    (lib/canva.mjs → verificaEntornoCanva) no abre la sesión si el entorno tiene otra red."""
+    """Red del entorno de Canva: SOLO los hosts de canva.json (GitHub y la descarga de la exportación), gestores de paquetes y
+    allow_mcp_servers (la sesión usa el MCP de Canva sin poner mcp.canva.com en la lista; según la Console lo conectan los
+    servidores de Anthropic, no el contenedor; sin verificar). El harness (lib/canva.mjs → verificaEntornoCanva) no abre la
+    sesión si el entorno tiene otra red."""
     return {"type": "limited", "allowed_hosts": list(CANVA["hosts_red"]), "allow_mcp_servers": bool(CANVA.get("allow_mcp_servers")),
             "allow_package_managers": True}
 PAQUETES = {"pip": ["httpx", "playwright", "pillow"]}  # playwright: render y Verificador (el navegador se baja en la sesión); pillow: Verificador de piezas

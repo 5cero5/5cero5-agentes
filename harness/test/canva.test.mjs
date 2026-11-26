@@ -200,6 +200,9 @@ test('despacho: recursos deshabilitados, credencial ausente, de otro cliente o v
     [{ cli: { entorno: { networking: { type: 'limited', allowed_hosts: [...CANVA.hosts_red, 'mcp.canva.com'], allow_mcp_servers: true } } } }, /no tiene la red de agentes\/canva\.json/],
     [{ cli: { entorno: { networking: { type: 'limited', allowed_hosts: CANVA.hosts_red, allow_mcp_servers: false } } } }, /no tiene la red de agentes\/canva\.json/],
     [{ cli: { entorno: { networking: { type: 'unrestricted' } } } }, /no tiene la red de agentes\/canva\.json/],
+    [{ cli: { entorno: { networking: { type: 'limited', allowed_hosts: CANVA.hosts_red, allow_mcp_servers: true, allow_package_managers: false } } } }, /no tiene la red de agentes\/canva\.json/],
+    [{ red: { recursos: { ...RECURSOS, brand_kit_id: '' } } }, /falta brand_kit_id/],
+    [{ red: { recursos: { ...RECURSOS, brand_kit_id: 'kAG kit' } } }, /falta brand_kit_id o es inválido/],
   ];
   for (const [o, re] of casos) {
     const f = [fila(o.fila)]; const n = mockNotion(f); const cl = cliente(o.cli);
@@ -239,6 +242,10 @@ test('cuenta de Canva: copiar la base exige que list-brand-kits haya mostrado el
   assert.equal(copia([]).result, 'deny'); assert.match(copia([]).deny_message, /Brand Kit del cliente \(kAGkit5c05\)/);
   assert.equal(copia(kits('kAGotro0001')).result, 'deny');
   assert.equal(copia(kits('kAGkit5c05')).result, 'allow');
+  // Solo cuenta el id del kit: un kit de otra cuenta que se llame como el id, o el id en otra clave, no.
+  assert.equal(copia([uso('k1', 'list-brand-kits', {}, 'allow'), res('k1', { items: [{ id: 'kAGotro0001', name: 'kAGkit5c05' }] })]).result, 'deny');
+  assert.equal(copia([uso('k1', 'list-brand-kits', {}, 'allow'), res('k1', { items: [], continuation: 'kAGkit5c05' })]).result, 'deny');
+  assert.equal(copia([uso('k1', 'list-brand-kits', {}, 'allow'), res('k1', { items: [{ id: 'kAGkit5c05', name: '5cero5' }] })]).result, 'allow');
   const pieza = { meta: red().meta, canva: red().canvaJson, copia: COPIA, png: PNG };
   const cierra = ev => compruebaCanvaSesion({ client: cliente({ eventos: ev }), sessionId: 's', session: { metadata: { canva: JSON.stringify(metaK) } }, pieza, c: cOn, fetchImpl: red().fetch });
   assert.deepEqual((await cierra(logBueno())).problemas, []);

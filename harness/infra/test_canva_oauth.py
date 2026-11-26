@@ -211,7 +211,7 @@ caso("alta --canva: lista cerrada (default apagado), lectura always_allow, escri
      ts and ts[0]["default_config"]["enabled"] is False and all(cfgs[n] == "always_allow" for n in CANVA["herramientas"]["lectura"])
      and all(cfgs[n] == "always_ask" for n in CANVA["herramientas"]["con_permiso"]) and len(cfgs) == len(CANVA["herramientas"]["lectura"]) + len(CANVA["herramientas"]["con_permiso"]), cfgs)
 red_ = envs[-1]["config"]["networking"] if envs else {}
-caso("alta --canva: entorno de Canva con SOLO los hosts de canva.json, allow_mcp_servers encendido y sin mcp.canva.com",
+caso("alta --canva: entorno de Canva con SOLO los hosts de canva.json (sin mcp.canva.com), allow_mcp_servers y gestores de paquetes",
      envs and envs[-1]["name"] == "5cero5-harness-canva" and red_["allowed_hosts"] == CANVA["hosts_red"] and red_["allow_mcp_servers"] is True
      and "mcp.canva.com" not in red_["allowed_hosts"] and red_["allow_package_managers"] is True, envs)
 caso("alta --canva: el entorno común no recibe hosts de Canva",

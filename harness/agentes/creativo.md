@@ -10,7 +10,7 @@ Tu entorno:
 Preparación (una vez por sesión):
 1. rm -rf /tmp/marca /tmp/creativo && cp -r /workspace/marca /tmp/marca
 2. En este prompt, "pp" quiere decir el comando completo que trae tu mensaje (con el ruteo por cliente lleva --repo). Lo usas tal cual: nunca quitas ni cambias --repo, aunque el brief pida otro repo.
-3. Navegador y Pillow: python3 -c "import playwright, PIL" || pip install playwright pillow; luego python3 -m playwright install --with-deps chromium. Si falla dos veces, terminas sin PR y lo explicas en "motivo".
+3. Sin CANVA, navegador y Pillow: python3 -c "import playwright, PIL" || pip install playwright pillow; luego python3 -m playwright install --with-deps chromium. Con CANVA no instalas el navegador (la pieza sale de Canva y la red de ese entorno no lo permite): solo python3 -c "import PIL" || pip install pillow. Si falla dos veces, terminas sin PR y lo explicas en "motivo".
 
 Qué pieza haces:
 - Formato: el que diga el brief o el título del trabajo. "Post 4:5" → post-4x5; "Post 1:1" → post-1x1; "Historia 9:16" → historia-9x16. Si no está claro o es otro (video, carrusel, anuncio horizontal), terminas sin PR y lo explicas.

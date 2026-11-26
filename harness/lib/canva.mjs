@@ -91,8 +91,10 @@ export function validaRecursos(d, repo = 'el repo de marca') {
   // logo_asset_id es opcional (no se ve en la interfaz de Canva): si está, se exige en la relectura; si no, queda el cotejo de
   // píxeles del logo en el pie del Verificador, que también bloquea.
   if (d.logo_asset_id && !ID.test(String(d.logo_asset_id))) throw new ErrorCanva(`canva/recursos.json de ${repo}: logo_asset_id inválido`, 'canva_sin_recursos');
+  // brand_kit_id es obligatorio: con él la sesión comprueba que la cuenta de Canva es la del cliente (decideConfirmacion y cierre).
+  if (!ID.test(String(d.brand_kit_id || ''))) throw new ErrorCanva(`canva/recursos.json de ${repo}: falta brand_kit_id o es inválido (con él se comprueba la cuenta de Canva)`, 'canva_sin_recursos');
   const fijos = (Array.isArray(d.textos_fijos) ? d.textos_fijos : []).filter(x => typeof x === 'string');
-  return { bases, textos, fijos: [...new Set([...fijos, ...Object.values(fijosFormato).flat()])], fijosFormato, carpeta: d.carpeta_id, logo: d.logo_asset_id || '', kit: ID.test(String(d.brand_kit_id || '')) ? d.brand_kit_id : '' };
+  return { bases, textos, fijos: [...new Set([...fijos, ...Object.values(fijosFormato).flat()])], fijosFormato, carpeta: d.carpeta_id, logo: d.logo_asset_id || '', kit: d.brand_kit_id };
 }
 
 export async function recursosCanva({ c, fetchImpl = fetch }) {
@@ -133,23 +135,26 @@ export async function credencialCanva({ client, vault, slug }) {
   return { id: cr.id, cuenta: String(m.canva_cuenta || cr.display_name || '') };
 }
 
-// El entorno de Canva: red limitada con exactamente los hosts de agentes/canva.json y allow_mcp_servers encendido (a Canva se
-// conectan los servidores de Anthropic, no el contenedor; así el contenedor no llega a mcp.canva.com). Si alguien lo abrió, no se
-// abre la sesión.
-export async function verificaEntornoCanva({ client, entorno }) {
+// El entorno de Canva: red limitada con exactamente los hosts de agentes/canva.json (más CANVA_EXPORT_HOSTS si los cambia),
+// allow_mcp_servers como diga canva.json y gestores de paquetes. mcp.canva.com no va en la lista: el MCP lo conecta la plataforma.
+// Si alguien abrió la red, no se abre la sesión.
+export async function verificaEntornoCanva({ client, entorno, c }) {
   let e;
   try { e = await client.beta.environments.retrieve(entorno); }
   catch (er) { throw new ErrorCanva(`Canva: no se pudo leer el entorno ${entorno} (${er.status || er.message})`, 'canva_sin_configurar'); }
   const n = e?.config?.networking || {};
   const hosts = [...new Set((n.allowed_hosts || []).map(h => String(h).toLowerCase()))].sort();
-  const esperado = [...new Set(CANVA.hosts_red.map(h => h.toLowerCase()))].sort();
-  if (e?.archived_at || n.type !== 'limited' || n.allow_mcp_servers !== CANVA.allow_mcp_servers || JSON.stringify(hosts) !== JSON.stringify(esperado)) {
-    throw new ErrorCanva(`Canva: el entorno ${entorno} no tiene la red de agentes/canva.json (limitada a ${esperado.join(', ')}, servidores MCP ${CANVA.allow_mcp_servers ? 'encendidos' : 'apagados'})`, 'canva_sin_configurar');
+  const esperado = [...new Set([...CANVA.hosts_red, ...hostsExport(c)].map(h => String(h).toLowerCase()))].sort();
+  const mcp = CANVA.allow_mcp_servers === true;
+  if (e?.archived_at || n.type !== 'limited' || n.allow_mcp_servers !== mcp || n.allow_package_managers !== true || JSON.stringify(hosts) !== JSON.stringify(esperado)) {
+    throw new ErrorCanva(`Canva: el entorno ${entorno} no tiene la red de agentes/canva.json (limitada a ${esperado.join(', ')}, servidores MCP ${mcp ? 'encendidos' : 'apagados'}, gestores de paquetes encendidos)`, 'canva_sin_configurar');
   }
 }
 
 // La cuenta de Canva de la sesión es la del cliente: list-brand-kits, ya contestado, muestra su Brand Kit.
-export const kitVisto = (hist, k) => hist.orden.some(u => u.name === 'list-brand-kits' && u.resultado && !u.error && cadenas(u.resultado).includes(k));
+// Solo por el id del kit (clave id o brand_kit_id), no por cualquier texto del resultado (un nombre, un token de continuación).
+export const kitVisto = (hist, k) => hist.orden.some(u => u.name === 'list-brand-kits' && u.resultado && !u.error
+  && [...deClave(u.resultado, 'id'), ...deClave(u.resultado, 'brand_kit_id')].includes(k));
 
 // El agente de Canva tiene que declarar SOLO el servidor de Canva y la lista cerrada de agentes/canva.json (permisos mínimos en
 // la plataforma, no solo en infra/). Si alguien le cambió la configuración, no se abre la sesión.
@@ -207,13 +212,13 @@ export async function preparaCanva({ client, c, fila, cli, fetchImpl = fetch }) 
   const agente = c.canva?.agente, entorno = c.canva?.entorno;
   if (!agente || !entorno) throw new ErrorCanva('Canva sin configurar: faltan MA_AGENT_CREATIVO_CANVA y MA_ENVIRONMENT_CANVA (los imprime crear_agente_creativo.py --canva)', 'canva_sin_configurar');
   await verificaAgenteCanva({ client, agente });
-  await verificaEntornoCanva({ client, entorno });
+  await verificaEntornoCanva({ client, entorno, c });
   const rec = await recursosCanva({ c, fetchImpl });
   // La sesión recibe exactamente estos vaults (parametrosSesion): tiene que ser uno, el Vault Creativo del cliente.
   const vaults = c.vaultsPorAgente?.Creativo?.length ? c.vaultsPorAgente.Creativo : (c.vaultIds || []);
   if (vaults.length !== 1) throw new ErrorCanva(`Canva: la sesión del Creativo llevaría ${vaults.length} vaults; tiene que ser uno, el Vault Creativo de ${cli.slug}`, 'canva_sin_credencial');
   const cred = await credencialCanva({ client, vault: vaults[0], slug: cli.slug });
-  const canva = { v: 1, b: rec.bases, f: rec.carpeta, ...(rec.logo ? { l: rec.logo } : {}), ...(rec.kit ? { k: rec.kit } : {}), ...(design ? { d: design } : {}), cr: cred.id };
+  const canva = { v: 1, b: rec.bases, f: rec.carpeta, ...(rec.logo ? { l: rec.logo } : {}), k: rec.kit, ...(design ? { d: design } : {}), cr: cred.id };
   if (JSON.stringify(canva).length > 512) throw new ErrorCanva('Los recursos de Canva no caben en la metadata de la sesión (máximo 512 caracteres)');
   return { ...canva, agente, entorno, textos: rec.textos, marca: rec.repo, cuenta: cred.cuenta };
 }
