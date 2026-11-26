@@ -166,12 +166,49 @@ def entorno(b, hosts_extra: list[str] | None = None, *, clave: str = "entorno", 
     return e["environment_id"]
 
 
+def _como_dict(x) -> dict:
+    if x is None:
+        return {}
+    if isinstance(x, dict):
+        return x
+    if hasattr(x, "model_dump"):
+        return x.model_dump()
+    return dict(getattr(x, "__dict__", {}))
+
+
+def entorno_desde(b, base_id: str, *, clave: str, nombre: str, solo: list[str]) -> str:
+    """Entorno aparte (el de Canva) con la red REAL del entorno base (leída de la API: hosts, gestores de paquetes y paquetes)
+    más `solo`. No toca el entorno base. Si la base no es 'limited', usa la red común de HOSTS (nunca 'unrestricted')."""
+    base = _como_dict(b.environments.retrieve(base_id))
+    cfg = _como_dict(base.get("config"))
+    net = _como_dict(cfg.get("networking"))
+    if net.get("type") == "limited":
+        hosts = list(dict.fromkeys(list(net.get("allowed_hosts") or []) + list(solo)))
+        red_ = {"type": "limited", "allowed_hosts": hosts, "allow_mcp_servers": False, "allow_package_managers": bool(net.get("allow_package_managers"))}
+    else:
+        red_ = red(list(solo))
+    paquetes = _como_dict(cfg.get("packages")) or PAQUETES
+    paquetes = {k: v for k, v in paquetes.items() if v}  # sin gestores vacíos
+    e = carga(clave)
+    if "environment_id" not in e:
+        env = b.environments.create(name=nombre, description=f"Entorno {nombre}: la red de {base_id} más {', '.join(solo)}.",
+                                    metadata={"cliente": "5cero5", "origen": "harness/infra/comun.py", "base": base_id},
+                                    config={"type": "cloud", "networking": red_, "packages": paquetes})
+        e.update(environment_id=env.id, base=base_id)
+        guarda(clave, e)
+        print(f"▸ Entorno {nombre} creado: {env.id} (red de {base_id} + {', '.join(solo)})")
+    else:
+        b.environments.update(e["environment_id"], config={"type": "cloud", "networking": red_, "packages": paquetes})
+        print(f"▸ Entorno {e['environment_id']} ({nombre}): red de {base_id} + {', '.join(solo)}")
+    return e["environment_id"]
+
+
 def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: dict | None, actualizar: bool, meta: dict,
-         clave_agente: str | None = None) -> dict:
+         clave_agente: str | None = None, sin_vault: bool = False) -> dict:
     """Vault + credenciales + agente, idempotente. credenciales: [{key, secret_name, value, host, label}].
     agente=None: solo vault y credenciales (otro cliente; el agente común no se toca)."""
     estado = carga(clave)
-    if "vault_id" not in estado:
+    if not sin_vault and "vault_id" not in estado:
         estado["vault_id"] = b.vaults.create(display_name=vault_nombre, metadata=meta).id
         guarda(clave, estado)
         print(f"▸ Vault creado: {estado['vault_id']}")

@@ -32,7 +32,7 @@ import argparse
 import os
 import re
 
-from comun import AGENTES, CANVA, CLIENTE_BASE, agente_comun, alta, arg_cliente, carga, clave_de, cliente, entorno, imprime_ficha, mcp_canva, meta_de, need
+from comun import AGENTES, CANVA, CLIENTE_BASE, agente_comun, alta, arg_cliente, carga, clave_de, cliente, entorno, entorno_desde, imprime_ficha, mcp_canva, meta_de, need
 
 MODELO = os.environ.get("MODELO_CREATIVO", "claude-sonnet-5-5")
 RELLENO = "se-renueva-en-cada-sesion"
@@ -43,11 +43,17 @@ def main() -> None:
     ap.add_argument("--actualizar-agente", action="store_true", help="sube prompt y modelo a una versión nueva del agente")
     ap.add_argument("--hf-files-host", help="host que sirve las imágenes terminadas de Higgsfield (la prueba 3 lo imprimió)")
     ap.add_argument("--canva", action="store_true", help="crea o actualiza el agente de Canva (aparte del común) y su entorno")
+    ap.add_argument("--solo-canva", metavar="ENTORNO_COMUN", help="solo el agente y el entorno de Canva: copia la red del entorno común "
+                    "<env_…> leída de la API y no toca el entorno común, el agente común ni el vault (para cuando no tienes los estado-*.json)")
     arg_cliente(ap)
     a = ap.parse_args()
     slug = cliente(a)
     if a.canva and slug != CLIENTE_BASE:
         raise SystemExit("✗ El agente de Canva es común a todos los clientes: córrelo sin --cliente. La credencial de cada cliente la pone canva_oauth.py.")
+    if a.solo_canva:
+        a.canva = True
+        if slug != CLIENTE_BASE or a.hf_files_host or not re.fullmatch(r"env_[A-Za-z0-9]+", a.solo_canva):
+            raise SystemExit("✗ --solo-canva <env_…> va sin --cliente ni --hf-files-host, con el id del entorno común.")
     clave = clave_de(slug, "creativo")
     need("ANTHROPIC_API_KEY")
     if a.hf_files_host and not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", a.hf_files_host):
@@ -59,6 +65,18 @@ def main() -> None:
     b = Anthropic().beta
     meta = meta_de(slug, "creativo", "crear_agente_creativo.py")
 
+    descripcion = "Arma piezas con las plantillas de marca o en Canva (diseño base aprobado) y abre PRs en el repo de piezas del cliente con pr_pieza.py. Nunca fusiona ni publica."
+    if a.solo_canva:  # solo lo nuevo de Canva; nada común se toca
+        env_canva = entorno_desde(b, a.solo_canva, clave="entorno-canva", nombre="5cero5-harness-canva", solo=CANVA["hosts_red"])
+        servidores, tools_extra = mcp_canva()
+        ec = alta(b, clave="creativo-canva", vault_nombre="", meta=meta, actualizar=a.actualizar_agente, credenciales=[], sin_vault=True,
+                  agente={"name": "5cero5 · Creativo · Canva", "description": descripcion, "model": MODELO, "system": prompt,
+                          "mcp_servers": servidores, "tools_extra": tools_extra})
+        print("\nVariables para el proyecto de Netlify del harness (no son secretas):")
+        print(f"  MA_AGENT_CREATIVO_CANVA={ec['agent_id']}   (solo filas con 'Canva: sí')")
+        print(f"  MA_ENVIRONMENT_CANVA={env_canva}   (red de {a.solo_canva} + hosts de Canva)")
+        print("  CANVA_ACTIVO=1   (cuando el cliente tenga canva/recursos.json habilitado y su credencial: canva_oauth.py)")
+        return
     env_id = entorno(b, [a.hf_files_host] if a.hf_files_host else None)
     estado = carga(clave)
     creds = []
@@ -68,7 +86,6 @@ def main() -> None:
     if hf_key:
         creds.append({"key": "cred_higgsfield_id", "secret_name": "HIGGSFIELD_API_KEY", "value": hf_key, "host": "api.higgsfield.ai",
                       "label": "Higgsfield · llave API · Creativo"})
-    descripcion = "Arma piezas con las plantillas de marca o en Canva (diseño base aprobado) y abre PRs en el repo de piezas del cliente con pr_pieza.py. Nunca fusiona ni publica."
     e = alta(b, clave=clave, vault_nombre=f"{slug} · Creativo", meta=meta, actualizar=a.actualizar_agente, credenciales=creds,
              agente=agente_comun(slug, "creativo", {"name": "5cero5 · Creativo", "description": descripcion, "model": MODELO, "system": prompt}))
     env_canva = agente_canva = None

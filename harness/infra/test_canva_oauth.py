@@ -47,6 +47,11 @@ class _Agents:
     def retrieve(self, i): return _Obj(id=i, version=1)
     def update(self, i, **kw): _log("agent.update", id=i, **kw); return _Obj(id=i, version=2)
 class _Envs:
+    def retrieve(self, i):
+        _log("env.retrieve", id=i)
+        return _Obj(id=i, config={"type": "cloud", "networking": {"type": "limited", "allowed_hosts": ["api.github.com", "api.higgsfield.ai", "cdn.base.test"],
+                                                                   "allow_package_managers": True, "allow_mcp_servers": False},
+                                  "packages": {"pip": ["httpx", "playwright", "pillow"], "npm": []}})
     def create(self, **kw): _log("env.create", **kw); return _Obj(id=f"env_{next(_n)}")
     def update(self, i, **kw): _log("env.update", id=i, **kw)
 class _Beta:
@@ -216,6 +221,22 @@ caso("alta --canva: el agente de Canva guarda su estado aparte", (tmp / "infra" 
 rc, out, ll = alta("--actualizar-agente")
 caso("alta sin --canva: solo el agente común, sin MCP; el de Canva no se toca", rc == 0 and [x["op"] for x in ll if x["op"].startswith("agent.")] == ["agent.update"]
      and [x for x in ll if x["op"] == "agent.update"][0]["mcp_servers"] == [], out)
+for f in ("estado-entorno-canva.json", "estado-creativo-canva.json"):
+    (tmp / "infra" / f).unlink(missing_ok=True)
+rc, out, ll = alta("--solo-canva", "env_comun1")
+ops = [x["op"] for x in ll]
+envc = [x for x in ll if x["op"] == "env.create"]
+agc = [x for x in ll if x["op"] == "agent.create"]
+caso("alta --solo-canva: lee el entorno común y solo crea el entorno y el agente de Canva (nada común, ningún vault)",
+     rc == 0 and ops.count("env.retrieve") == 1 and not any(o in ("env.update", "vault.create", "agent.update") or o.startswith("cred.") for o in ops)
+     and len(envc) == 1 and len(agc) == 1 and agc[0]["name"] == "5cero5 · Creativo · Canva" and agc[0]["mcp_servers"] == [CANVA["servidor"]], out)
+red_c = envc[0]["config"]["networking"] if envc else {}
+caso("alta --solo-canva: red = la del entorno común leída + hosts de Canva, sin allow_mcp_servers y con sus paquetes",
+     red_c.get("allowed_hosts") == ["api.github.com", "api.higgsfield.ai", "cdn.base.test"] + CANVA["hosts_red"] and red_c.get("allow_mcp_servers") is False
+     and red_c.get("allow_package_managers") is True and envc[0]["config"]["packages"] == {"pip": ["httpx", "playwright", "pillow"]}
+     and "MA_AGENT_CREATIVO_CANVA=" in out and "MA_ENVIRONMENT_CANVA=" in out, envc)
+rc, out, ll = alta("--solo-canva", "no-es-env")
+caso("alta --solo-canva con un id que no es de entorno se rechaza sin tocar nada", rc != 0 and not ll, out)
 rc, out, ll = alta("--canva", "--cliente", "opticas")
 caso("alta --canva con otro cliente se rechaza (la credencial de cada cliente la pone canva_oauth.py)", rc != 0 and "canva_oauth.py" in out and not ll, out)
 
