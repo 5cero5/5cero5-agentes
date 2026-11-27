@@ -80,6 +80,19 @@ export function cfg(env = process.env) {
     // "Destino: WhatsApp" pasa a Error y, al cerrar, una campaña de WhatsApp sale Rechazada.
     pautaWhatsapp: env.PAUTA_WHATSAPP === '1',
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
+    // Revisión del cliente (épica E2, lib/revision-cliente.mjs), paso aparte de la función barrido. Apagada por defecto.
+    // Con REVISION_CLIENTE=1 sólo trabaja las fichas de REVISION_CLIENTE_CLIENTES: "fichaId=decisionesId,..." (id de página
+    // de Clientes = id del data source "Decisiones · <cliente>", que vive en la página privada de ese cliente). Una ficha
+    // sin "=decisionesId" sólo expone revisiones. Vacía = ninguna. Nunca escribe en Assets ni abre sesiones.
+    revisionCliente: {
+      activa: env.REVISION_CLIENTE === '1',
+      clientes: (env.REVISION_CLIENTE_CLIENTES || '').split(',').map(s => s.trim()).filter(Boolean)
+        .map(s => { const [ficha, decisiones] = s.split('=').map(x => x.trim()); return { ficha, decisiones: decisiones || null }; }),
+      revisiones: env.NOTION_REVISIONES_ID || '4256eacb-3ef9-8152-b210-000b9ac75e33',
+      // Presupuesto por corrida (la función programada tiene ~30 s y Notion admite ~3 llamadas por segundo).
+      maxDecisiones: num('REVISION_CLIENTE_MAX', 10),
+      msMax: num('REVISION_CLIENTE_MS', 15000),
+    },
     // Location ID de HighLevel para el mensaje del CRM con el ruteo apagado (con el ruteo sale de la ficha).
     hl: { location: env.HL_LOCATION_ID || '', api: env.HL_API_BASE || 'https://services.leadconnectorhq.com',
       // Hosts permitidos para bajar el previewUrl de una plantilla en el harness (vacío: lib/highlevel.mjs → HOSTS_PREVIEW).
