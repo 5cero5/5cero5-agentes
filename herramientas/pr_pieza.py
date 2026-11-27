@@ -3,7 +3,7 @@
 marca, la revisa con el Verificador y abre un PR en 5cero5-piezas. Nunca fusiona ni publica.
 
   python3 pr_pieza.py nueva   --campana poc-diagnostico --pieza post-agencia --formato post-4x5 [--foto]
-  python3 pr_pieza.py foto    --campana ... --pieza ... --prompt "Fotografía editorial de ..., sin texto y sin logos"
+  python3 pr_pieza.py foto    --campana ... --pieza ... --prompt "Fotografía editorial de ..., sin texto y sin logos" [--marco 1080x800]
   python3 pr_pieza.py foto    --campana ... --pieza ... --repo-id <id>          (foto del cliente tal cual, sin Higgsfield)
   python3 pr_pieza.py foto    --campana ... --pieza ... --referencia <id> --prompt "..."  (foto del cliente como referencia)
   python3 pr_pieza.py llenar  --campana ... --pieza ...      (escribe copia.json en los SLOT de la plantilla)
@@ -15,16 +15,25 @@ marca, la revisa con el Verificador y abre un PR en 5cero5-piezas. Nunca fusiona
                       revisar, abrir y revisar-pr igual (la ronda de Canva va en dos pasos: preparar y, tras importar, commit).
 
 Rutas: --trabajo /tmp/creativo (piezas en curso), --marca /tmp/marca (copia del repo de marca).
+Global: --fila <id de la página de Notion> (lo pone el harness en comandoPieza, desde la integración con Canva en la rama
+creativo): dueña de la foto; sin ella no hay Higgsfield, con ella una foto se retoma en otra sesión de la misma fila sin
+pagar otra.
 Variables: GITHUB_TOKEN (lo pone el harness; solo hacia api.github.com). HIGGSFIELD_API_KEY (solo para 'foto'; solo
 hacia api.higgsfield.ai; nunca hacia la URL firmada donde se sube una imagen). Opcionales: GH_PIEZAS_REPO
-(5cero5/5cero5-piezas), HF_ENDPOINT, HF_EDICION_ENDPOINT, GITHUB_API_BASE y HIGGSFIELD_API_BASE (solo pruebas).
+(5cero5/5cero5-piezas), HF_ENDPOINT y HF_EDICION_ENDPOINT (solo modelos de la lista cerrada de higgsfield.py),
+GITHUB_API_BASE y HIGGSFIELD_API_BASE (solo pruebas).
 
 Lo que se impone:
   - La copia la escribe la herramienta en los SLOT; el agente no edita el HTML a mano.
   - Foto: solo si la pieza se creó con --foto (el brief lo pide), una generación por pieza y dos por sesión como máximo
-    (FOTOS_POR_SESION la puede bajar, nunca subir). Cada generación o edición que termina se cobra del saldo de Higgsfield.
-  - Retención en Higgsfield: cada generación o edición va con Hf-Expires-After: 3600 (el mínimo) y, bajada la imagen,
-    se borra con DELETE /requests/{id}. Si el borrado falla, la pieza sigue y queda en pieza.json e informe.json.
+    (FOTOS_POR_SESION la puede bajar, nunca subir). Cada generación o edición que termina se cobra del saldo API de
+    Higgsfield. El núcleo (higgsfield.py) exige la política del cliente (higgsfield.json del repo de marca), estima con
+    el cuerpo exacto, reserva contra el tope agregado del cliente y congela intención e Idempotency-Key ANTES del POST en
+    el registro duradero (rama agente/higgsfield del repo de piezas). Otra sesión de la misma fila retoma esa operación.
+  - Retención en Higgsfield: cada generación o edición va con Hf-Expires-After: 3600 (el mínimo); bajada, validada y
+    guardada la copia propia en el registro, se borra con DELETE /requests/{id}. Un borrado fallido queda como limpieza
+    pendiente en el registro, pieza.json e informe.json. Los uploads (Editar, referencia:) viven hasta 7 días aparte.
+  - La proporción sale del marco real: --marco <ancho>x<alto> (el hueco de la imagen en Canva) o el .foto de la plantilla.
   - Fotos del cliente: solo las de fotos/fotos.json del repo de marca montado (el del cliente), autorizadas y con el uso
     que se pide ("directo" para --repo-id, "referencia_ia" para --referencia y además personas=false).
   - Ronda (revisar-pr): parte de la punta de la rama del PR, que tiene que estar abierto y sin fusionar; cambia solo las
@@ -39,42 +48,31 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import math
 import html
 import json
 import os
 import re
 import shutil
 import sys
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gh_pr import blob_sha, commit_en_rama, die, gh, lee_carpeta, repo_exclusivo, sube_carpeta  # noqa: E402
 import pieza_canva  # noqa: E402
+import higgsfield as hfn  # noqa: E402  núcleo Higgsfield (sin HTML ni Canva)
+from higgsfield import ASPECTOS, hf  # noqa: E402,F401  (hf: compatibilidad con pruebas y diagnósticos)
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 FORMATOS = ("post-4x5", "post-1x1", "historia-9x16")
 REPO = os.environ.get("GH_PIEZAS_REPO", "5cero5/5cero5-piezas")
-HF_API = os.environ.get("HIGGSFIELD_API_BASE", "https://api.higgsfield.ai")
-HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "/higgsfield-ai/soul/v2/standard")
-# Edición con instrucción e imagen de entrada (Editar en una ronda, y --referencia). Visto el 3 nov 2026 con /estimate (sin
-# generar): pide image_urls (lista de URLs públicas), 0.040 USD por edición; no hay modelo con máscara en el catálogo.
-HF_EDICION = os.environ.get("HF_EDICION_ENDPOINT", "/alibaba/qwen-image-3/edit")
+HF_API, HF_ENDPOINT = hfn.API, hfn.SOUL  # solo diagnóstico y pruebas (hf directo); el núcleo elige el modelo
 FOTOS_RONDA = ("Igual", "Editar", "Nueva")
-# Retención en Higgsfield: cada generación o edición pide que sus datos se guarden lo mínimo que acepta la API (3600 s; menos
-# responde 422; docs.higgsfield.ai, encabezados, visto el 4 nov 2026) y, ya bajada la imagen, se borran con DELETE /requests/{id}.
-HF_RETENCION_S = "3600"
+HF_RETENCION_S = hfn.RETENCION_S
 FOTOS_MAX = 2  # tope duro: ninguna variable lo sube
 FOTOS_POR_SESION = max(0, min(FOTOS_MAX, int(os.environ.get("FOTOS_POR_SESION", "").strip() or FOTOS_MAX)
                                  if os.environ.get("FOTOS_POR_SESION", "").strip().isdigit() or not os.environ.get("FOTOS_POR_SESION", "").strip()
                                  else 0))  # un valor raro no sube el tope: lo deja en 0
-EXT_FOTO = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
-# Proporciones que acepta Higgsfield Soul v2 (soul/v2/standard). Con otra responde 400 (pasó con 21:9 el 3 nov 2026).
-ASPECTOS = ("9:16", "16:9", "4:3", "3:4", "1:1", "2:3", "3:2")
+MIME_FOTO = {".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 # HF_ASPECTOS (opcional, separadas por coma) solo puede achicar la lista, nunca agregar una que v2 no acepte.
 ASPECTOS_USO = tuple(x for x in ASPECTOS if not os.environ.get("HF_ASPECTOS", "").strip()
                      or x in {y.strip() for y in os.environ["HF_ASPECTOS"].split(",")})
@@ -190,23 +188,7 @@ def cmd_nueva(a) -> None:
         print("  Luego genera la foto con 'foto' antes de 'revisar'.")
 
 
-# ------------------------------------------------------------------ foto (Higgsfield)
-def hf(method: str, url: str, body: dict | None = None, extra: dict | None = None) -> dict:
-    key = os.environ.get("HIGGSFIELD_API_KEY", "").strip()
-    if not key:
-        die("Falta HIGGSFIELD_API_KEY.")
-    if urlparse(url).netloc != urlparse(HF_API).netloc:
-        die(f"La API de Higgsfield pidió consultar otro host ({urlparse(url).netloc}): no se manda la llave ahí.")
-    req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"Authorization": f"Key {key}", "Accept": "application/json", "User-Agent": "5cero5-creativo",
-                                          **({"Content-Type": "application/json"} if body is not None else {}), **(extra or {})})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        die(f"Higgsfield respondió {e.code} a {method} {urlparse(url).path}: {e.read()[:300].decode('utf-8', 'ignore')}")
-
-
+# ------------------------------------------------------------------ foto (Higgsfield: núcleo en higgsfield.py)
 def aspecto_de(html_txt: str, permitidos: tuple = ASPECTOS) -> str | None:
     """La proporción permitida más cercana al marco .foto de la plantilla (ancho/alto en px del CSS). La foto llega con una
     forma parecida a su marco y object-fit: cover recorta el resto (21:9 → 16:9, 4:5 → 3:4). Sin marco legible: 4:3.
@@ -216,8 +198,21 @@ def aspecto_de(html_txt: str, permitidos: tuple = ASPECTOS) -> str | None:
     m = re.search(r"\.foto\s*\{[^}]*?width:\s*(\d+)px;[^}]*?height:\s*(\d+)px", html_txt)
     if not m or not int(m.group(2)):
         return "4:3" if "4:3" in permitidos else permitidos[0]
-    r = math.log(int(m.group(1)) / int(m.group(2)))
-    return min(permitidos, key=lambda x: abs(math.log(int(x.split(':')[0]) / int(x.split(':')[1])) - r))
+    return hfn.aspecto_para(int(m.group(1)), int(m.group(2)), permitidos)
+
+
+def aspecto_pieza(a, d: Path) -> str | None:
+    """--marco <ancho>x<alto> (el hueco real de la imagen en el diseño de Canva) o, sin él, el .foto de la plantilla HTML.
+    Sin ninguno de los dos no se adivina: None."""
+    if getattr(a, "marco", None):
+        m = re.fullmatch(r"(\d{2,5})x(\d{2,5})", a.marco.strip())
+        if not m:
+            die(f"--marco va como <ancho>x<alto> en px (por ejemplo 1080x800), no {a.marco!r}.")
+        return hfn.aspecto_para(int(m.group(1)), int(m.group(2)), ASPECTOS_USO)
+    p = d / "plantillas" / "pieza.html"
+    if not p.exists():
+        die("Esta pieza no tiene plantilla HTML: pasa --marco <ancho>x<alto> con el hueco real de la imagen en el diseño.")
+    return aspecto_de(p.read_text(encoding="utf-8"), ASPECTOS_USO)
 
 
 def contador_fotos(a) -> tuple[Path, int]:
@@ -268,96 +263,46 @@ def pon_foto(d: Path, datos: bytes, ext: str) -> Path:
     """Deja la foto como fotos/fondo.<ext> (borra la anterior) y apunta la plantilla a ella."""
     for viejo in (d / "fotos").glob("fondo.*"):
         viejo.unlink()
+    (d / "fotos").mkdir(exist_ok=True)
     destino = d / "fotos" / f"fondo.{ext}"
     destino.write_bytes(datos)
     p = d / "plantillas" / "pieza.html"
+    if not p.exists():  # pieza sin plantilla HTML (Canva): solo el archivo; la composición la hace quien la importa
+        return destino
     h = p.read_text(encoding="utf-8")
     p.write_text(re.sub(r'(<img class="foto" id="foto" src=")\.\./fotos/[\w.-]+(")', rf"\g<1>../fotos/{destino.name}\g<2>", h), encoding="utf-8")
     return destino
 
 
-def sube_a_higgsfield(datos: bytes, tipo: str) -> str:
-    """Sube una imagen para usarla de entrada: URL firmada de Higgsfield y PUT del archivo SIN la llave (otro host).
-    Devuelve la URL pública que se pasa en image_urls."""
-    r = hf("POST", HF_API + "/files/generate-upload-url", {"content_type": tipo})
-    subir, publica = r.get("upload_url"), r.get("public_url")
-    prueba_local = HF_API.startswith("http://127.0.0.1")
-    if not subir or not publica or (urlparse(subir).scheme != "https" and not prueba_local):
-        die(f"Higgsfield no regresó upload_url y public_url: {json.dumps(r)[:200]}")
-    enc = {k: v for k, v in (r.get("upload_headers") or {}).items() if k.lower() != "authorization"}
-    try:
-        with urllib.request.urlopen(urllib.request.Request(subir, data=datos, method="PUT", headers={"User-Agent": "5cero5-creativo", **enc}), timeout=120):
-            pass
-    except Exception as e:  # noqa: BLE001
-        die(f"No pude subir la imagen a {urlparse(subir).netloc} ({e}). Si es un host nuevo, hay que agregarlo a la red del entorno.")
-    return publica
+def contexto_hf(a) -> dict:
+    return {"repo": a.repo or REPO, "exclusivo": bool(a.repo), "marca": Path(a.marca)}
 
 
-def borra_en_higgsfield(rid: str) -> dict:
-    """DELETE /requests/{id}: borra en Higgsfield la entrada, la salida, el prompt y los parámetros de la petición. Si falla,
-    no tumba la pieza: el resultado queda en pieza.json → higgsfield.borrado (y de ahí en el informe del harness)."""
-    key = os.environ.get("HIGGSFIELD_API_KEY", "").strip()
-    req = urllib.request.Request(f"{HF_API}/requests/{rid}", method="DELETE",
-                                 headers={"Authorization": f"Key {key}", "Accept": "application/json", "User-Agent": "5cero5-creativo"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            estado = (json.loads(r.read() or b"{}") or {}).get("status")
-        return {"ok": True, "estado": estado or "deleted"}
-    except urllib.error.HTTPError as e:
-        return {"ok": False, "error": f"HTTP {e.code}: {e.read()[:150].decode('utf-8', 'ignore')}"}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+def op_id(a, etapa: str) -> tuple[str, str | None]:
+    """(pieza + etapa, fila de Notion normalizada). Sin --fila el núcleo no pide nada."""
+    return hfn.id_operacion(fila=getattr(a, "fila", None), campana=a.campana, pieza=a.pieza, etapa=etapa)
 
 
-def pide_a_higgsfield(d: Path, meta: dict, endpoint: str, body: dict, prompt: str, extra: dict) -> None:
-    """Una solicitud (generar o editar), espera a que termine y deja la foto en fotos/. Se registra en pieza.json → higgsfield
-    con el blob_sha del archivo (el harness lo compara con el PR). La anterior, si había, queda en fotos_anteriores."""
-    r = hf("POST", HF_API + endpoint, body, {"Hf-Expires-After": HF_RETENCION_S})
-    rid, status_url = r.get("request_id"), r.get("status_url")
-    if not rid or not status_url:
-        die(f"Higgsfield no regresó request_id y status_url: {json.dumps(r)[:200]}")
+def pide_foto(a, d: Path, meta: dict, op: "hfn.Operacion") -> None:
+    """Una operación del núcleo (nueva o retomada) y la foto queda en fotos/, prompt.txt y pieza.json → higgsfield.
+    La anterior, si había, queda en fotos_anteriores. El tope por sesión se cuenta solo al reservar una intención nueva."""
+    def cuenta():
+        contador, usadas = contador_fotos(a)
+        contador.write_text(str(usadas + 1))
+    contador_fotos(a)  # sin cupo en la sesión no se toca el registro ni Higgsfield
+    r = hfn.opera(op=op, al_reservar=cuenta, **contexto_hf(a))
     if meta.get("higgsfield"):
         meta.setdefault("fotos_anteriores", []).append(meta["higgsfield"])
-    meta["higgsfield"] = {"request_id": rid, "endpoint": endpoint, **extra, "estado": r.get("status", "queued")}
-    escribe_json(d / "pieza.json", meta)
-    (d / "prompt.txt").write_text(prompt + "\n", encoding="utf-8")
-    estado = r
-    for _ in range(int(os.environ.get("HF_INTENTOS", "40"))):
-        if estado.get("status") in ("completed", "failed", "nsfw", "canceled"):
-            break
-        time.sleep(float(os.environ.get("HF_ESPERA_S", "5")))
-        estado = hf("GET", status_url)
-    meta["higgsfield"]["estado"] = estado.get("status")
-    escribe_json(d / "pieza.json", meta)
-    if estado.get("status") != "completed":
-        if estado.get("status") in ("failed", "nsfw", "canceled"):  # terminada: no hay por qué dejar sus datos
-            meta["higgsfield"]["borrado"] = borra_en_higgsfield(rid)
-            escribe_json(d / "pieza.json", meta)
-        die(f"La foto terminó en '{estado.get('status')}' (request {rid}). No se pide otra: termina y explícalo.")
-    url = ((estado.get("images") or [{}])[0] or {}).get("url")
-    prueba_local = HF_API.startswith("http://127.0.0.1")  # solo las pruebas sirven la imagen sin https
-    if not url or (urlparse(url).scheme != "https" and not prueba_local):
-        die(f"Higgsfield no regresó la URL de la imagen (request {rid}).")
-    # Descarga SIN la llave: el archivo vive en otro host.
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "5cero5-creativo"}), timeout=120) as resp:
-            tipo = resp.headers.get_content_type()
-            datos = resp.read(15 * 1024 * 1024 + 1)
-    except Exception as e:  # noqa: BLE001
-        die(f"No pude bajar la imagen de {urlparse(url).netloc} ({e}). Si es un host nuevo, hay que agregarlo a la red del entorno.")
-    if tipo not in EXT_FOTO or len(datos) < 10_000 or len(datos) > 15 * 1024 * 1024:
-        die(f"Lo que bajó no es una foto utilizable ({tipo}, {len(datos)} bytes).")
-    destino = pon_foto(d, datos, EXT_FOTO[tipo])
-    meta["higgsfield"].update(imagen_host=urlparse(url).netloc, sha1=hashlib.sha1(datos).hexdigest(), bytes=len(datos),
-                              blob_sha=blob_sha(datos))  # el harness lo compara con fotos/ del PR al cerrar
+    destino = pon_foto(d, r.datos, r.ext)
+    meta["higgsfield"] = r.meta
     meta.pop("foto_cliente", None)
     escribe_json(d / "pieza.json", meta)
-    # Ya bajada y con su blob_sha guardado: se borra en Higgsfield. Un fallo no tumba la pieza; queda registrado.
-    meta["higgsfield"]["borrado"] = borra_en_higgsfield(rid)
-    escribe_json(d / "pieza.json", meta)
-    if not meta["higgsfield"]["borrado"]["ok"]:
-        print(f"⚠ No se pudo borrar la petición {rid} en Higgsfield ({meta['higgsfield']['borrado']['error']}). Se borra sola en 1 hora.")
-    print(f"✓ Foto de Higgsfield guardada ({destino.name}, {len(datos) // 1024} KB, request {rid}). Prompt en prompt.txt.")
+    (d / "prompt.txt").write_text(r.prompt + "\n", encoding="utf-8")
+    hecho = "retomada de otra corrida" if r.reanudada else "nueva"
+    print(f"✓ Foto de Higgsfield guardada ({destino.name}, {len(r.datos) // 1024} KB, {r.meta['ancho']}x{r.meta['alto']}, "
+          f"request {r.meta['request_id']}, {hecho}; estimado {r.meta['estimado_usd']} USD). Prompt en prompt.txt.")
+    if r.prompt != op.prompt:
+        print("· Se usó el prompt registrado de esa intención (no se pidió otra foto con el prompt nuevo).")
 
 
 ALT_FOTO = re.compile(r'(<img class="foto" id="foto" src="[^"]*" alt=")([^"]*)(")')
@@ -408,21 +353,18 @@ def cmd_foto(a) -> None:
     if not a.prompt:
         die("Falta --prompt.")
     prompt = revisa_prompt(a.prompt)
+    oid, fila = op_id(a, "original")
     if a.referencia:
         f, archivo = foto_del_cliente(Path(a.marca), a.referencia, "referencia_ia")
-        contador, usadas = contador_fotos(a)
-        contador.write_text(str(usadas + 1))  # se cuenta ANTES de pedir
-        tipo = {".png": "image/png", ".webp": "image/webp"}.get(archivo.suffix.lower(), "image/jpeg")
-        url = sube_a_higgsfield(archivo.read_bytes(), tipo)
-        return pide_a_higgsfield(d, meta, HF_EDICION, {"prompt": prompt, "image_urls": [url]}, prompt, {"referencia": f["id"]})
-    # La proporción se elige y se valida ANTES de contar y de llamar: con una que Soul v2 no acepta responde 400.
-    aspecto = aspecto_de((d / "plantillas" / "pieza.html").read_text(encoding="utf-8"), ASPECTOS_USO)
+        return pide_foto(a, d, meta, hfn.Operacion(
+            id=oid, campana=a.campana, pieza=a.pieza, tipo="editar", prompt=prompt, entrada=archivo.read_bytes(),
+            entrada_mime=MIME_FOTO.get(archivo.suffix.lower()), meta_extra={"referencia": f["id"]}, fila=fila))
+    # La proporción se elige y se valida ANTES de reservar y de llamar: con una que Soul v2 no acepta responde 400.
+    aspecto = aspecto_pieza(a, d)
     if aspecto not in ASPECTOS:
         die(f"No hay una proporción válida para Higgsfield (permitidas: {', '.join(ASPECTOS_USO) or 'ninguna'}). No se pidió la foto.")
-    # Se cuenta ANTES de pedir: si algo se cae a medias, no hay segunda generación por error.
-    contador, usadas = contador_fotos(a)
-    contador.write_text(str(usadas + 1))
-    pide_a_higgsfield(d, meta, HF_ENDPOINT, {"prompt": prompt, "aspect_ratio": aspecto}, prompt, {"aspect_ratio": aspecto})
+    pide_foto(a, d, meta, hfn.Operacion(id=oid, campana=a.campana, pieza=a.pieza, tipo="generar", prompt=prompt,
+                                        aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, fila=fila))
 
 
 # ------------------------------------------------------------------ llenar
@@ -679,21 +621,21 @@ def cmd_revisar_pr(a) -> None:
             cliente = meta.get("foto_cliente")
             if cliente:  # editar con IA una foto del cliente es usarla como referencia: tiene que permitirlo y no tener personas
                 foto_del_cliente(Path(a.marca), cliente.get("id", ""), "referencia_ia")
-            contador, usadas = contador_fotos(a)
-            contador.write_text(str(usadas + 1))
-            tipo = {".png": "image/png", ".webp": "image/webp"}.get(actual.suffix.lower(), "image/jpeg")
-            url = sube_a_higgsfield(actual.read_bytes(), tipo)
-            pide_a_higgsfield(d, meta, HF_EDICION, {"prompt": instr, "image_urls": [url]}, instr, {"edita": ronda.get("foto_antes")})
+            oid, fila = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Editar")
+            pide_foto(a, d, meta, hfn.Operacion(
+                id=oid, campana=a.campana, pieza=a.pieza, tipo="editar", prompt=instr, entrada=actual.read_bytes(),
+                entrada_mime=MIME_FOTO.get(actual.suffix.lower()), fila=fila,
+                meta_extra={"edita": ronda.get("foto_antes"), **({"referencia": cliente.get("id")} if cliente else {})}))
             if cliente:
                 alt_de_cliente(d, f"{cliente.get('descripcion') or cliente.get('id')} (editada con IA)", cliente.get("personas"))
         else:
             prompt = revisa_prompt(a.prompt)
-            aspecto = aspecto_de((d / "plantillas" / "pieza.html").read_text(encoding="utf-8"), ASPECTOS_USO)
+            aspecto = aspecto_pieza(a, d)
             if aspecto not in ASPECTOS:
                 die("No hay una proporción válida para Higgsfield. No se pidió la foto.")
-            contador, usadas = contador_fotos(a)
-            contador.write_text(str(usadas + 1))
-            pide_a_higgsfield(d, meta, HF_ENDPOINT, {"prompt": prompt, "aspect_ratio": aspecto}, prompt, {"aspect_ratio": aspecto})
+            oid, fila = op_id(a, f"ronda-pr{a.pr}-{ronda['head']}-Nueva")
+            pide_foto(a, d, meta, hfn.Operacion(id=oid, campana=a.campana, pieza=a.pieza, tipo="generar", prompt=prompt,
+                                                aspecto=aspecto, meta_extra={"aspect_ratio": aspecto}, fila=fila))
             m = ALT_FOTO.search((Path(a.marca) / meta["plantilla"]).read_text(encoding="utf-8"))
             if m:  # foto nueva de IA: el alt vuelve a ser el de la plantilla
                 pon_alt(d, m.group(2))
@@ -724,7 +666,7 @@ def main() -> None:
     ap.add_argument("--repo", help="org/repo de piezas del cliente; con él, el token tiene que ser exclusivo de ese repo")
     ap.add_argument("--trabajo", default="/tmp/creativo")
     ap.add_argument("--marca", default="/tmp/marca")
-    ap.add_argument("--fila", help="id de la página de Notion de la fila que se despacha (lo pone el harness; retomar una foto sin pagar otra)")
+    ap.add_argument("--fila", help="id de la página de Notion de la fila que se despacha (lo pone el harness): retomar una foto en otra sesión sin pagar otra")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     def sub(nombre, f):
@@ -747,6 +689,7 @@ def main() -> None:
     fo.add_argument("--prompt")
     fo.add_argument("--repo-id", help="foto del cliente (fotos/fotos.json del repo de marca), tal cual y sin Higgsfield")
     fo.add_argument("--referencia", help="foto del cliente como referencia para el modelo de edición (con --prompt)")
+    fo.add_argument("--marco", help="<ancho>x<alto> del hueco real de la imagen en el diseño (Canva); sin él, el .foto de la plantilla")
     sub("llenar", cmd_llenar)
     sub("revisar", cmd_revisar)
     b = sub("abrir", cmd_abrir)
@@ -758,6 +701,7 @@ def main() -> None:
     rp.add_argument("--cambios", help="JSON con solo las claves de copia que cambian")
     rp.add_argument("--prompt")
     rp.add_argument("--titulo")
+    rp.add_argument("--marco", help="<ancho>x<alto> del hueco real de la imagen (solo Nueva en una pieza sin plantilla HTML)")
     a = ap.parse_args()
     a.f(a)
 

@@ -15,7 +15,7 @@ Preparación (una vez por sesión):
 Qué pieza haces:
 - Formato: el que diga el brief o el título del trabajo. "Post 4:5" → post-4x5; "Post 1:1" → post-1x1; "Historia 9:16" → historia-9x16. Si no está claro o es otro (video, carrusel, anuncio horizontal), terminas sin PR y lo explicas.
 - Campaña y pieza: slugs cortos (minúsculas, números y guiones). Campaña: el que traiga el brief o uno corto del nombre de la campaña (por ejemplo poc-diagnostico). Pieza: formato y tema (por ejemplo post-agencia).
-- Foto: solo si el brief dice "Foto: sí", "Foto: repo:<id>" o "Foto: referencia:<id>". Si no lo dice, la pieza va sin foto.
+- Foto: solo si el brief dice "Foto: sí", "Foto: repo:<id>" o "Foto: referencia:<id>". Si dice "Foto: no" o no lo dice, la pieza va sin foto y no se llama a Higgsfield.
   - "Foto: repo:<id>": la foto del cliente tal cual, del repo de marca: pp foto --campana <c> --pieza <p> --repo-id <id>. Sin Higgsfield.
   - "Foto: referencia:<id>": la foto del cliente como referencia para el modelo de edición: pp foto --campana <c> --pieza <p> --referencia <id> --prompt "<escena>". Cuenta como foto de la sesión.
   - Solo ids de /workspace/marca/fotos/fotos.json. pr_pieza.py se niega si el id no existe, no está autorizado, su uso no lo permite o, como referencia, tiene personas: entonces terminas sin PR y lo explicas.
@@ -24,6 +24,8 @@ Pasos:
 1. pp nueva --campana <c> --pieza <p> --formato <formato> [--foto]
 2. Solo con foto: pp foto --campana <c> --pieza <p> --prompt "<escena>"
    El prompt describe una escena de trabajo real de una pyme de Monterrey (mostrador, bodega, oficina chica, teléfono con WhatsApp), luz natural, contraste alto, encuadre horizontal, y termina con "sin personas mirando a cámara, sin texto y sin logos". Nunca un cliente, un caso ni un testimonio. Una foto por pieza: si falla, no se repite; terminas sin PR y lo explicas.
+   Higgsfield aporta solo la imagen: el texto y el logo los pone la plantilla (o el diseño), nunca la foto. Si la pieza no tiene plantilla HTML, el comando lleva --marco <ancho>x<alto> con el hueco real de la imagen en el diseño.
+   pr_pieza.py revisa la política de Higgsfield de la marca, aparta la cota contra el tope del cliente, estima el costo exacto y registra la solicitud antes de enviarla. Si dice que retomó una operación registrada, esa es la foto de la pieza (aunque su prompt sea el registrado y no el tuyo). Si se detiene por política, tope, estimate, resultado incierto o "sigue en proceso", terminas sin PR y explicas el motivo tal cual: nunca repites con otro prompt, otra pieza u otra ronda para conseguir otra foto.
 3. Escribe /tmp/creativo/<c>/<p>/copia.json con exactamente estas claves:
    {"kicker": "...", "titular": ["línea 1", "línea 2", "última línea"], "subtitulo": "...", "nota": "..."}
    - kicker: corto, en mayúsculas lo pone la plantilla. Puede ir vacío.

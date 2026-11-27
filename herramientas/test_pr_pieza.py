@@ -38,12 +38,12 @@ class GH:
 
     def nuevo(self, p):
         self.n += 1
-        return f"{p}{self.n}"
+        return hashlib.sha1(f"{p}{self.n}".encode()).hexdigest() if p == "c" else f"{p}{self.n}"  # commits: 40 hex
 
 
 G = GH()
 HF = {"posts": [], "status_gets": 0, "auth_imagen": [], "final": "completed", "puts": [], "imagen": None,
-      "expira": [], "deletes": [], "delete_code": 200}
+      "expira": [], "deletes": [], "delete_code": 200, "estimates": [], "claves": []}
 IMAGEN = None
 
 
@@ -57,7 +57,7 @@ class Base(BaseHTTPRequestHandler):
 
 class HGit(Base):
     def ok(self):
-        if self.headers.get("Authorization") != "Bearer ghs_prueba":
+        if self.headers.get("Authorization") not in ("Bearer ghs_prueba", "Bearer gho_prueba_humano"):
             self.send({"message": "Bad credentials"}, 401); return False
         return True
 
@@ -80,6 +80,12 @@ class HGit(Base):
                               "head": {"ref": pr["head"], "sha": head, "repo": {"full_name": REPO}},
                               "html_url": f"https://github.com/{REPO}/pull/{m.group(1)}"})
         if m := re.fullmatch(re.escape(pre) + r"commits/(\w+)", p): return self.send({"sha": m.group(1), "tree": {"sha": G.commits[m.group(1)]["tree"]}})
+        if m := re.fullmatch(rf"/repos/{re.escape(REPO)}/compare/(\w+)\.\.\.(\w+)", p):
+            vistos, cola = set(), [m.group(2)]
+            while cola:
+                c = cola.pop()
+                if c not in vistos: vistos.add(c); cola += G.commits[c]["parents"]
+            return self.send({"status": "identical" if m.group(1) == m.group(2) else "ahead" if m.group(1) in vistos else "diverged", "behind_by": 0})
         if m := re.fullmatch(re.escape(pre) + r"trees/(\w+)", p): return self.send({"sha": m.group(1), "tree": G.trees[m.group(1)]})
         self.send({}, 404)
 
@@ -92,7 +98,7 @@ class HGit(Base):
         if p.endswith("/git/blobs"):
             b = base64.b64decode(body["content"]); s = blob_sha(b); G.blobs[s] = b; return self.send({"sha": s}, 201)
         if p.endswith("/git/trees"):
-            base = {e["path"]: e for e in G.trees[body["base_tree"]]}
+            base = {e["path"]: e for e in G.trees[body["base_tree"]]} if body.get("base_tree") else {}
             for e in body["tree"]:
                 if e["sha"] is None: base.pop(e["path"], None)
                 else: base[e["path"]] = e
@@ -100,6 +106,7 @@ class HGit(Base):
         if p.endswith("/git/commits"):
             c = G.nuevo("c"); G.commits[c] = {"tree": body["tree"], "parents": body["parents"]}; return self.send({"sha": c}, 201)
         if p.endswith("/git/refs"):
+            if body["ref"] in G.refs: return self.send({"message": "Reference already exists"}, 422)
             G.refs[body["ref"]] = body["sha"]; return self.send({"ref": body["ref"]}, 201)
         if p.endswith("/pulls"):
             n = len(G.prs) + 1; G.prs.append(body); return self.send({"number": n, "html_url": f"https://github.com/{REPO}/pull/{n}"}, 201)
@@ -121,9 +128,13 @@ class HHiggs(Base):
     def do_POST(self):
         if self.headers.get("Authorization") != "Key hf_prueba": return self.send({"detail": "no auth"}, 401)
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        if self.path.startswith("/estimate/"):  # estimate: no genera ni cobra
+            HF["estimates"].append((self.path, body))
+            return self.send({"usd": "0.040" if "qwen" in self.path else "0.094"})
         HF["posts"].append((self.path, body))
         if self.path != "/files/generate-upload-url":
             HF["expira"].append(self.headers.get("Hf-Expires-After"))
+            HF["claves"].append(self.headers.get("Idempotency-Key"))
         if self.path == "/files/generate-upload-url":  # URL firmada: otro host, sin la llave
             return self.send({"upload_url": f"{URL_IMG}/subir/x", "public_url": "https://cdn.prueba/x.jpg", "content_type": body["content_type"],
                               "upload_headers": {"Content-Type": body["content_type"], "x-amz-tagging": "retention=temporary"}})
@@ -165,10 +176,14 @@ API_GH, API_HF, URL_IMG = servidor(HGit), servidor(HHiggs), servidor(HImagen)
 TMP = Path(tempfile.mkdtemp())
 MARCA_COPIA, TRABAJO = TMP / "marca", TMP / "creativo"
 shutil.copytree(MARCA, MARCA_COPIA, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+POLITICA = {"version": 1, "permitido": True, "tope_usd": "5.00", "max_usd_por_operacion": "0.25", "generar": True,
+            "editar": True, "referencias_ia": True, "acepta_retencion_uploads_s": 604800}
+(MARCA_COPIA / "higgsfield.json").write_text(json.dumps(POLITICA))
 ENV = {**os.environ, "GITHUB_API_BASE": API_GH, "GITHUB_TOKEN": "ghs_prueba", "HIGGSFIELD_API_BASE": API_HF,
        "HIGGSFIELD_API_KEY": "hf_prueba", "HF_ESPERA_S": "0.05",
        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
-TOOL = [sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(TRABAJO), "--marca", str(MARCA_COPIA)]
+FILA = "2b8f0c1e-0d6a-4c39-9b0e-6a1f2e3d4c5b"  # id de la fila de Notion que pone el harness
+TOOL = [sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(TRABAJO), "--marca", str(MARCA_COPIA), "--fila", FILA]
 BIEN = {"kicker": "Sin coordinar a ocho proveedores", "titular": ["Ocho", "proveedores,", "no."],
         "subtitulo": "Un solo equipo arma tus citas, pedidos y visitas.", "nota": "Desde $20,000 al mes + IVA. Licencias incluidas."}
 PROMPT = "Fotografía editorial del mostrador de una papelería de barrio en Monterrey, luz natural, encuadre horizontal, sin personas, sin texto y sin logos"
@@ -266,7 +281,17 @@ def main():
     check("el PNG del PR es el del informe (blob sha)", out.get("png_blob_sha") in G.blobs and blob_sha(G.blobs[out["png_blob_sha"]]) == out["png_blob_sha"], o)
     check("main no se movió y nada intentó fusionar", G.refs["refs/heads/main"] == "c0" and not any("merge" in p for _, p in G.llamadas), str(G.llamadas[-5:]))
 
-    # Historia con foto de Higgsfield
+    # Historia con foto de Higgsfield. El registro del cliente lo crea una persona una vez (higgsfield.py iniciar).
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "estado", "--repo", REPO], capture_output=True, text=True, env=ENV)
+    check("sin registro de Higgsfield, estado lo dice y no lo crea", r.returncode != 0 and "iniciar" in r.stdout + r.stderr
+          and "refs/heads/agente/higgsfield" not in G.refs, r.stdout + r.stderr)
+    r = subprocess.run([sys.executable, str(HERE / "higgsfield.py"), "iniciar", "--repo", REPO], capture_output=True, text=True,
+                       env={**ENV, "GITHUB_TOKEN": "gho_prueba_humano"})  # una persona, no la sesión
+    check("iniciar crea el registro vacío en agente/higgsfield sin tocar main", r.returncode == 0 and "refs/heads/agente/higgsfield" in G.refs
+          and G.refs["refs/heads/main"] == "c0", r.stdout + r.stderr)
+    pol = json.loads((MARCA_COPIA / "higgsfield.json").read_text())
+    pol["registro_raiz"] = json.loads(r.stdout.strip().splitlines()[-1])["registro_raiz"]  # la persona lo anota en la marca
+    (MARCA_COPIA / "higgsfield.json").write_text(json.dumps(pol))
     c, o = corre("nueva", "--campana", "poc", "--pieza", "historia-a", "--formato", "historia-9x16", "--foto")
     d2 = dir_("poc", "historia-a")
     check("nueva con --foto usa la plantilla con foto", c == 0 and 'class="foto"' in (d2 / "plantillas/pieza.html").read_text(), o)
@@ -282,9 +307,22 @@ def main():
     check("foto: una sola solicitud a Higgsfield con la llave en el encabezado", c == 0 and len(HF["posts"]) == 1
           and HF["posts"][0] == ("/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}), o)
     check("la imagen se baja SIN la llave (otro host)", HF["auth_imagen"] == [None], str(HF["auth_imagen"]))
+    borr = meta["higgsfield"].get("borrado") or {}
     check("retención: la generación va con Hf-Expires-After: 3600 y, bajada la imagen, se borra con DELETE /requests/{id}",
-          HF["expira"] == ["3600"] and HF["deletes"] == ["/requests/req-1"] and meta["higgsfield"].get("borrado") == {"ok": True, "estado": "deleted"},
-          f"{HF['expira']} {HF['deletes']} {meta['higgsfield'].get('borrado')}")
+          HF["expira"] == ["3600"] and HF["deletes"] == ["/requests/req-1"] and borr.get("ok") is True and borr.get("estado") == "deleted",
+          f"{HF['expira']} {HF['deletes']} {borr}")
+    reg_head = G.refs.get("refs/heads/agente/higgsfield")
+    reg_arbol = {e["path"]: e["sha"] for e in G.trees[G.commits[reg_head]["tree"]]} if reg_head else {}
+    reg = json.loads(G.blobs[reg_arbol["higgsfield/registro.json"]]) if "higgsfield/registro.json" in reg_arbol else {}
+    ent = (reg.get("entradas") or [{}])[-1]
+    check("estimate con el cuerpo exacto y la Idempotency-Key congelada en el registro ANTES del POST",
+          HF["estimates"] == [("/estimate/higgsfield-ai/soul/v2/standard", {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST})]
+          and HF["claves"] == [ent.get("idempotency_key")] and ent.get("estado") == "completed" and ent.get("estimado_usd") == "0.094"
+          and ent.get("cuerpo") == {"prompt": PROMPT, "aspect_ratio": ASPECTO_HIST}, json.dumps(reg)[:800])
+    check("copia propia de la foto en el registro (sha256) y pieza.json con sha256, mime y dimensiones",
+          reg_arbol.get(f"higgsfield/archivos/{hashlib.sha256(IMAGEN).hexdigest()}.jpg") == blob_sha(IMAGEN)
+          and meta["higgsfield"].get("sha256") == hashlib.sha256(IMAGEN).hexdigest() and meta["higgsfield"].get("mime") == "image/jpeg"
+          and (meta["higgsfield"].get("ancho"), meta["higgsfield"].get("alto")) == (1400, 700), json.dumps(meta["higgsfield"]))
     check("foto guarda fondo.jpg, prompt.txt y el request en pieza.json", (d2 / "fotos/fondo.jpg").read_bytes() == IMAGEN
           and (d2 / "prompt.txt").read_text().strip() == PROMPT and meta["higgsfield"]["request_id"] == "req-1"
           and meta["higgsfield"]["estado"] == "completed" and meta["higgsfield"].get("blob_sha") == blob_sha(IMAGEN), json.dumps(meta))
@@ -307,6 +345,21 @@ def main():
     check("sin proporción válida se detiene SIN llamar a Higgsfield ni contar la foto", c != 0 and "No hay una proporción válida" in o
           and len(HF["posts"]) == n0 and (cont.read_text() if cont.exists() else "") == antes, o)
     shutil.rmtree(dir_("poc", "historia-z"))
+    corre("nueva", "--campana", "poc", "--pieza", "historia-sin-politica", "--formato", "historia-9x16", "--foto")
+    (MARCA_COPIA / "higgsfield.json").rename(TMP / "politica.json")
+    n0, e0 = len(HF["posts"]), len(HF["estimates"])
+    c, o = corre("foto", "--campana", "poc", "--pieza", "historia-sin-politica", "--prompt", PROMPT)
+    (TMP / "politica.json").rename(MARCA_COPIA / "higgsfield.json")
+    check("sin higgsfield.json en el repo de marca no se llama a Higgsfield ni se cuenta la foto", c != 0 and "higgsfield.json" in o
+          and len(HF["posts"]) == n0 and len(HF["estimates"]) == e0 and (cont.read_text() if cont.exists() else "") == antes, o)
+    shutil.rmtree(dir_("poc", "historia-sin-politica"))
+    corre("nueva", "--campana", "poc", "--pieza", "historia-sin-fila", "--formato", "historia-9x16", "--foto")
+    sin_fila = [x for x in TOOL if x not in ("--fila", FILA)]
+    r = subprocess.run(sin_fila + ["foto", "--campana", "poc", "--pieza", "historia-sin-fila", "--prompt", PROMPT],
+                       capture_output=True, text=True, env=ENV, timeout=120)
+    check("sin --fila (la pone el harness) no se llama a Higgsfield ni se cuenta la foto", r.returncode != 0 and "--fila" in r.stdout
+          and len(HF["posts"]) == n0 and len(HF["estimates"]) == e0 and (cont.read_text() if cont.exists() else "") == antes, r.stdout + r.stderr)
+    shutil.rmtree(dir_("poc", "historia-sin-fila"))
     c, o = corre("foto", "--campana", "poc", "--pieza", "historia-a", "--prompt", PROMPT)
     check("una sola foto por pieza", c != 0 and "una por pieza" in o and len(HF["posts"]) == 1, o)
     copia("poc", "historia-a", {**BIEN, "titular": ["Ocho", "proveedores,", "no."]})
@@ -361,7 +414,7 @@ def imagen(semilla):
 def fotos_del_cliente_y_rondas():
     """Fotos del repo de marca (repo: y referencia:), nota opcional y rondas sobre el mismo PR (Igual, Editar, fusionado)."""
     trabajo = TMP / "creativo2"  # sesión aparte: su propio tope de fotos
-    tool = lambda *a, env=None: subprocess.run([sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(trabajo), "--marca", str(MARCA_COPIA)] + list(a),
+    tool = lambda *a, env=None: subprocess.run([sys.executable, str(HERE / "pr_pieza.py"), "--trabajo", str(trabajo), "--marca", str(MARCA_COPIA), "--fila", FILA] + list(a),
                                                capture_output=True, text=True, env=env or ENV, timeout=300)
     def corre2(*a):
         r = tool(*a); return r.returncode, r.stdout + r.stderr
