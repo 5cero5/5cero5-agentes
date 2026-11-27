@@ -3,10 +3,11 @@
 //   - "Revisiones de cliente" (interna, nunca compartida con invitados): una fila = una revisión congelada de un
 //     entregable completo (todos sus artes y documentos). Ale la deja en "Lista para exponer"; este módulo es el ÚNICO
 //     escritor de Estado, Secuencia, Huella, Reemplaza a y Recibo.
-//   - "Decisiones del cliente": entrada por formulario no anónimo. Cada fila es un intento, no una decisión aceptada.
-//     El actor es created_by de la página (metadata del sistema que el invitado no edita) y tiene que estar en
-//     "Revisores del cliente" de la ficha de ESE cliente (distinto de Aprobadores, que despacha agentes). Una fila que
-//     editó otra persona después de enviarse (last_edited_by distinto) no se acepta: va a reconciliar.
+//   - "Decisiones · <cliente>": una base de entrada POR CLIENTE, dentro de la página privada de ese cliente (el invitado
+//     la hereda como "puede comentar": envía el formulario no anónimo pero no edita lo enviado). Cada fila es un intento.
+//     El actor es created_by (metadata del sistema) y tiene que estar en "Revisores del cliente" de la ficha; además el
+//     código tiene que ser de una revisión del MISMO cliente de la base donde llegó. Una fila que editó otra persona
+//     después de enviarse (last_edited_by distinto) no se acepta: va a reconciliar.
 // Reglas: aprobar exige la casilla de confirmación; pedir cambios, una descripción útil. Revisión reemplazada, retirada,
 // no expuesta o expuesta después del envío → Rechazada. Repetición → Duplicada. Decisiones opuestas → En conflicto (nadie
 // gana por escribir después; lo resuelve Ale). Manifiesto distinto al expuesto, cliente ambiguo o escritura
@@ -22,7 +23,7 @@ const TIPOS = ['Aprobar', 'Pedir cambios'];
 const ENTREGABLE = /^[a-z0-9][a-z0-9-]{0,60}$/;
 const CODIGO = /^\s*REVCLI[\s-]?(\d{1,6})\s*$/i;
 const PAGINA = /^https:\/\/(app\.notion\.com|www\.notion\.so|notion\.so)\//i;
-const INVISIBLES = /[­͏ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤⠀ㅤ﻿ﾠ]/g;
+const INVISIBLES = /[\u00AD\u034F\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2800\u3164\uFEFF\uFFA0]/g;
 const MAX_PAGINAS = 5;                           // 250 filas por consulta paginada y corrida
 const POR_LLEGADA = [{ timestamp: 'created_time', direction: 'ascending' }];
 
@@ -98,14 +99,16 @@ export function leeDecision(page) {
 export async function revisionCliente({ notion, c, ahora = Date.now(), reloj = Date.now }) {
   const rc = c.revisionCliente;
   if (!rc?.activa) return [];
-  const canary = new Set((rc.clientes || []).map(sinGuiones));
+  const fichas = (rc.clientes || []).filter(x => x?.ficha);
+  const canary = new Set(fichas.map(x => sinGuiones(x.ficha)));
   if (!canary.size) return [['revision_cliente', 'sin_clientes_canary']];
-  const ctx = { notion, c, rc, canary, iso: new Date(ahora).toISOString(), out: [], revisores: new Map(), porCodigo: new Map(),
+  const entradas = fichas.filter(x => x.decisiones).map(x => ({ ficha: x.ficha, ds: x.decisiones }));
+  const ctx = { notion, c, rc, canary, entradas, iso: new Date(ahora).toISOString(), out: [], revisores: new Map(), porCodigo: new Map(),
     previas: new Map(), expuestasAhora: new Map(), hasta: reloj() + (rc.msMax ?? 15000), reloj, escrituras: 0 };
   ctx.notion = { ...notion, update: (...a) => { ctx.escrituras++; return notion.update(...a); } };
   await compruebaHuellas(ctx);
-  await procesaDecisiones(ctx);
-  await exponeRevisiones(ctx);
+  await exponeRevisiones(ctx);    // primero: una revisión recién lista ya cuenta como vigente (y la anterior, reemplazada)
+  await procesaDecisiones(ctx);   // una decisión enviada antes de la exposición se rechaza con motivo (no estaba congelada)
   return ctx.out;
 }
 const sinTiempo = ctx => ctx.reloj() > ctx.hasta;
@@ -167,10 +170,10 @@ async function revisoresDe(ctx, clienteId) {
   return ctx.revisores.get(clienteId);
 }
 
-// Decisiones ya aceptadas (Aplicada o En conflicto) de una revisión, para detectar repeticiones.
-async function previasDe(ctx, revId) {
+// Decisiones ya aceptadas (Aplicada o En conflicto) de una revisión, en la base de entrada de su cliente.
+async function previasDe(ctx, revId, ds) {
   if (!ctx.previas.has(revId)) {
-    const filas = await todas(ctx, ctx.rc.decisiones, { property: 'Revisión', relation: { contains: revId } });
+    const filas = await todas(ctx, ds, { property: 'Revisión', relation: { contains: revId } });
     ctx.previas.set(revId, filas.map(leeDecision).filter(d => ['Aplicada', 'En conflicto'].includes(d.resultado)));
   }
   return ctx.previas.get(revId);
@@ -184,10 +187,13 @@ async function vigenteDe(ctx, rev) {
 }
 
 async function procesaDecisiones(ctx) {
-  const filas = await todas(ctx, ctx.rc.decisiones,
-    { or: [{ property: 'Resultado', select: { is_empty: true } }, { property: 'Resultado', select: { equals: 'Pendiente' } }] }, POR_LLEGADA);
-  const pendientes = filas.map(leeDecision)
-    .sort((a, b) => (Date.parse(a.creada) - Date.parse(b.creada)) || String(a.id).localeCompare(String(b.id)));
+  const pendientes = [];
+  for (const e of ctx.entradas) {
+    const filas = await todas(ctx, e.ds,
+      { or: [{ property: 'Resultado', select: { is_empty: true } }, { property: 'Resultado', select: { equals: 'Pendiente' } }] }, POR_LLEGADA);
+    pendientes.push(...filas.map(p => ({ ...leeDecision(p), clienteBase: e.ficha, dsBase: e.ds })));
+  }
+  pendientes.sort((a, b) => (Date.parse(a.creada) - Date.parse(b.creada)) || String(a.id).localeCompare(String(b.id)));
   let hechas = 0;
   for (const d of pendientes) {
     if (hechas >= (ctx.rc.maxDecisiones ?? 10) || sinTiempo(ctx)) { ctx.out.push(['decisiones', 'presupuesto_agotado']); break; }
@@ -213,9 +219,9 @@ async function procesaDecisiones(ctx) {
 async function decide(ctx, d) {
   const n = codigoDe(d.codigoTexto);
   const rev = n === null ? null : await revisionPorCodigo(ctx, n);
+  let cliente = null;
   if (rev && rev !== 'varias') {
-    const cliente = clienteCanary(ctx, rev);
-    if (!cliente) return 'fuera_del_canary';                     // intacta: se procesa cuando ese cliente se habilite
+    cliente = clienteCanary(ctx, rev);
     if (cliente === 'ambiguo') return cierra(ctx, d, { rev, resultado: 'Pendiente de reconciliar', motivo: `${cod(n)} no tiene exactamente una ficha de cliente` });
   }
   if (d.editor && d.actor && sinGuiones(d.editor) !== sinGuiones(d.actor)) {
@@ -225,6 +231,10 @@ async function decide(ctx, d) {
   if (n === null) return cierra(ctx, d, { resultado: 'Rechazada', motivo: 'Código de revisión ilegible: escríbelo como aparece en la página (por ejemplo REVCLI-3)' });
   if (!rev) return cierra(ctx, d, { resultado: 'Rechazada', motivo: `No existe la revisión ${cod(n)}` });
   if (rev === 'varias') return cierra(ctx, d, { resultado: 'Pendiente de reconciliar', motivo: `Hay más de una revisión con el código ${cod(n)}` });
+  // Binding: la base de entrada es de UN cliente; el código tiene que ser de una revisión de ese mismo cliente.
+  if (!cliente || sinGuiones(cliente) !== sinGuiones(d.clienteBase)) {
+    return cierra(ctx, d, { resultado: 'Rechazada', motivo: `${cod(n)} no es una revisión de este cliente` });
+  }
   const revisores = await revisoresDe(ctx, rev.cliente[0]);
   if (revisores.falla) return cierra(ctx, d, { rev, resultado: 'Pendiente de reconciliar', motivo: `${cod(n)}: ${revisores.falla}` });
   if (!d.actor) return cierra(ctx, d, { rev, resultado: 'Rechazada', motivo: 'Sin autor verificable (created_by vacío)' });
@@ -245,7 +255,7 @@ async function decide(ctx, d) {
   if (d.tipo === 'Pedir cambios' && !d.descripcion) return cierra(ctx, d, { rev, resultado: 'Rechazada', motivo: 'Pedir cambios necesita una descripción de qué cambiar' });
 
   const clave = sha(`${sinGuiones(rev.id)}|${sinGuiones(d.actor)}|${d.tipo}|${d.tipo === 'Pedir cambios' ? d.descripcion : ''}`).slice(0, 24);
-  const previas = await previasDe(ctx, rev.id);
+  const previas = await previasDe(ctx, rev.id, d.dsBase);
   const igual = previas.find(p => p.clave === clave && p.id !== d.id);
   if (igual) return cierra(ctx, d, { rev, clave, actorOk: true, resultado: 'Duplicada', motivo: `Repite la decisión ${igual.id}` });
 

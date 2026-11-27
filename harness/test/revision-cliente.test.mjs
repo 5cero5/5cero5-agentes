@@ -6,14 +6,14 @@ import { cfg } from '../lib/config.mjs';
 import { codigoDe, textoUtil, huellaDe, revisionCliente } from '../lib/revision-cliente.mjs';
 
 const DS_REV = 'ds-revisiones';
-const DS_DEC = 'ds-decisiones';
+const DS_DEC_A = 'ds-decisiones-a', DS_DEC_B = 'ds-decisiones-b';  // una base de entrada por cliente
 const DS_CLI = '33723502-0b79-45e1-ac42-b123a22fff80';
 const CLI_A = 'cli-a', CLI_B = 'cli-b', CLI_X = 'cli-x';
 const REVISOR_A = 'user-rev-a', REVISOR_A2 = 'user-rev-a2', REVISOR_B = 'user-rev-b', ALE = 'user-ale', BOT = 'bot-form';
 const AHORA = Date.parse('2026-11-27T12:00:00Z');
 
-const c = cfg({ REVISION_CLIENTE: '1', REVISION_CLIENTE_CLIENTES: `${CLI_A},${CLI_B}`,
-  NOTION_REVISIONES_ID: DS_REV, NOTION_DECISIONES_ID: DS_DEC });
+const c = cfg({ REVISION_CLIENTE: '1', REVISION_CLIENTE_CLIENTES: `${CLI_A}=${DS_DEC_A}, ${CLI_B}=${DS_DEC_B}`,
+  NOTION_REVISIONES_ID: DS_REV });
 
 const MANIF_A1 = JSON.stringify({ version: 1, entregable: 'correo-bienvenida', componentes: [
   { rol: 'hero', nombre: 'hero.png', tipo: 'image/png', sha256: 'a'.repeat(64), origen: 'notion:1' },
@@ -46,7 +46,7 @@ function revPage(o) {
 function decPage(o) {
   const actor = o.actor === null ? undefined : { object: 'user', id: o.actor ?? REVISOR_A };
   return { id: o.id, created_time: o.creada, created_by: actor, last_edited_by: o.editor ? { object: 'user', id: o.editor } : actor,
-    parent: { type: 'data_source_id', data_source_id: DS_DEC },
+    parent: { type: 'data_source_id', data_source_id: o.ds ?? (o.actor === REVISOR_B ? DS_DEC_B : DS_DEC_A) },
     properties: {
       'Resumen': { title: [{ plain_text: o.resumen || 'decisión' }] },
       'Tipo': { select: o.tipo ? { name: o.tipo } : null },
@@ -104,7 +104,7 @@ function mundo({ revs = [], decs = [], clientes, fallos = {} } = {}) {
   const notion = {
     async query(dsId, filter, pageSize = 50, extra = {}) {
       llamadas.query.push({ ds: dsId, filter, extra });
-      if (![DS_REV, DS_DEC].includes(dsId)) throw new Error(`consulta a una base ajena: ${dsId}`);
+      if (![DS_REV, DS_DEC_A, DS_DEC_B].includes(dsId)) throw new Error(`consulta a una base ajena: ${dsId}`);
       if (fallos.query?.(dsId, filter)) throw new Error('Notion POST query 429: rate_limited');
       let r = ds(dsId).filter(p => cumple(p, filter));
       if (extra.sorts?.[0]?.timestamp === 'created_time') r = [...r].sort((a, b) => Date.parse(a.created_time) - Date.parse(b.created_time));
@@ -168,7 +168,7 @@ test('E2-03 · apagado por defecto: sin REVISION_CLIENTE=1 no consulta ni escrib
 
 test('E2-03 · encendido sin clientes canary: falla cerrado, no procesa ninguna decisión', async () => {
   const m = mundo({ revs: [expuesta()], decs: [decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true })] });
-  await revisionCliente({ notion: m.notion, c: cfg({ REVISION_CLIENTE: '1', NOTION_REVISIONES_ID: DS_REV, NOTION_DECISIONES_ID: DS_DEC }), ahora: AHORA });
+  await revisionCliente({ notion: m.notion, c: cfg({ REVISION_CLIENTE: '1', NOTION_REVISIONES_ID: DS_REV }), ahora: AHORA });
   assert.equal(m.llamadas.update.length, 0);
 });
 
@@ -222,9 +222,12 @@ test('E2-03 · tipo vacío o código ilegible/inexistente: Rechazada con motivo'
 
 // ---------- identidad y aislamiento ----------
 test('E2-03 · aislamiento: un revisor de B no decide sobre una revisión de A (aunque sepa el código)', async () => {
-  const m = mundo({ revs: [expuesta()], decs: [decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true, actor: REVISOR_B })] });
+  const m = mundo({ revs: [expuesta()], decs: [
+    decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true, actor: REVISOR_B }),               // desde la base de B
+    decPage({ id: 'd2', creada: '2026-11-27T11:01:00Z', tipo: 'Aprobar', confirmo: true, actor: REVISOR_B, ds: DS_DEC_A })] }); // y si llegara a la de A
   await corre(m);
-  assert.equal(m.resultado('d1'), 'Rechazada'); assert.match(m.motivo('d1'), /revisor/i);
+  assert.equal(m.resultado('d1'), 'Rechazada'); assert.match(m.motivo('d1'), /no es una revisión de este cliente/);
+  assert.equal(m.resultado('d2'), 'Rechazada'); assert.match(m.motivo('d2'), /revisor/i);
   assert.equal(m.estado('rev-a1'), 'En revisión');
   assert.deepEqual(m.pages.get('d1').properties['Actor verificado'].people, []);
 });
@@ -251,12 +254,26 @@ test('E2-03 · revocación: quitar a un revisor bloquea sus decisiones nuevas y 
   assert.equal(m.estado('rev-a1'), 'Cambios solicitados');
 });
 
-test('E2-03 · cliente fuera del canary: la decisión queda intacta (sin resultado) para cuando se habilite', async () => {
-  const m = mundo({ revs: [expuesta({ id: 'rev-x', codigo: 5, cliente: [CLI_X] })],
-    decs: [decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-5' })] });
+test('E2-03 · binding: la base de un cliente sólo decide revisiones de ese cliente (aunque la persona revise a ambos)', async () => {
+  const m = mundo({ revs: [expuesta(), expuesta({ id: 'rev-b1', codigo: 2, cliente: [CLI_B], entregable: 'journey', manifiesto: MANIF_B1 }),
+    expuesta({ id: 'rev-x', codigo: 5, cliente: [CLI_X] })],
+  clientes: [cliPage(CLI_A, [REVISOR_A]), cliPage(CLI_B, [REVISOR_A, REVISOR_B]), cliPage(CLI_X, [REVISOR_A])],
+  decs: [
+    decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-2' }),   // base de A, revisión de B
+    decPage({ id: 'd2', creada: '2026-11-27T11:01:00Z', tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-5' })] }); // revisión fuera del canary
   await corre(m);
+  for (const d of ['d1', 'd2']) { assert.equal(m.resultado(d), 'Rechazada'); assert.match(m.motivo(d), /no es una revisión de este cliente/); }
+  assert.equal(m.estado('rev-b1'), 'En revisión'); assert.equal(m.estado('rev-x'), 'En revisión');
+  assert.ok(m.llamadas.update.every(u => !['rev-b1', 'rev-x'].includes(u.id)));
+});
+
+test('E2-03 · una ficha del canary sin base de entrada sólo expone revisiones; no lee decisiones', async () => {
+  const m = mundo({ revs: [revPage({ id: 'rev-a1', codigo: 1, estado: 'Lista para exponer' })],
+    decs: [decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true })] });
+  await corre(m, { revisionCliente: { ...c.revisionCliente, clientes: [{ ficha: CLI_A, decisiones: null }] } });
+  assert.equal(m.estado('rev-a1'), 'En revisión');
   assert.equal(m.resultado('d1'), null);
-  assert.equal(m.llamadas.update.length, 0);
+  assert.ok(m.llamadas.query.every(q => q.ds === DS_REV));
 });
 
 for (const [nombre, cliente] of [['dos fichas', [CLI_A, CLI_B]], ['ninguna ficha', []]]) {
@@ -296,7 +313,7 @@ test('E2-03 · decisión enviada antes de que la revisión se expusiera: Rechaza
 });
 
 // ---------- versiones ----------
-test('E2-03 · revisión reemplazada o retirada: rechazo explícito; no expuesta (Borrador/Lista): rechazo', async () => {
+test('E2-03 · revisión reemplazada o retirada: rechazo explícito; Borrador: rechazo; lista sin página: espera', async () => {
   const m = mundo({ revs: [
     expuesta({ estado: 'Reemplazada', reemplazadaPor: ['rev-a2'] }),
     expuesta({ id: 'rev-r', codigo: 2, estado: 'Retirada' }),
@@ -308,9 +325,10 @@ test('E2-03 · revisión reemplazada o retirada: rechazo explícito; no expuesta
     decPage({ id: 'd3', creada: '2026-11-27T11:02:00Z', tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-3' }),
     decPage({ id: 'd4', creada: '2026-11-27T11:03:00Z', tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-4' })] });
   await corre(m);
-  assert.match(m.motivo('d1'), /reemplazada/i); assert.match(m.motivo('d2'), /retirada/i);
-  assert.match(m.motivo('d3'), /expuesta/i); assert.match(m.motivo('d4'), /expuesta/i);
-  for (const d of ['d1', 'd2', 'd3', 'd4']) assert.equal(m.resultado(d), 'Rechazada');
+  assert.match(m.motivo('d1'), /reemplazada/i); assert.match(m.motivo('d2'), /retirada/i); assert.match(m.motivo('d3'), /expuesta/i);
+  for (const d of ['d1', 'd2', 'd3']) assert.equal(m.resultado(d), 'Rechazada');
+  // Lista para exponer sin página: la exposición la deja para reconciliar y su decisión espera (no se decide nada a medias).
+  assert.equal(m.estado('rev-l'), 'Pendiente de reconciliar'); assert.equal(m.resultado('d4'), null);
 });
 
 test('E2-03 · exponer: Lista para exponer → En revisión con huella, secuencia 1 y fecha', async () => {
@@ -433,7 +451,7 @@ test('E2-03 · nunca toca Assets, Campañas ni Clientes, y no abre sesiones: só
   const ajenas = m.llamadas.update.filter(u => !['rev-a1', 'rev-a2', 'd1', 'd2'].includes(u.id));
   assert.deepEqual(ajenas, []);
   for (const u of m.llamadas.update) for (const k of ['Aprobó', 'Aprobado el', 'Cambios pedidos', 'Sesión', 'Ronda de']) assert.ok(!(k in u.props), k);
-  assert.ok(m.llamadas.query.every(q => [DS_REV, DS_DEC].includes(q.ds)));
+  assert.ok(m.llamadas.query.every(q => [DS_REV, DS_DEC_A, DS_DEC_B].includes(q.ds)));
 });
 
 // ---------- hallazgos de la revisión independiente ----------
@@ -451,10 +469,10 @@ test('E2-03 · error de lectura (429) antes de escribir: la decisión queda inta
   assert.equal(m.resultado('d1'), 'Aplicada'); assert.equal(m.resultado('d2'), 'En conflicto');
 });
 
-test('E2-03 · cola con más de 50 pendientes fuera del canary: pagina y procesa la decisión del canary', async () => {
+test('E2-03 · cola con más de 50 pendientes en espera: pagina, no gasta presupuesto en ellas y procesa la siguiente', async () => {
   const fuera = Array.from({ length: 60 }, (_, i) => decPage({ id: `x${i}`, creada: `2026-11-27T10:${String(i % 60).padStart(2, '0')}:00Z`,
     tipo: 'Aprobar', confirmo: true, codigo: 'REVCLI-5' }));
-  const m = mundo({ revs: [expuesta(), expuesta({ id: 'rev-x', codigo: 5, cliente: [CLI_X] })],
+  const m = mundo({ revs: [expuesta(), revPage({ id: 'rev-x', codigo: 5, estado: 'Pendiente de reconciliar', entregable: 'otro' })],
     decs: [...fuera, decPage({ id: 'd1', creada: '2026-11-27T11:30:00Z', tipo: 'Aprobar', confirmo: true })] });
   await corre(m);
   assert.equal(m.resultado('d1'), 'Aplicada');
@@ -516,4 +534,15 @@ test('E2-03 · presupuesto por corrida: no procesa más de REVISION_CLIENTE_MAX 
   const r = await corre(m, { revisionCliente: { ...c.revisionCliente, maxDecisiones: 2 } });
   assert.deepEqual(decs.map(d => m.resultado(d.id)), ['Aplicada', 'Aplicada', null, null, null]);
   assert.ok(r.some(x => x[1] === 'presupuesto_agotado'));
+});
+
+test('E2-03 · decisión enviada mientras la revisión estaba «Lista para exponer»: se expone primero y la decisión se rechaza por anticipada', async () => {
+  const m = mundo({ revs: [revPage({ id: 'rev-a1', codigo: 1, estado: 'Lista para exponer' })],
+    decs: [decPage({ id: 'd1', creada: '2026-11-27T11:00:00Z', tipo: 'Aprobar', confirmo: true })] });
+  await corre(m);                                                     // AHORA = 12:00: expone a las 12:00
+  assert.equal(m.estado('rev-a1'), 'En revisión');
+  assert.equal(m.resultado('d1'), 'Rechazada'); assert.match(m.motivo('d1'), /antes de que REVCLI-1 se expusiera/);
+  m.pages.set('d2', decPage({ id: 'd2', creada: '2026-11-27T12:30:00Z', tipo: 'Aprobar', confirmo: true }));
+  await revisionCliente({ notion: m.notion, c, ahora: Date.parse('2026-11-27T13:00:00Z') });
+  assert.equal(m.resultado('d2'), 'Aplicada'); assert.equal(m.estado('rev-a1'), 'Aprobada por cliente');
 });
