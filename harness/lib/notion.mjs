@@ -13,7 +13,8 @@ export function notionClient(token, fetchImpl = fetch) {
     return t ? JSON.parse(t) : {};
   }
   return {
-    query: (ds, filter, page_size = 50) => call('POST', `/data_sources/${ds}/query`, { filter, page_size }),
+    // extra: { sorts, start_cursor } opcionales (lib/revision-cliente.mjs pagina en orden de llegada).
+    query: (ds, filter, page_size = 50, extra = {}) => call('POST', `/data_sources/${ds}/query`, { filter, page_size, ...extra }),
     update: (pageId, properties) => call('PATCH', `/pages/${pageId}`, { properties }),
     get: pageId => call('GET', `/pages/${pageId}`),
     create: (ds, properties) => call('POST', '/pages', { parent: { type: 'data_source_id', data_source_id: ds }, properties }),

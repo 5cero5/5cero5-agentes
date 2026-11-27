@@ -91,6 +91,14 @@ Botón o Destino, o si algo no coincide: Verificador = Rechazada con el detalle.
 plantilla existe por nombre en la subcuenta; por eso `firebasestorage.googleapis.com` ya no está en la red del entorno. Solo corre con
 `RUTEO_CLIENTES=1` (sin ruteo, el CRM no se comprueba en HighLevel).
 
+## Revisión del cliente (`lib/revision-cliente.mjs`, interruptor REVISION_CLIENTE)
+Épica E2. Paso aparte dentro de `barrido` (cada hora), **apagado por defecto** y detenido con HARNESS_PAUSA. Con `REVISION_CLIENTE=1` solo trabaja las revisiones de las fichas listadas en `REVISION_CLIENTE_CLIENTES` (ids de página de Clientes, separados por coma; vacía = ninguna). Bases: "Revisiones de cliente" (`NOTION_REVISIONES_ID`, interna) y "Decisiones del cliente" (`NOTION_DECISIONES_ID`, entrada por formulario no anónimo), bajo la página «Revisión de clientes · V1 (canary)».
+- **Exponer**: Ale deja una revisión en "Lista para exponer" con Cliente (una ficha), Entregable, Manifiesto (JSON con los componentes y su sha256) y Página del cliente. El harness reemplaza la vigente del mismo cliente y entregable, y la expone (En revisión, Secuencia, Huella = sha256 del manifiesto, Expuesta el). Si el manifiesto cambia después, la revisión pasa a Pendiente de reconciliar y sus decisiones esperan.
+- **Decidir**: el actor es `created_by` de la fila del formulario y tiene que estar en **Revisores del cliente** de la ficha (distinto de Aprobadores, que despacha agentes). Aprobar exige la casilla de confirmación; Pedir cambios, una descripción que no sea solo espacios o invisibles. Revisión reemplazada, retirada o no expuesta: Rechazada. Repetición del mismo actor y contenido: Duplicada. Decisiones opuestas: En conflicto, las dos se conservan y lo resuelve Ale (nadie gana por escribir después). Se procesan una por una en orden de llegada: el harness es el único escritor del estado.
+- **Fallos**: si una escritura falla o el readback no coincide, la decisión queda Pendiente de reconciliar y sale de la cola: no se reintenta a ciegas. Ale compara Recibo, Resultado y Estado y corrige con una decisión o nota nueva.
+- **Límites**: nunca escribe en Assets (Aprobó, Aprobado el, Estado, Cambios pedidos), Campañas ni Clientes y no abre sesiones; Ale consolida y la ronda sigue por la ruta de siempre, aprobada por un Aprobador. Notion no tiene transacciones: dos corridas simultáneas del barrido no están previstas (es programado, una por hora). Las URLs de archivos de Notion son firmadas por unos minutos: quien tenga el enlace descarga sin sesión mientras no caduque.
+- **Notion**: la integración del harness necesita acceso a la página «Revisión de clientes · V1 (canary)» (y a Clientes, que ya tiene). A cada cliente se le comparte solo su página «Revisión · cliente» y el formulario; nunca las bases internas.
+
 ## Instalación (Netlify)
 1. Proyecto nuevo y separado de mkt.5cero5.com, ligado al repo privado `5cero5/5cero5-agentes` con **Base directory = `harness`** (el código vive en esta carpeta del repo, no en un repo `5cero5-harness` aparte).
 2. Variables de entorno (Site configuration > Environment variables, marcar como secretas):
@@ -107,7 +115,7 @@ plantilla existe por nombre en la subcuenta; por eso `firebasestorage.googleapis
 Por cliente: cada script acepta `--cliente <slug>` (por defecto `5cero5`). Crea el vault `<slug> · <Agente>` con metadata `{cliente: <slug>, rol: <agente>}` (lo que exige el ruteo) y sus credenciales, guarda los ids en `estado-<slug>-<agente>.json` e imprime lo que va en la ficha del cliente (Vault, Credencial GitHub, ids de Meta). El agente es común: con otro cliente no se crea ni se actualiza (`--actualizar-agente` solo con `5cero5`). Para Pauta, `META_TOKEN` es el del usuario del sistema de ese cliente y debe ver una sola cuenta publicitaria. Prueba sin red: `python3 infra/test_infra.py`.
 
 ## Pruebas
-`npm ci && npm test` (128 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta).
+`npm ci && npm test` (177 casos con mocks de Notion, Anthropic, GitHub y la Graph API de Meta; 38 de ellos de la revisión del cliente en `test/revision-cliente.test.mjs`).
 
 ## Qué NO está probado
 Desplegado en Netlify el 8 oct de 2026 y corrido solo con HARNESS_PAUSA=1 (el disparador respondió HARNESS_PAUSA). Todavía no se ha despachado ninguna fila real de Notion ni abierto una sesión desde el harness. Pendiente de verificar en vivo: forma exacta del payload del webhook (el código asume data.id = id de sesión, data.type = tipo) y que `last_edited_by` refleje a quien cambió el Estado. Los nombres de eventos se confirmaron en la consola el 8 oct de 2026.
