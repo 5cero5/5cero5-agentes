@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test test/harness.test.mjs test/clientes.test.mjs test/revision-cliente.test.mjs"
+    "test": "node --test test/harness.test.mjs test/clientes.test.mjs test/revision-cliente.test.mjs test/canva.test.mjs"
   },
   "keywords": [],
   "author": "",
