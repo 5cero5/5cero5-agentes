@@ -107,7 +107,8 @@ def nueva(a, d: Path) -> None:
     print("  3. read-design con open_transaction=true → identifica cada texto por su texto de muestra:")
     for rol, t in rec["textos"].items():
         print(f"       {rol}: \"{t}\"")
-    print("     edit-design: replace_text de cada rol con su copia (kicker vacío → delete_element) y luego finalize=commit.")
+    print("     edit-design: replace_text de cada rol con su copia (kicker y titular en MAYÚSCULAS; titular en 2 o 3 líneas;")
+    print("     kicker vacío → delete_element) y luego finalize=commit.")
     print("  4. read-design con open_transaction=true (transacción NUEVA, después del commit) → guarda ese resultado en un archivo (lectura.json),")
     print("     confirma que quedó la copia y cierra esa transacción con edit-design finalize=cancel. Sin transacción Canva solo da texto plano.")
     print(f"  5. export-design en png al tamaño del formato; move-item-to-folder a la carpeta {rec['carpeta']}.")
