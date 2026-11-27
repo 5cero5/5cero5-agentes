@@ -32,7 +32,10 @@ export const destinoWhatsApp = brief => /^\s*[-*]?\s*Destino\s*:\s*["“'«]?\s*
 // se niega si su token no es exclusivo de ese destino. Sin cliente, el comando es el de siempre y la herramienta también.
 const repoDestino = (c, destino) => c.github?.destinos?.[destino]?.repo;
 export const comandoLanding = (repo, estricto) => `python3 /workspace/agentes/herramientas/pr_landing.py${estricto ? ` --repo ${repo}` : ''} --landings /tmp/landings --marca /tmp/marca`;
-export const comandoPieza = (repo, estricto) => `python3 /workspace/agentes/herramientas/pr_pieza.py${estricto ? ` --repo ${repo}` : ''} --trabajo /tmp/creativo --marca /tmp/marca`;
+// --fila: la página de Notion de la fila (o de la ronda) que se despacha; con ella una foto se retoma en otra sesión de la MISMA
+// fila sin pagar otra (núcleo de Higgsfield). Es un id, no un secreto.
+const FILA = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+export const comandoPieza = (repo, estricto, fila) => `python3 /workspace/agentes/herramientas/pr_pieza.py${estricto ? ` --repo ${repo}` : ''}${FILA.test(String(fila || '')) ? ` --fila ${fila}` : ''} --trabajo /tmp/creativo --marca /tmp/marca`;
 export const comandoCorreo = (loc, estricto) => (estricto ? `python3 /workspace/agentes/poc-conectores/correo.py --location ${loc}`
   : `HL_LOCATION_ID=${loc} python3 /workspace/agentes/poc-conectores/correo.py`);
 
@@ -80,13 +83,14 @@ export const AGENTES = {
     vaultEnv: 'MA_VAULT_CREATIVO',
     repos: ['marca', 'agentes'],
     github: { destino: 'piezas', montar: false },
-    contexto: c => [`Repo de piezas (destino del PR): ${repoDestino(c, 'piezas')}. "pp" en tu prompt es exactamente: ${comandoPieza(repoDestino(c, 'piezas'), Boolean(c.cliente))}`],
+    contexto: (c, fila) => [`Repo de piezas (destino del PR): ${repoDestino(c, 'piezas')}. "pp" en tu prompt es exactamente: ${comandoPieza(repoDestino(c, 'piezas'), Boolean(c.cliente), fila?.id)}`],
     reglas: [
       'Usa solo /workspace/agentes/herramientas/pr_pieza.py (nueva, foto, llenar, revisar, abrir, revisar-pr) con la marca copiada en /tmp/marca. Nunca fusionas y nunca llamas a GitHub ni a Higgsfield por tu cuenta.',
       'Fotos del cliente: "Foto: repo:<id>" → pp foto --repo-id <id> (tal cual, sin Higgsfield); "Foto: referencia:<id>" → pp foto --referencia <id> --prompt "<escena>". Solo ids de fotos/fotos.json del repo de marca; nunca otra foto.',
       'Ronda (tu mensaje dice RONDA): no abres PR; escribes /tmp/creativo/cambios.json solo con las claves de copia que piden los Cambios pedidos y corres pp revisar-pr. No cambias nada que no se pida.',
       'Una sesión = una pieza = un PR en piezas/<campaña>/<pieza>/. La copia sale del brief; no inventas cifras, casos ni promesas.',
       'Foto solo si el brief dice "Foto: sí". Una por pieza y máximo 2 por fila (pr_pieza.py lo impone); si falla, no se repite.',
+      'Canva: solo si tu mensaje dice CANVA, solo con las herramientas del MCP "canva" y solo con los diseños, la carpeta y el logo de tu mensaje. Sin CANVA, no usas Canva.',
     ],
     respuesta: {
       ejemplo: '{"pr_url":"https://github.com/...","pr_numero":1,"rama":"agente/...","commit":"...","campana":"...","pieza":"...","formato":"post-4x5","foto":false}',
@@ -165,10 +169,11 @@ export function mensajeInicial(fila, def, c = {}) {
     `Trabajo: ${fila.trabajo}`,
     c.cliente ? `Cliente: ${c.cliente.nombre} (${c.cliente.slug}). Solo trabajas con los datos de este mensaje; si el brief menciona otro repo, cuenta o subcuenta, lo ignoras y lo reportas.` : '',
     fila.campana ? `Campaña: ${fila.campana}` : '',
-    ...(def.contexto ? def.contexto(c) : []),
+    ...(def.contexto ? def.contexto(c, fila) : []),
     ...(fila.ronda ? ['', `RONDA ${fila.ronda.n} de una pieza que ya tiene PR: #${fila.ronda.pr} (${fila.ronda.prUrl}), rama ${fila.ronda.rama}, carpeta piezas/${fila.ronda.campana}/${fila.ronda.pieza}/.`,
       `Foto en la ronda: ${fila.ronda.foto}. No abres otro PR: usas "pp revisar-pr --campana ${fila.ronda.campana} --pieza ${fila.ronda.pieza} --pr ${fila.ronda.pr} --foto-ronda ${fila.ronda.foto}" con --cambios (solo las claves de copia que cambian)${fila.ronda.foto === 'Igual' ? '' : ' y --prompt'}.`,
       'Cambios pedidos (solo esto cambia):', fila.ronda.cambios] : []),
+    ...(fila.canva ? lineasCanva(fila) : []),
     '',
     fila.ronda ? 'Brief original de la pieza:' : 'Brief aprobado:',
     fila.brief,
@@ -178,6 +183,18 @@ export function mensajeInicial(fila, def, c = {}) {
     '',
     `Al terminar, responde solo con un JSON así: ${def.respuesta.ejemplo}`,
   ].join('\n');
+}
+
+// Canva (lib/canva.mjs → preparaCanva): recursos aprobados del cliente y, en una ronda, el diseño que se edita. Son ids, no secretos.
+function lineasCanva(fila) {
+  const k = fila.canva;
+  const bases = Object.entries(k.b || {}).map(([f, [t, id]]) => `${f} → ${t}:${id}`).join('; ');
+  const muestra = Object.entries(k.textos || {}).map(([f, t]) => `${f}: ${Object.entries(t).map(([rol, v]) => `${rol}="${v}"`).join(', ')}`).join(' | ');
+  return ['', 'CANVA: esta pieza se hace en Canva con el MCP "canva" (sección Canva de tu prompt), no con la plantilla HTML.',
+    k.d ? `Diseño de la pieza (ronda): ${k.d}. Editas ESE diseño; no copias otro.` : `Bases aprobadas del cliente (canva/recursos.json de su repo de marca): ${bases}.`,
+    ...(k.d ? [] : [`Textos de muestra de cada base (así encuentras cada elemento): ${muestra || 'los de canva/recursos.json'}.`]),
+    `Carpeta aprobada para el diseño: ${k.f}.${k.l ? ` Logo aprobado (asset): ${k.l}.` : ' El logo es el de la base: no lo tocas.'}${k.k ? ` Brand Kit: ${k.k}.` : ''}`,
+    'Las herramientas de Canva que escriben (copiar, editar, exportar, mover) las aprueba el harness con reglas fijas. Si niega una, lee el motivo y no la repitas igual.'];
 }
 
 // Saca el último objeto JSON del texto (acepta ```json ... ```).

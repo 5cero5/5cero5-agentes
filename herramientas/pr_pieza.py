@@ -11,6 +11,8 @@ marca, la revisa con el Verificador y abre un PR en 5cero5-piezas. Nunca fusiona
   python3 pr_pieza.py abrir   --campana ... --pieza ... --titulo "..." [--cuerpo "..."]
   python3 pr_pieza.py revisar-pr --campana ... --pieza ... --pr <n> --foto-ronda Igual|Editar|Nueva
                       [--cambios cambios.json] [--prompt "..."]   (ronda de cambios: commit nuevo en la rama del mismo PR)
+  Canva (pieza_canva.py): nueva ... --canva; canva-importar --design D… --edit-url … --export-url … --lectura … --elementos '{…}';
+                      revisar, abrir y revisar-pr igual (la ronda de Canva va en dos pasos: preparar y, tras importar, commit).
 
 Rutas: --trabajo /tmp/creativo (piezas en curso), --marca /tmp/marca (copia del repo de marca).
 Variables: GITHUB_TOKEN (lo pone el harness; solo hacia api.github.com). HIGGSFIELD_API_KEY (solo para 'foto'; solo
@@ -52,6 +54,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gh_pr import blob_sha, commit_en_rama, die, gh, lee_carpeta, repo_exclusivo, sube_carpeta  # noqa: E402
+import pieza_canva  # noqa: E402
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 FORMATOS = ("post-4x5", "post-1x1", "historia-9x16")
@@ -109,6 +112,8 @@ def foto_actual(d: Path) -> Path | None:
 
 
 def para_subir(d: Path) -> dict[str, bytes]:
+    if pieza_canva.es_canva(d):  # Canva: la exportación original y canva.json; nunca pieza.html
+        return pieza_canva.para_subir(d)
     out = {n: (d / n).read_bytes() for n in SUBE if (d / n).exists()}
     meta = lee_json(d / "pieza.json")
     if meta.get("foto"):
@@ -161,6 +166,8 @@ def cmd_nueva(a) -> None:
     d = pieza_dir(a)
     if d.exists():
         die(f"Ya existe {a.campana}/{a.pieza} en {a.trabajo}. Usa otro --pieza o sigue con esa.")
+    if getattr(a, "canva", False):
+        return pieza_canva.nueva(a, d)
     marca = Path(a.marca)
     tokens = lee_json(marca / "tokens.json")
     f = tokens.get("formatos", {}).get(a.formato) or {}
@@ -483,6 +490,8 @@ def renderiza(d: Path, ancho: int, alto: int, requeridas: list[str]) -> tuple[by
 def cmd_revisar(a) -> None:
     d = pieza_dir(a)
     (d / ".revisado").unlink(missing_ok=True)  # una revisión fallida nunca deja aprobada la anterior
+    if pieza_canva.es_canva(d):
+        return pieza_canva.revisar(a, d, huella)
     meta = lee_json(d / "pieza.json")
     marca = Path(a.marca)
     tokens = lee_json(marca / "tokens.json")
@@ -561,6 +570,7 @@ def cmd_abrir(a) -> None:
         f"Abierto por el agente Creativo. {meta['formato']}{foto}. Solo cambia `{pref}` ({n} archivo(s)).\n\n" \
         f"Verificador de marca v{inf.get('repo_version')}: aprobada, {len(avisos)} aviso(s)" + \
         "".join(f"\n- {x.get('id')}: {x.get('detalle')}" for x in avisos[:8]) + \
+        (pieza_canva.cuerpo_pr(d) if pieza_canva.es_canva(d) else "") + \
         f"\n\nPara revisar: abre `{pref}pieza.png` en la pestaña de archivos.\n" \
         "Aprobar = fusionar este PR (Al). Subirla a Meta la hace Bonzo a mano, con la campaña en pausa."
     r = sube_carpeta(repo=a.repo or REPO, exclusivo=bool(a.repo), pref=pref, locales=locales, rama_base=f"{a.campana}-{a.pieza}"[:60], ua=UA,
@@ -639,6 +649,8 @@ def cmd_revisar_pr(a) -> None:
     pref = f"piezas/{a.campana}/{a.pieza}/"
     repo = a.repo or REPO
     pr = pr_de_la_pieza(a, repo, pref)
+    if pieza_canva.revisar_pr(a, d, pref, repo, pr, huella, CLAVES_COPIA):  # pieza de Canva: mismo diseño y mismo PR
+        return
     head = pr["head"]["sha"]
     previa = (lee_json(d / "pieza.json").get("ronda") or {}) if (d / "pieza.json").exists() else {}
     # Un reintento de la misma ronda (por ejemplo, tras un rechazo del Verificador) no vuelve a bajar ni a pedir la foto.
@@ -712,6 +724,7 @@ def main() -> None:
     ap.add_argument("--repo", help="org/repo de piezas del cliente; con él, el token tiene que ser exclusivo de ese repo")
     ap.add_argument("--trabajo", default="/tmp/creativo")
     ap.add_argument("--marca", default="/tmp/marca")
+    ap.add_argument("--fila", help="id de la página de Notion de la fila que se despacha (lo pone el harness; retomar una foto sin pagar otra)")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     def sub(nombre, f):
@@ -723,6 +736,13 @@ def main() -> None:
     n = sub("nueva", cmd_nueva)
     n.add_argument("--formato", required=True, choices=FORMATOS)
     n.add_argument("--foto", action="store_true", help="solo si el brief pide foto")
+    n.add_argument("--canva", action="store_true", help="la pieza se hace en Canva desde la base aprobada (solo si tu mensaje dice CANVA)")
+    ci = sub("canva-importar", lambda a: pieza_canva.importar(a, pieza_dir(a)))
+    ci.add_argument("--design", required=True, help="id del diseño de Canva de esta pieza")
+    ci.add_argument("--edit-url", required=True, help="enlace de edición de ese diseño (https://www.canva.com/design/<id>/…)")
+    ci.add_argument("--export-url", required=True, help="URL de descarga que devolvió export-design (png)")
+    ci.add_argument("--lectura", required=True, help="archivo con el resultado de read-design del diseño guardado (sin transacción)")
+    ci.add_argument("--elementos", required=True, help='JSON {"kicker": "<locator>", "titular": …} con el elemento de cada rol')
     fo = sub("foto", cmd_foto)
     fo.add_argument("--prompt")
     fo.add_argument("--repo-id", help="foto del cliente (fotos/fotos.json del repo de marca), tal cual y sin Higgsfield")

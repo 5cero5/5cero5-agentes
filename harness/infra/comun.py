@@ -43,12 +43,37 @@ def red(extra: list[str] | None = None) -> dict:
 
 
 RED = red()
+
+
+def red_canva() -> dict:
+    """Red del entorno de Canva: SOLO los hosts de canva.json (GitHub y la descarga de la exportación), gestores de paquetes y
+    allow_mcp_servers (la sesión usa el MCP de Canva sin poner mcp.canva.com en la lista; según la Console lo conectan los
+    servidores de Anthropic, no el contenedor; sin verificar). El harness (lib/canva.mjs → verificaEntornoCanva) no abre la
+    sesión si el entorno tiene otra red."""
+    return {"type": "limited", "allowed_hosts": list(CANVA["hosts_red"]), "allow_mcp_servers": bool(CANVA.get("allow_mcp_servers")),
+            "allow_package_managers": True}
 PAQUETES = {"pip": ["httpx", "playwright", "pillow"]}  # playwright: render y Verificador (el navegador se baja en la sesión); pillow: Verificador de piezas
 HERRAMIENTAS = [{
     "type": "agent_toolset_20260401",
     "default_config": {"enabled": True, "permission_policy": {"type": "always_allow"}},
     "configs": [{"name": "web_fetch", "enabled": False}, {"name": "web_search", "enabled": False}],
 }]
+
+# Canva (agente Creativo): fuente única en agentes/canva.json, la misma que usa el harness (lib/canva.mjs) para aprobar.
+# (Si falta el archivo, como en copias parciales de infra/ para pruebas, Canva queda vacío y mcp_canva() falla al usarse.)
+CANVA = json.loads((AGENTES / "canva.json").read_text(encoding="utf-8")) if (AGENTES / "canva.json").exists() else {}
+
+
+def mcp_canva() -> tuple[list[dict], list[dict]]:
+    """(mcp_servers, tools extra) del Creativo con Canva. Lista cerrada: todo lo que no está en canva.json va apagado.
+    Lectura: always_allow. Escritura (copiar, editar, exportar, mover): always_ask, y el harness decide con reglas fijas
+    (lib/canva.mjs → decideConfirmacion). Nunca se habilitan todas las herramientas del servidor."""
+    s, h = CANVA["servidor"], CANVA["herramientas"]
+    toolset = {"type": "mcp_toolset", "mcp_server_name": s["name"],
+               "default_config": {"enabled": False, "permission_policy": {"type": "always_ask"}},
+               "configs": [{"name": n, "enabled": True, "permission_policy": {"type": "always_allow"}} for n in h["lectura"]]
+               + [{"name": n, "enabled": True, "permission_policy": {"type": "always_ask"}} for n in h["con_permiso"]]}
+    return [dict(s)], [toolset]
 
 
 def need(v: str) -> str:
@@ -106,9 +131,24 @@ def guarda(nombre: str, estado: dict) -> None:
     (AQUI / f"estado-{nombre}.json").write_text(json.dumps(estado, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def entorno(b, hosts_extra: list[str] | None = None) -> str:
+def entorno(b, hosts_extra: list[str] | None = None, *, clave: str = "entorno", nombre: str = "5cero5-harness") -> str:
     """Crea el entorno común o le reaplica la red y los paquetes completos. Adopta el id que haya creado una versión anterior.
-    hosts_extra se suma a los que ya estaban guardados en estado-entorno.json."""
+    hosts_extra se suma a los que ya estaban guardados en estado-entorno.json.
+    clave/nombre: un entorno aparte (el del Creativo con Canva) con su propia red mínima (red_canva), que nunca llega al común."""
+    if clave != "entorno":
+        e = carga(clave)
+        red_ = red_canva()
+        if "environment_id" not in e:
+            env = b.environments.create(name=nombre, description=f"Entorno de {nombre}: solo {', '.join(red_['allowed_hosts'])}; el MCP de Canva lo conecta Anthropic.",
+                                        metadata={"cliente": "5cero5", "origen": "harness/infra/comun.py"},
+                                        config={"type": "cloud", "networking": red_, "packages": PAQUETES})
+            e["environment_id"] = env.id
+            guarda(clave, e)
+            print(f"▸ Entorno {nombre} creado: {env.id}")
+        else:
+            b.environments.update(e["environment_id"], config={"type": "cloud", "networking": red_, "packages": PAQUETES})
+            print(f"▸ Entorno {e['environment_id']} ({nombre}): red = {', '.join(red_['allowed_hosts'])}")
+        return e["environment_id"]
     e = carga("entorno")
     if hosts_extra:
         e["hosts_extra"] = list(dict.fromkeys(e.get("hosts_extra", []) + hosts_extra))
@@ -133,11 +173,44 @@ def entorno(b, hosts_extra: list[str] | None = None) -> str:
     return e["environment_id"]
 
 
-def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: dict | None, actualizar: bool, meta: dict) -> dict:
+def _como_dict(x) -> dict:
+    if x is None:
+        return {}
+    if isinstance(x, dict):
+        return x
+    if hasattr(x, "model_dump"):
+        return x.model_dump()
+    return dict(getattr(x, "__dict__", {}))
+
+
+def entorno_desde(b, base_id: str, *, clave: str, nombre: str) -> str:
+    """Entorno aparte (el de Canva) con los paquetes REALES del entorno base (leídos de la API) y su propia red mínima
+    (red_canva). No toca el entorno base."""
+    base = _como_dict(b.environments.retrieve(base_id))
+    cfg = _como_dict(base.get("config"))
+    red_ = red_canva()
+    paquetes = _como_dict(cfg.get("packages")) or PAQUETES
+    paquetes = {k: v for k, v in paquetes.items() if v}  # sin gestores vacíos
+    e = carga(clave)
+    if "environment_id" not in e:
+        env = b.environments.create(name=nombre, description=f"Entorno {nombre}: paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])}.",
+                                    metadata={"cliente": "5cero5", "origen": "harness/infra/comun.py", "base": base_id},
+                                    config={"type": "cloud", "networking": red_, "packages": paquetes})
+        e.update(environment_id=env.id, base=base_id)
+        guarda(clave, e)
+        print(f"▸ Entorno {nombre} creado: {env.id} (paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])})")
+    else:
+        b.environments.update(e["environment_id"], config={"type": "cloud", "networking": red_, "packages": paquetes})
+        print(f"▸ Entorno {e['environment_id']} ({nombre}): paquetes de {base_id}; red solo {', '.join(red_['allowed_hosts'])}")
+    return e["environment_id"]
+
+
+def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: dict | None, actualizar: bool, meta: dict,
+         clave_agente: str | None = None, sin_vault: bool = False) -> dict:
     """Vault + credenciales + agente, idempotente. credenciales: [{key, secret_name, value, host, label}].
     agente=None: solo vault y credenciales (otro cliente; el agente común no se toca)."""
     estado = carga(clave)
-    if "vault_id" not in estado:
+    if not sin_vault and "vault_id" not in estado:
         estado["vault_id"] = b.vaults.create(display_name=vault_nombre, metadata=meta).id
         guarda(clave, estado)
         print(f"▸ Vault creado: {estado['vault_id']}")
@@ -158,15 +231,22 @@ def alta(b, *, clave: str, vault_nombre: str, credenciales: list[dict], agente: 
         print(f"▸ Credencial {cr['secret_name']} creada (solo hacia {cr['host']}, en encabezados): {c.id}")
     if agente is None:
         return estado
-    if "agent_id" not in estado:
+    # El agente puede guardarse aparte del vault (clave_agente): el piloto de Canva usa el vault del cliente y su propio agente.
+    ea = carga(clave_agente) if clave_agente else estado
+    tools = HERRAMIENTAS + list(agente.get("tools_extra") or [])
+    # Siempre explícito: sin servidores MCP se manda [] (un toolset sin su servidor, o al revés, lo rechaza la API).
+    mcp = {"mcp_servers": list(agente.get("mcp_servers") or [])}
+    if "agent_id" not in ea:
         ag = b.agents.create(name=agente["name"], description=agente["description"], model=agente["model"],
-                             system=agente["system"], metadata=meta, tools=HERRAMIENTAS)
-        estado["agent_id"] = ag.id
-        guarda(clave, estado)
+                             system=agente["system"], metadata=meta, tools=tools, **mcp)
+        ea["agent_id"] = ag.id
+        guarda(clave_agente or clave, ea)
         print(f"▸ Agente creado con {agente['model']}: {ag.id}")
     elif actualizar:
-        actual = b.agents.retrieve(estado["agent_id"])
-        ag = b.agents.update(estado["agent_id"], version=actual.version, model=agente["model"],
-                             system=agente["system"], tools=HERRAMIENTAS)
+        actual = b.agents.retrieve(ea["agent_id"])
+        ag = b.agents.update(ea["agent_id"], version=actual.version, model=agente["model"],
+                             system=agente["system"], tools=tools, **mcp)
         print(f"▸ Agente actualizado a la versión {getattr(ag, 'version', '?')}")
+    if clave_agente:
+        estado = {**estado, "agent_id": ea["agent_id"]}
     return estado

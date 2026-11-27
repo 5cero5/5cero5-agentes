@@ -109,7 +109,7 @@ export async function marcaParaLeer({ c, fetchImpl = fetch }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('No hay repo de marca configurado');
   const token = m.dinamico || c.cliente ? await tokenLectura({ c, repo, fetchImpl }) : m.token;
   if (!token) throw new Error(`No hay token para leer ${repo}`);
-  return { repo, token };
+  return { repo, token, ref: m.ref || '' };
 }
 
 // fotos/fotos.json del repo de marca: [{id, archivo, descripcion, autorizo, fecha, uso: ["directo","referencia_ia"], personas}].
@@ -186,10 +186,10 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   const fuera = archivos.map(f => f.filename).filter(n => !pref || !n.startsWith(pref));
   if (fuera.length) problemas.push(`cambia archivos fuera de ${pref || 'su carpeta'}: ${fuera.slice(0, 5).join(', ')}`);
   if (!archivos.length) problemas.push('el PR no cambia ningún archivo');
-  let extra = '';
+  let extra = '', canva = null;
   if (gd.destino === 'piezas' && pref && pr.head?.sha) {
     const p = await compruebaPieza({ repo: d.repo, pref, ref: pr.head.sha, respuesta: r, token, fetchImpl });
-    problemas.push(...p.problemas); extra = p.resumen;
+    problemas.push(...p.problemas); extra = p.resumen; canva = p.canva || null;
     // Foto del cliente (Foto: repo:<id>): el archivo del PR tiene que ser, blob por blob, el de fotos/ del repo de marca del cliente.
     const fc = p.meta?.foto_cliente;
     if (fc) {
@@ -212,7 +212,8 @@ export async function compruebaPR({ c, agente = 'Landing', respuesta, mainAntes,
   }
   const informe = `Comprobación en GitHub: PR #${numero} (${pr.html_url || ''}), ${archivos.length} archivo(s) en ${pref || '?'}.${extra}` +
     (problemas.length ? ` Problemas: ${problemas.join('; ')}.` : ` Abierto, sin fusionar y solo con su carpeta. Falta ${gd.destino === 'piezas' ? 'mirar la pieza' : 'revisar el deploy preview'} y aprobarlo en GitHub.`);
-  return { ok: problemas.length === 0, informe };
+  // canva: lo que el cierre necesita para comprobar la sesión en Canva (lib/canva.mjs → compruebaCanvaSesion).
+  return { ok: problemas.length === 0, informe, ...(canva ? { canva } : {}) };
 }
 
 // Ronda de cambios (metadata de la sesión: ronda_pr, ronda_head, ronda_foto, ronda_pieza, ronda_n, ronda_de, ronda_original):
@@ -262,7 +263,10 @@ async function compruebaRonda({ repo, pref, pr, numero, ronda, metaAhora, token,
 
 // Tamaño de cada formato (tokens.json del repo de marca). El PNG del PR debe medir esto.
 export const MEDIDAS = { 'post-4x5': [1080, 1350], 'post-1x1': [1080, 1080], 'historia-9x16': [1080, 1920] };
-const PERMITIDOS = /^(pieza\.png|pieza\.html|copia\.json|pieza\.json|informe\.json|prompt\.txt|fotos\/fondo\.(jpg|jpeg|png|webp))$/;
+const PERMITIDOS = /^(pieza\.png|pieza\.html|canva\.json|copia\.json|pieza\.json|informe\.json|prompt\.txt|fotos\/fondo\.(jpg|jpeg|png|webp))$/;
+// Pieza de Canva (pieza.json → fuente "canva"): la exportación original, canva.json (diseño, enlace de edición, elementos) y
+// el informe de verificar_canva.py. Nunca pieza.html: no se fabrica HTML para pasar el contrato.
+const REQUERIDOS = { html: ['pieza.png', 'pieza.html', 'copia.json', 'pieza.json', 'informe.json'], canva: ['pieza.png', 'canva.json', 'copia.json', 'pieza.json', 'informe.json'] };
 
 export function medidasPng(buf) {
   const b = Buffer.from(buf);
@@ -288,11 +292,25 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   const nombres = [...lista.filter(e => e.type !== 'dir').map(e => e.name), ...fotos.map(e => `fotos/${e.name}`)];
   const raros = [...nombres.filter(n => !PERMITIDOS.test(n)), ...lista.filter(e => e.type === 'dir' && e.name !== 'fotos').map(e => `${e.name}/`)];
   if (raros.length) problemas.push(`archivos que no van en una pieza: ${raros.slice(0, 5).join(', ')}`);
-  const faltan = ['pieza.png', 'pieza.html', 'copia.json', 'pieza.json', 'informe.json'].filter(n => !nombres.includes(n));
+  let fuente = 'html';
+  if (nombres.includes('pieza.json')) {
+    try { fuente = JSON.parse((await lee(`${pref}pieza.json`)).toString('utf8'))?.fuente === 'canva' ? 'canva' : 'html'; } catch { /* se reporta abajo */ }
+  }
+  if (fuente === 'canva' && nombres.includes('pieza.html')) problemas.push('una pieza de Canva no lleva pieza.html');
+  if (fuente === 'html' && nombres.includes('canva.json')) problemas.push('canva.json en una pieza que no es de Canva');
+  const faltan = REQUERIDOS[fuente].filter(n => !nombres.includes(n));
   if (faltan.length) return { problemas: [...problemas, `faltan en la carpeta: ${faltan.join(', ')}`], resumen: '' };
-  let inf, meta;
-  try { inf = JSON.parse((await lee(`${pref}informe.json`)).toString('utf8')); meta = JSON.parse((await lee(`${pref}pieza.json`)).toString('utf8')); }
-  catch (e) { return { problemas: [...problemas, `informe.json o pieza.json no se pueden leer (${e.status || e.message})`], resumen: '' }; }
+  let inf, meta, canva = null;
+  try {
+    inf = JSON.parse((await lee(`${pref}informe.json`)).toString('utf8')); meta = JSON.parse((await lee(`${pref}pieza.json`)).toString('utf8'));
+    if (fuente === 'canva') canva = { json: JSON.parse((await lee(`${pref}canva.json`)).toString('utf8')), copia: JSON.parse((await lee(`${pref}copia.json`)).toString('utf8')) };
+  }
+  catch (e) { return { problemas: [...problemas, `informe.json, pieza.json o canva.json no se pueden leer (${e.status || e.message})`], resumen: '' }; }
+  if (canva) {
+    if (inf.fuente !== 'canva' || inf.verificador !== 'verificar_canva') problemas.push('el informe no es del Verificador de Canva (verificar_canva.py)');
+    if (!canva.json?.design_id || canva.json.design_id !== meta.canva?.design_id) problemas.push('canva.json y pieza.json no son del mismo diseño de Canva');
+    if (meta.foto) problemas.push('Canva con foto todavía no está habilitado');
+  }
   const shaPng = lista.find(e => e.name === 'pieza.png')?.sha;
   if (inf.aprobada !== true) problemas.push('el informe del Verificador no está aprobado');
   if (inf.png_blob_sha !== shaPng) problemas.push('el informe del Verificador es de otro PNG');
@@ -316,17 +334,20 @@ export async function compruebaPieza({ repo, pref, ref, respuesta, token, fetchI
   if (MEDIDAS[formato] && shaPng) {
     try {
       const blob = await gh(fetchImpl, 'GET', `/repos/${repo}/git/blobs/${shaPng}`, token);
-      const m = medidasPng(Buffer.from(String(blob.content || ''), 'base64'));
+      const png = Buffer.from(String(blob.content || ''), 'base64');
+      if (canva) canva.png = png;
+      const m = medidasPng(png);
       if (!m) problemas.push('pieza.png no es un PNG');
       else if (m[0] !== MEDIDAS[formato][0] || m[1] !== MEDIDAS[formato][1]) problemas.push(`pieza.png mide ${m[0]}x${m[1]}, no ${MEDIDAS[formato].join('x')}`);
     } catch (e) { problemas.push(`no se pudo leer pieza.png (${e.status || e.message})`); }
   }
   const avisos = Array.isArray(inf.avisos) ? inf.avisos.length : 0;
   const deFoto = meta.foto_cliente ? ` con foto del cliente (${meta.foto_cliente.id})` : meta.foto ? ' con foto de Higgsfield' : '';
-  const resumen = ` Pieza ${formato}${deFoto}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
+  const resumen = ` Pieza ${formato}${canva ? ' hecha en Canva' : ''}${deFoto}; Verificador de marca v${inf.repo_version || '?'}: ${inf.aprobada ? 'aprobada' : 'rechazada'}, ${avisos} aviso(s).`;
   // Retención: pr_pieza.py borra la petición en Higgsfield al bajar la foto; si no pudo, se avisa (no rechaza: se borra sola en 1 h).
   const borrado = meta.higgsfield?.borrado;
   const aviso = borrado && borrado.ok === false
     ? ` Aviso: no se pudo borrar la petición ${meta.higgsfield.request_id} en Higgsfield (${String(borrado.error || '').slice(0, 80)}); se borra sola en 1 hora.` : '';
-  return { problemas, resumen: resumen + aviso, meta };
+  return { problemas, resumen: resumen + aviso, meta,
+    ...(canva ? { canva: { meta, canva: canva.json, copia: canva.copia, png: canva.png || null } } : {}) };
 }

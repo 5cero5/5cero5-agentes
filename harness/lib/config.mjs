@@ -34,8 +34,11 @@ export function cfg(env = process.env) {
     agentes: Object.fromEntries(Object.entries(AGENTES).map(([nombre, d]) => [nombre, env[d.env]])),
     // Repos que se montan en la sesión, solo lectura. Cada agente declara cuáles necesita.
     repos: {
-      marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL' },
-      agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL' },
+      // GH_REPO_REF / GH_AGENTES_REF (opcionales, solo para un piloto aislado): rama que se monta en vez de la principal.
+      // Vacías, como siempre (rama por omisión del repo).
+      // Con RUTEO_CLIENTES=1 se ignoran (cada cliente monta su repo de marca en su rama principal).
+      marca: { url: env.GH_REPO_URL, token: env.GH_REPO_READ_TOKEN, mount: '/workspace/marca', variable: 'GH_REPO_URL', ref: env.RUTEO_CLIENTES === '1' ? '' : (env.GH_REPO_REF || '') },
+      agentes: { url: env.GH_AGENTES_URL, token: env.GH_AGENTES_READ_TOKEN || env.GH_REPO_READ_TOKEN, mount: '/workspace/agentes', variable: 'GH_AGENTES_URL', ref: env.RUTEO_CLIENTES === '1' ? '' : (env.GH_AGENTES_REF || '') },
       // Repo de landings: el token de lectura lo saca la GitHub App al abrir la sesión (lib/github.mjs).
       landings: { url: env.GH_LANDINGS_URL || 'https://github.com/5cero5/5cero5-landings', mount: '/workspace/landings', variable: 'GH_LANDINGS_URL', dinamico: true },
       // Repo de piezas (solo lo monta Pauta, para subir a Meta las piezas ya fusionadas). Token de lectura de la GitHub App.
@@ -79,6 +82,13 @@ export function cfg(env = process.env) {
     // Pauta con destino WhatsApp (Click to WhatsApp). Apagado por defecto: sin PAUTA_WHATSAPP=1, una fila de Pauta con
     // "Destino: WhatsApp" pasa a Error y, al cerrar, una campaña de WhatsApp sale Rechazada.
     pautaWhatsapp: env.PAUTA_WHATSAPP === '1',
+    // Canva en el Creativo (lib/canva.mjs). Apagado por defecto: sin CANVA_ACTIVO=1, una fila con "Canva: sí" pasa a Error y
+    // ninguna otra cambia. CANVA_EXPORT_HOSTS (separados por coma) reemplaza los hosts de descarga de agentes/canva.json.
+    canvaActivo: env.CANVA_ACTIVO === '1',
+    // Solo las filas de Canva usan este agente (el Creativo con el MCP de Canva y su lista cerrada) y este entorno (con los hosts de
+    // Canva). Las demás filas del Creativo siguen con MA_AGENT_CREATIVO y MA_ENVIRONMENT_ID, como siempre.
+    canva: { agente: env.MA_AGENT_CREATIVO_CANVA || '', entorno: env.MA_ENVIRONMENT_CANVA || '' },
+    canvaExportHosts: (env.CANVA_EXPORT_HOSTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     notionClientes: env.NOTION_CLIENTES_ID || '33723502-0b79-45e1-ac42-b123a22fff80',
     // Revisión del cliente (épica E2, lib/revision-cliente.mjs), paso aparte de la función barrido. Apagada por defecto.
     // Con REVISION_CLIENTE=1 sólo trabaja las fichas de REVISION_CLIENTE_CLIENTES: "fichaId=decisionesId,..." (id de página
